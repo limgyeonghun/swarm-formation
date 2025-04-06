@@ -725,20 +725,20 @@ namespace ego_planner
     node_ = node;
     node_->declare_parameter("optimization/constrain_points_perPiece", 3);
     node_->get_parameter("optimization/constrain_points_perPiece", cps_num_prePiece_);
-    node_->declare_parameter("optimization/weight_obstacle", 1000.0); //장애물
+    node_->declare_parameter("optimization/weight_obstacle", 1000.0);
     node_->get_parameter("optimization/weight_obstacle", wei_obs_);
     node_->declare_parameter("optimization/weight_swarm", 0.0);
     node_->get_parameter("optimization/weight_swarm", wei_swarm_);
-    node_->declare_parameter("optimization/weight_feasibility", 1.0); //저크
+    node_->declare_parameter("optimization/weight_feasibility", 1.0);
     node_->get_parameter("optimization/weight_feasibility", wei_feas_);
-    node_->declare_parameter("optimization/weight_sqrvariance", 1.0); //제어점 균일성 ?
+    node_->declare_parameter("optimization/weight_sqrvariance", 1.0);
     node_->get_parameter("optimization/weight_sqrvariance", wei_sqrvar_);
     node_->declare_parameter("optimization/weight_time", 0.0);
     node_->get_parameter("optimization/weight_time", wei_time_);
     node_->declare_parameter("optimization/weight_formation", 0.0);
     node_->get_parameter("optimization/weight_formation", wei_formation_);
 
-    node_->declare_parameter("optimization/obstacle_clearance", 1.8);
+    node_->declare_parameter("optimization/obstacle_clearance", 0.1);
     node_->get_parameter("optimization/obstacle_clearance", obs_clearance_);
     node_->declare_parameter("optimization/swarm_clearance", 0.5);
     node_->get_parameter("optimization/swarm_clearance", swarm_clearance_);

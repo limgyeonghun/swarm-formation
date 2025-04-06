@@ -17,22 +17,22 @@ struct MappingParameters
   Eigen::
       Vector3d map_origin_,
       map_size_;
-  Eigen::Vector3d map_min_boundary_, map_max_boundary_; // map range in pos
-  Eigen::Vector3i map_voxel_num_;                       // map range in index
+  Eigen::Vector3d map_min_boundary_, map_max_boundary_;
+  Eigen::Vector3i map_voxel_num_;
   double resolution_, resolution_inv_;
-  double obstacles_inflation_ = 0.2;  // 장애물 인플레이션 거리 (기본값: 10cm)
-  double virtual_ceil_height_ = -0.1; // 가상 천장 높이 (기본값: 사용 안 함)
+  double obstacles_inflation_ = 0.2;
+  double virtual_ceil_height_ = -0.1;
 };
 
 struct MappingData
 {
-  std::vector<double> occupancy_buffer_;          // 정적 Occupancy 데이터
-  std::vector<char> occupancy_buffer_inflate_;    // 인플레이트된 Occupancy
-  std::vector<char> occupancy_buffer_neg_;        // 음의 Occupancy 버퍼 추가
-  std::vector<double> distance_buffer_;           // Positive ESDF
-  std::vector<double> distance_buffer_neg_;       // Negative ESDF
-  std::vector<double> distance_buffer_all_;       // Combined ESDF
-  std::vector<double> tmp_buffer1_, tmp_buffer2_; // ESDF 계산용 임시 버퍼
+  std::vector<double> occupancy_buffer_;
+  std::vector<char> occupancy_buffer_inflate_;
+  std::vector<char> occupancy_buffer_neg_;
+  std::vector<double> distance_buffer_;
+  std::vector<double> distance_buffer_neg_;
+  std::vector<double> distance_buffer_all_;
+  std::vector<double> tmp_buffer1_, tmp_buffer2_;
 
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
@@ -148,7 +148,7 @@ inline int GridMap::getOccupancy(const Eigen::Vector3d &pos)
     return -1;
   Eigen::Vector3i id;
   posToIndex(pos, id);
-  return md_.occupancy_buffer_[toAddress(id)] > 0.5 ? 1 : 0; // 임계값 0.5
+  return md_.occupancy_buffer_[toAddress(id)] > 0.5 ? 1 : 0;
 }
 
 inline int GridMap::getOccupancy(const Eigen::Vector3i &id)

@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.5)
-project(path_visualization)
+project(path_manager)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 14)
@@ -12,28 +13,34 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(visualization_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(px4_msgs REQUIRED)
-find_package(path_manager REQUIRED)
+find_package(path_optimizer REQUIRED)
+find_package(path_planner REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 
-add_library(${PROJECT_NAME}_lib
-  src/path_visualization.cpp
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/PolyTraj.msg"
+  DEPENDENCIES std_msgs builtin_interfaces
 )
 
-target_include_directories(${PROJECT_NAME}_lib PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-  ${EIGEN3_INCLUDE_DIRS}
+add_library(${PROJECT_NAME}_lib
+  src/path_manager.cpp
 )
 
 ament_target_dependencies(${PROJECT_NAME}_lib
   rclcpp
   std_msgs
-  visualization_msgs
   Eigen3
-  px4_msgs
-  path_manager
+  path_optimizer
+  path_planner
+  rosidl_default_runtime
+)
+
+target_include_directories(${PROJECT_NAME}_lib PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_cpp>
+  $<INSTALL_INTERFACE:include>
+  ${EIGEN3_INCLUDE_DIRS}
 )
 
 add_executable(${PROJECT_NAME}_node
@@ -45,9 +52,16 @@ target_link_libraries(${PROJECT_NAME}_node
 ament_target_dependencies(${PROJECT_NAME}_node
   rclcpp
   std_msgs
-  visualization_msgs
-  px4_msgs
-  path_manager
+  path_optimizer
+  path_planner
+  rosidl_default_runtime
+)
+
+rosidl_target_interfaces(${PROJECT_NAME}_lib
+  ${PROJECT_NAME} "rosidl_typesupport_cpp"
+)
+rosidl_target_interfaces(${PROJECT_NAME}_node
+  ${PROJECT_NAME} "rosidl_typesupport_cpp"
 )
 
 install(TARGETS ${PROJECT_NAME}_lib
@@ -70,6 +84,6 @@ install(DIRECTORY config launch
 )
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp std_msgs visualization_msgs Eigen3 px4_msgs path_manager)
+ament_export_dependencies(rclcpp std_msgs Eigen3 path_optimizer path_planner rosidl_default_generators)
 
 ament_package()

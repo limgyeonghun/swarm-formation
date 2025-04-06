@@ -223,7 +223,7 @@ namespace ego_planner
         break;
       case FORMATION_TYPE::REGULAR_HEXAGON:
       {
-        // 원하는 포메이션 설정 (정규 육각형)
+        // desired formation
         Eigen::Vector3d v0(0, 0, 0);
         Eigen::Vector3d v1(1.7321, -1, 0);
         Eigen::Vector3d v2(0, -2, 0);

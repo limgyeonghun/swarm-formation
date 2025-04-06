@@ -18,12 +18,12 @@ Visualization Manager:
         Scale X: 0.1
         Scale Y: 0.1
         Scale Z: 0.1
-      - Class: rviz_default_plugins/Marker  # 새로운 Marker 디스플레이 (/min_jerk_trajectory)
+      - Class: rviz_default_plugins/Marker  # 새로운 Marker 디스플레이 (/opt_trajectory)
         Enabled: true
         Name: Min Jerk Trajectory
         Topic:
-          Value: /min_jerk_trajectory
-          Depth: 10
+          Value: /opt_trajectory
+          Depth: 20
           History Policy: Keep Last
           Reliability Policy: Best Effort
           Durability Policy: Volatile
@@ -34,22 +34,7 @@ Visualization Manager:
         Scale Z: 0.05
         Color: 0;255;0  # 초록색으로 설정
         History Length: 1
-      - Class: rviz_default_plugins/Marker  # 새로운 Marker 디스플레이 (/intermediate_trajectory)
-        Enabled: true
-        Name: Intermediate Trajectory
-        Topic:
-          Value: /intermediate_trajectory
-          Depth: 10
-          History Policy: Keep Last
-          Reliability Policy: Best Effort
-          Durability Policy: Volatile
-        Value: true
-        Alpha: 0.8
-        Scale X: 0.05
-        Scale Y: 0.05
-        Scale Z: 0.05
-        Color: 0;0;255  # 파란색으로 설정
-        History Length: 1
+
       - Class: rviz_default_plugins/Grid
         Enabled: true
         Name: Grid

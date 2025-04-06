@@ -60,8 +60,8 @@ private:
     inline bool checkOccupancy_esdf(const Eigen::Vector3d &pos) {
         double dist;
     grid_map_->evaluateEDT(pos, dist);
-    // std::cout << "Checking pos: " << pos.transpose() << ", dist: " << dist << std::endl; // 디버깅용
-    return dist < 0.3; // 0.3m 이내는 장애물
+    // std::cout << "Checking pos: " << pos.transpose() << ", dist: " << dist << std::endl; // debug
+    return dist < 0.3; // 0.3m dist
     }
 
     std::vector<GridNodePtr> retrievePath(GridNodePtr current);
