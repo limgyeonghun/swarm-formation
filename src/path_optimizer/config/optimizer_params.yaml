@@ -1,0 +1,15 @@
+/**:
+  ros__parameters:
+    optimization:
+      constrain_points_perPiece: 10    # 조각당 제약점 수 (예: 10)
+      weight_obstacle: 1000.0          # 장애물 가중치 (충돌 회피 중요도)
+      weight_swarm: 500.0             # 군집 가중치 (드론 간 간격 유지 중요도)
+      weight_feasibility: 100.0       # 실행 가능성 가중치 (속도/가속도 제약 준수)
+      weight_sqrvariance: 10.0        # 제곱 분산 가중치 (경로 균일성)
+      weight_time: 1.0               # 시간 가중치 (최적화 시간 최소화)
+      weight_formation: 200.0         # 포메이션 가중치 (포메이션 유지 중요도)
+      obstacle_clearance: 0.5         # 장애물 간격 (미터 단위)
+      swarm_clearance: 1.0            # 군집 간격 (미터 단위)
+      formation_type: 1              # 포메이션 타입 (예: 1 = 삼각형, 사용자 정의 필요)
+      max_vel: 2.0                   # 최대 속도 (m/s)
+      max_acc: 1.0                   # 최대 가속도 (m/s^2)
