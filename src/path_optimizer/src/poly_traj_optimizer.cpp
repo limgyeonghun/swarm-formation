@@ -2,46 +2,6 @@
 
 namespace ego_planner
 {
-  int PolyTrajOptimizer::progressCallback(
-      void *instance,
-      const double *x,
-      const double *g,
-      const double fx,
-      const double xnorm,
-      const double gnorm,
-      const double step,
-      int n,
-      int k,
-      int ls)
-  {
-    PolyTrajOptimizer *opt = reinterpret_cast<PolyTrajOptimizer *>(instance);
-    // if (opt->iter_num_ % 1 == 0)
-    if (true)
-    {
-      poly_traj::Trajectory intermediate_traj = opt->jerkOpt_.getTraj();
-      if (opt->intermediate_traj_callback_)
-      {
-        opt->intermediate_traj_callback_(intermediate_traj, opt->iter_num_);
-      }
-
-      if (opt->intermediate_control_points_callback_)
-      {
-        opt->intermediate_control_points_callback_(opt->cps_.points, opt->iter_num_);
-      }
-
-      if (opt->cost_callback_)
-      {
-        opt->cost_callback_(fx, opt->iter_num_);
-      }
-
-      RCLCPP_INFO(opt->node_->get_logger(), "Iteration %d, Cost: %f", opt->iter_num_, fx);
-
-      // std::this_thread::sleep_for(std::chrono::milliseconds(400));
-    }
-    // opt->iter_num_++;
-    return 0;
-  }
-
   bool PolyTrajOptimizer::OptimizeTrajectory_lbfgs(
     const Eigen::MatrixXd &iniState, const Eigen::MatrixXd &finState,
     const Eigen::MatrixXd &initInnerPts, const Eigen::VectorXd &initT,
@@ -79,11 +39,11 @@ namespace ego_planner
 
   if (use_formation)
   {
-    lbfgs_params.max_iterations = 40; //20
+    lbfgs_params.max_iterations = 100; //20
   }
   else
   {
-    lbfgs_params.max_iterations = 120; //60
+    lbfgs_params.max_iterations = 200; //60
     use_formation_ = false;
   }
 
@@ -92,7 +52,6 @@ namespace ego_planner
 
   t1 = node_->get_clock()->now();
 
-  RCLCPP_INFO(node_->get_logger(), "Publishing initial trajectory for testing...");
   poly_traj::Trajectory initial_traj = jerkOpt_.getTraj();
   if (intermediate_traj_callback_)
   {
@@ -105,7 +64,7 @@ namespace ego_planner
       &final_cost,
       PolyTrajOptimizer::costFunctionCallback,
       nullptr,
-      PolyTrajOptimizer::progressCallback,
+      PolyTrajOptimizer::earlyExitCallback,
       this,
       &lbfgs_params);
 
@@ -117,7 +76,7 @@ namespace ego_planner
   double time_ms = (t2 - t1).seconds() * 1000;
   double total_time_ms = (t2 - t0).seconds() * 1000;
 
-  RCLCPP_INFO(node_->get_logger(), "Optimization took %.2f ms (iteration time: %.2f ms)", total_time_ms, time_ms);
+  RCLCPP_INFO(node_->get_logger(), "\033[32miter=%d, time(ms)=%5.3f, \033[0m", iter_num_, time_ms);
   RCLCPP_INFO(node_->get_logger(), "RESULT: %d, Final cost: %f", result, final_cost);
 
   optimal_points = cps_.points;
@@ -186,7 +145,7 @@ namespace ego_planner
     opt->VirtualTGradCost(T, t, gradT, gradt, time_cost);
 
     opt->iter_num_ += 1;
-    std::cout << "debug: !!!!! " << smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost << std::endl;
+    // std::cout << "debug: !!!!! " << smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost << std::endl;
 
     return smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost;
   }
@@ -486,7 +445,7 @@ namespace ego_planner
     grid_map_->evaluateEDT(p, dist);
 
     double dist_err = obs_clearance_ - dist;
-    RCLCPP_INFO(node_->get_logger(), "pos (%f,%f,%f) | dist_err(%f) = obs_clearance: (%f) - dist(%f)", p(0), p(1), p(2), dist_err, obs_clearance_, dist);
+    // RCLCPP_INFO(node_->get_logger(), "pos (%f,%f,%f) | dist_err(%f) = obs_clearance: (%f) - dist(%f)", p(0), p(1), p(2), dist_err, obs_clearance_, dist);
 
     if (dist_err > 0)
     {

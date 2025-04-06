@@ -1,7 +1,7 @@
 Visualization Manager:
   Class: ""
   Displays:
-      - Class: rviz_default_plugins/Marker  # 기존 Marker 디스플레이 (/path_markers)
+      - Class: rviz_default_plugins/Marker  #(/path_markers)
         Enabled: true
         Name: Path and Obstacles
         Topic:
@@ -18,7 +18,7 @@ Visualization Manager:
         Scale X: 0.1
         Scale Y: 0.1
         Scale Z: 0.1
-      - Class: rviz_default_plugins/Marker  # 새로운 Marker 디스플레이 (/opt_trajectory)
+      - Class: rviz_default_plugins/Marker  # (/opt_trajectory)
         Enabled: true
         Name: Min Jerk Trajectory
         Topic:
@@ -32,7 +32,24 @@ Visualization Manager:
         Scale X: 0.05
         Scale Y: 0.05
         Scale Z: 0.05
-        Color: 0;255;0  # 초록색으로 설정
+        Color: 0;255;0 
+        History Length: 1
+
+      - Class: rviz_default_plugins/Marker  # (/position_markers)
+        Enabled: true
+        Name: position_markers
+        Topic:
+          Value: /position_markers
+          Depth: 20
+          History Policy: Keep Last
+          Reliability Policy: Best Effort
+          Durability Policy: Volatile
+        Value: true
+        Alpha: 0.8
+        Scale X: 0.05
+        Scale Y: 0.05
+        Scale Z: 0.05
+        Color: 0;0;255 
         History Length: 1
 
       - Class: rviz_default_plugins/Grid

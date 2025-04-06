@@ -95,21 +95,6 @@ namespace ego_planner
     rclcpp::Node::SharedPtr node_;
 
   public:
-    void setIntermediateTrajCallback(const IntermediateTrajCallback &callback)
-    {
-      intermediate_traj_callback_ = callback;
-    }
-
-    void setIntermediateControlPointsCallback(const IntermediateControlPointsCallback &callback)
-    {
-      intermediate_control_points_callback_ = callback;
-    }
-
-    void setCostCallback(const CostCallback &callback)
-    {
-      cost_callback_ = callback;
-    }
-
     PolyTrajOptimizer() {}
     ~PolyTrajOptimizer() {}
 

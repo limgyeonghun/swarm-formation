@@ -1,13 +1,13 @@
 path_manager:
   ros__parameters:
     optimization/constrain_points_perPiece: 3
-    optimization/weight_obstacle: 1.0
+    optimization/weight_obstacle: 50000.0
     optimization/weight_swarm: 0.0
-    optimization/weight_feasibility: 1.0
-    optimization/weight_sqrvariance: 1.0
-    optimization/weight_time: 0.0
+    optimization/weight_feasibility: 10000.0
+    optimization/weight_sqrvariance: 10000.0
+    optimization/weight_time: 80.0
     optimization/weight_formation: 0.0
-    optimization/obstacle_clearance: 1.0
+    optimization/obstacle_clearance: 0.5
     optimization/swarm_clearance: 1.0
     optimization/formation_type: 1
     optimization/max_vel: 1.0

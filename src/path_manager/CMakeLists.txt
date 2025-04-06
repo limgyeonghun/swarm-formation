@@ -16,6 +16,7 @@ find_package(std_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(path_optimizer REQUIRED)
 find_package(path_planner REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -33,6 +34,7 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   Eigen3
   path_optimizer
   path_planner
+  geometry_msgs
   rosidl_default_runtime
 )
 
@@ -54,6 +56,7 @@ ament_target_dependencies(${PROJECT_NAME}_node
   std_msgs
   path_optimizer
   path_planner
+  geometry_msgs
   rosidl_default_runtime
 )
 
@@ -84,6 +87,6 @@ install(DIRECTORY config launch
 )
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp std_msgs Eigen3 path_optimizer path_planner rosidl_default_generators)
+ament_export_dependencies(rclcpp std_msgs Eigen3 path_optimizer geometry_msgs path_planner rosidl_default_generators)
 
 ament_package()
