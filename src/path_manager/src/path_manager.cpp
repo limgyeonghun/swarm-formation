@@ -7,7 +7,8 @@ PathManager::PathManager()
       first_call_(true),
       iniState_(3, 3),
       finState_(3, 3),
-      last_start_time_(0.0) // 이전 경로 시작 시간 추가
+      last_start_time_(0.0),
+      replan_trajectory_time_(0.5) //
 {
     // Load obstacle parameters
     this->declare_parameter("obstacles", std::vector<double>{});
@@ -77,13 +78,12 @@ PathManager::PathManager()
     start_pt_ = iniState_.col(0);
     end_pt_ = finState_.col(0);
 
-    timer_ = this->create_wall_timer(2000ms, std::bind(&PathManager::computeAndPublishPaths, this));
+    timer_ = this->create_wall_timer(500ms, std::bind(&PathManager::computeAndPublishPaths, this));
 }
 
 void PathManager::positionCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg)
 {
     start_pt_ = Eigen::Vector3d(msg->point.x, msg->point.y, msg->point.z);
-    // RCLCPP_INFO(this->get_logger(), "start pt : %f, %f, %f", start_pt_.x(), start_pt_.y(), start_pt_.z());
     iniState_.col(0) = start_pt_;
 }
 
@@ -179,11 +179,9 @@ void PathManager::computeAndPublishPaths()
     }
 
     static poly_traj::Trajectory last_optimized_traj;
-    const double planning_horizen = 5.0;
+    const double planning_horizen = 4.0;
     Eigen::Vector3d local_target_pos, local_target_vel;
     double t_to_target;
-
-    static bool initial_global_published = false;
 
     if (first_call_)
     {
@@ -207,7 +205,7 @@ void PathManager::computeAndPublishPaths()
         local_traj_.drone_id = -1;
         local_traj_.traj_id = 1;
         local_traj_.duration = init_mjo.getTraj().getTotalDuration();
-        local_traj_.start_pos = init_mjo.getTraj().getJuncPos(0);
+        local_traj_.start_pos = start_pt_;
         local_traj_.start_time = this->now().seconds();
         local_traj_.traj = init_mjo.getTraj();
 
@@ -216,17 +214,35 @@ void PathManager::computeAndPublishPaths()
         optimized_path_pub_->publish(global_msg);
         RCLCPP_INFO(this->get_logger(), "Published initial A* global trajectory with %zu pieces, duration: %.2f",
                     global_traj_.traj.getPieceNum(), global_traj_.duration);
-        initial_global_published = true;
-
         first_call_ = false;
     }
 
     getLocalTarget(planning_horizen, start_pt_, end_pt_, local_target_pos, local_target_vel, t_to_target);
 
+    if (t_to_target < 0.5)
+    {
+        RCLCPP_INFO(this->get_logger(), "Adjusting t_to_target from %.2f to 0.5", t_to_target);
+        t_to_target = 0.5;
+        double t = global_traj_.last_glb_t_of_lc_tgt + t_to_target;
+        double max_t = global_traj_.global_start_time + global_traj_.duration;
+        if (t < max_t)
+        {
+            local_target_pos = global_traj_.traj.getPos(t - global_traj_.global_start_time);
+            global_traj_.glb_t_of_lc_tgt = t;
+            local_target_vel = global_traj_.traj.getVel(t - global_traj_.global_start_time);
+        }
+        else
+        {
+            local_target_pos = end_pt_;
+            global_traj_.glb_t_of_lc_tgt = max_t;
+        }
+    }
+
+    double desired_start_time = this->now().seconds() + replan_trajectory_time_;
     Eigen::MatrixXd headState = iniState_;
     if (last_optimized_traj.getPieceNum() > 0)
     {
-        double passed_time = this->now().seconds() - local_traj_.start_time;
+        double passed_time = desired_start_time - local_traj_.start_time;
         double t_adj = std::min(passed_time, local_traj_.duration);
         headState.col(0) = start_pt_;
         headState.col(1) = last_optimized_traj.getVel(t_adj);
@@ -240,36 +256,51 @@ void PathManager::computeAndPublishPaths()
             local_traj_.start_pos = start_pt_;
         }
     }
+
     Eigen::MatrixXd tailState(3, 3);
     tailState.col(0) = local_target_pos;
     tailState.col(1) = local_target_vel;
     tailState.col(2) << 0.0, 0.0, 0.0;
 
     poly_traj::MinJerkOpt local_mjo;
-    double dist_to_target = (start_pt_ - local_target_pos).norm();
-    int piece_nums = std::max(3, static_cast<int>(dist_to_target / 1.0)); // 1.5 사용해야함, 버그수정못해서 일단 1.0으로 사용중 (노션에 기록)
+    double polyTraj_piece_length = 1.0;
+    int piece_nums = std::max(2, static_cast<int>(ceil((start_pt_ - local_target_pos).norm() / polyTraj_piece_length)));
+
+    if (t_to_target < 1.0 && piece_nums > 2)
+    {
+        piece_nums = 2;
+        RCLCPP_INFO(this->get_logger(), "Reduced piece_nums to %d due to short t_to_target (%.2f)", piece_nums, t_to_target);
+    }
+
     Eigen::MatrixXd innerPs(3, piece_nums - 1);
     Eigen::VectorXd piece_dur_vec;
 
     if (global_traj_.last_glb_t_of_lc_tgt < 0.0)
     {
         piece_dur_vec = Eigen::VectorXd::Constant(piece_nums, t_to_target / piece_nums);
-        double t = global_traj_.glb_t_of_lc_tgt;
-        double t_step = t_to_target / (piece_nums - 1);
-        for (int i = 0; i < piece_nums - 1; ++i)
+        double t = 0.0;
+        double t_step = t_to_target / piece_nums;
+        for (int i = 1; i < piece_nums; ++i)
         {
             t += t_step;
-            double traj_t = std::min(t - global_traj_.global_start_time, global_traj_.duration);
-            innerPs.col(i) = global_traj_.traj.getPos(traj_t);
-            RCLCPP_INFO(this->get_logger(), "Initial Inner Point %d at t=%.2f: (%.2f, %.2f, %.2f)", i, traj_t,
-                        innerPs(0, i), innerPs(1, i), innerPs(2, i));
+            double traj_t = std::min(t, global_traj_.duration);
+            innerPs.col(i - 1) = global_traj_.traj.getPos(traj_t);
+            RCLCPP_INFO(this->get_logger(), "Initial Inner Point %d at t=%.2f: (%.2f, %.2f, %.2f)", i - 1, traj_t,
+                        innerPs(0, i - 1), innerPs(1, i - 1), innerPs(2, i - 1));
         }
     }
     else
     {
         double passed_t_on_lctraj = this->now().seconds() - local_traj_.start_time;
         double t_to_lc_end = std::max(0.0, local_traj_.duration - passed_t_on_lctraj);
-        double t_to_lc_tgt = std::min(t_to_lc_end + t_to_target, global_traj_.duration - (global_traj_.last_glb_t_of_lc_tgt - global_traj_.global_start_time));
+        double t_to_lc_tgt = t_to_lc_end + t_to_target;
+
+        if (t_to_lc_tgt < 0.5)
+        {
+            RCLCPP_WARN(this->get_logger(), "t_to_lc_tgt adjusted to 0.5 from %.2f", t_to_lc_tgt);
+            t_to_lc_tgt = 0.5;
+        }
+
         piece_dur_vec = Eigen::VectorXd::Constant(piece_nums, t_to_lc_tgt / piece_nums);
 
         RCLCPP_INFO(this->get_logger(), "passed_t_on_lctraj: %.2f, t_to_lc_end: %.2f, t_to_lc_tgt: %.2f",
@@ -331,11 +362,15 @@ void PathManager::computeAndPublishPaths()
     else
     {
         RCLCPP_WARN(this->get_logger(), "Optimization failed, keeping previous trajectory.");
+        if (last_optimized_traj.getPieceNum() > 0)
+        {
+            local_traj_.traj = last_optimized_traj;
+        }
     }
 
     double passed_t_on_lctraj = this->now().seconds() - local_traj_.start_time;
     double t_to_lc_end = std::max(0.0, local_traj_.duration - passed_t_on_lctraj);
-    double t_to_lc_tgt = std::min(t_to_lc_end + t_to_target, global_traj_.duration - (global_traj_.last_glb_t_of_lc_tgt - global_traj_.global_start_time));
+    double t_to_lc_tgt = t_to_lc_end + t_to_target;
     RCLCPP_INFO(this->get_logger(), "passed_t_on_lctraj: %.2f, t_to_lc_end: %.2f, t_to_lc_tgt: %.2f",
                 passed_t_on_lctraj, t_to_lc_end, t_to_lc_tgt);
 }

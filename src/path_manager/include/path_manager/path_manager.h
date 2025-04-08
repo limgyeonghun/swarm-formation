@@ -40,7 +40,7 @@ private:
     int traj_id;
     double duration;
     double start_time;
-    Eigen::Vector3d start_pos; // 추가
+    Eigen::Vector3d start_pos;
     poly_traj::Trajectory traj;
   } local_traj_;
 
@@ -56,14 +56,15 @@ private:
   double max_acc_ = 1.0;
   Eigen::Vector3d start_pt_;
   Eigen::Vector3d end_pt_;
+  double replan_trajectory_time_;
 
   ego_planner::PolyTrajOptimizer::Ptr poly_traj_opt_;
   bool is_optimizer_initialized_;
   bool first_call_;
   Eigen::MatrixXd iniState_;
   Eigen::MatrixXd finState_;
-  double current_time_;    // 현재 시간 (초 단위)
-  double last_start_time_; // 이전 경로 시작 시간
+  double current_time_;
+  double last_start_time_;
 };
 
 #endif
