@@ -6,7 +6,7 @@
 #include <Eigen/Eigen>
 #include <iostream>
 #include <cmath>
-#include <rclcpp/rclcpp.hpp> // ROS2 header
+#include <rclcpp/rclcpp.hpp>
 
 class SwarmGraph
 {
@@ -29,7 +29,6 @@ private:
     Eigen::MatrixXd Lhat_des;
 
     Eigen::MatrixXd DLhat;
-
 public:
     SwarmGraph();
     ~SwarmGraph() {}

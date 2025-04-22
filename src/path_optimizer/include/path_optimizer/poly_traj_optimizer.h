@@ -16,10 +16,6 @@
 
 namespace ego_planner
 {
-  using IntermediateTrajCallback = std::function<void(const poly_traj::Trajectory &, int iteration)>;
-  using IntermediateControlPointsCallback = std::function<void(const Eigen::MatrixXd &, int iteration)>;
-  using CostCallback = std::function<void(double cost, int iteration)>;
-
   class ConstrainPoints
   {
   public:
@@ -44,10 +40,8 @@ namespace ego_planner
     SwarmTrajData *swarm_trajs_{nullptr};
     ConstrainPoints cps_;
     SwarmGraph::Ptr swarm_graph_;
-
-    IntermediateTrajCallback intermediate_traj_callback_;
-    IntermediateControlPointsCallback intermediate_control_points_callback_;
-    CostCallback cost_callback_;
+    // std::ofstream log_file_;
+    // std::string log_file_path_;
 
     int drone_id_;
     int cps_num_prePiece_;
@@ -96,9 +90,12 @@ namespace ego_planner
 
   public:
     PolyTrajOptimizer() {}
-    ~PolyTrajOptimizer() {}
+    ~PolyTrajOptimizer() { }
+    // ~PolyTrajOptimizer() { closeLogFile(); }
 
     void setParam(const rclcpp::Node::SharedPtr &node);
+    // void initLogFile(const std::string &path);
+    // void closeLogFile();
     void setEnvironment(const GridMap::Ptr &map);
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
@@ -185,17 +182,7 @@ namespace ego_planner
 
     bool getFormationPos(std::vector<Eigen::Vector3d> &swarm_graph_pos, Eigen::Vector3d pos);
 
-    static int progressCallback(
-        void *instance,
-        const double *x,
-        const double *g,
-        const double fx,
-        const double xnorm,
-        const double gnorm,
-        const double step,
-        int n,
-        int k,
-        int ls);
+    // void logToFile(const std::string &message, const std::string &level = "INFO");
 
     void setDesiredFormation(int type)
     {
@@ -206,31 +193,39 @@ namespace ego_planner
         use_formation_ = false;
         formation_size_ = 0;
         break;
+
       case FORMATION_TYPE::REGULAR_HEXAGON:
       {
-        // desired formation
+        // Eigen::Vector3d v0(0, 0, 0);
+        // Eigen::Vector3d v1(2, 0, 0);
+        // Eigen::Vector3d v2(4, 0, 0);
         Eigen::Vector3d v0(0, 0, 0);
-        Eigen::Vector3d v1(1.7321, -1, 0);
-        Eigen::Vector3d v2(0, -2, 0);
-        Eigen::Vector3d v3(-1.7321, -1, 0);
-        Eigen::Vector3d v4(-1.7321, 1, 0);
-        Eigen::Vector3d v5(0, 2, 0);
-        Eigen::Vector3d v6(1.7321, 1, 0);
+        Eigen::Vector3d v1(1, 0, 0);
+        Eigen::Vector3d v2(0, 1, 0);
+        // Eigen::Vector3d v3(-1.7321, -1, 0);
+        // Eigen::Vector3d v4(-1.7321, 1, 0);
+        // Eigen::Vector3d v5(0, 2, 0);
+        // Eigen::Vector3d v6(1.7321, 1, 0);
         swarm_des.push_back(v0);
         swarm_des.push_back(v1);
         swarm_des.push_back(v2);
-        swarm_des.push_back(v3);
-        swarm_des.push_back(v4);
-        swarm_des.push_back(v5);
-        swarm_des.push_back(v6);
+        // swarm_des.push_back(v3);
+        // swarm_des.push_back(v4);
+        // swarm_des.push_back(v5);
+        // swarm_des.push_back(v6);
         formation_size_ = swarm_des.size();
         swarm_graph_->setDesiredForm(swarm_des);
+        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "Triangle formation set: size=%zu", swarm_des.size());
         break;
       }
+
       default:
+        RCLCPP_WARN(rclcpp::get_logger("PolyTrajOptimizer"), "Unknown formation type: %d", type);
+        use_formation_ = false;
+        formation_size_ = 0;
         break;
       }
-    }
+    };
 
   public:
     typedef std::unique_ptr<PolyTrajOptimizer> Ptr;

@@ -236,7 +236,7 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
                 }
         auto time_2 = std::chrono::steady_clock::now();
         std::chrono::duration<double> elapsed = time_2 - time_1;
-        if (elapsed.count() > 4.5)
+        if (elapsed.count() > 0.2)
         {
             std::cerr << "Failed in A* path searching !!! 0.2 seconds time limit exceeded." << std::endl;
             return false;

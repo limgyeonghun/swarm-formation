@@ -26,6 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 add_library(${PROJECT_NAME}_lib
   src/path_manager.cpp
+  src/replan_fsm.cpp
 )
 
 ament_target_dependencies(${PROJECT_NAME}_lib

@@ -28,29 +28,80 @@ Visualization Manager:
           Reliability Policy: Best Effort
           Durability Policy: Volatile
         Value: true
-        Alpha: 0.8
+        Alpha: 0.4
         Scale X: 0.05
         Scale Y: 0.05
         Scale Z: 0.05
         Color: 0;255;0 
-        History Length: 1
+        History Length: 1000
 
-      - Class: rviz_default_plugins/Marker  # (/position_markers)
+      - Class: rviz_default_plugins/Marker  # (/global_traj)
         Enabled: true
-        Name: position_markers
+        Name: Min Jerk Trajectory
         Topic:
-          Value: /position_markers
+          Value: /global_trajectory
+          Depth: 20
+          History Policy: Keep Last
+          Reliability Policy: Best Effort
+          Durability Policy: Volatile
+        Value: true
+        Alpha: 0.4
+        Scale X: 0.05
+        Scale Y: 0.05
+        Scale Z: 0.05
+        Color: 50;50;10 
+        History Length: 1000
+
+      - Class: rviz_default_plugins/Marker  # (/position_markers_drone_0)
+        Enabled: true
+        Name: position_markers_drone_0
+        Topic:
+          Value: /position_markers_drone_0
           Depth: 20
           History Policy: Keep Last
           Reliability Policy: Best Effort
           Durability Policy: Volatile
         Value: true
         Alpha: 0.8
-        Scale X: 0.05
-        Scale Y: 0.05
-        Scale Z: 0.05
-        Color: 0;0;255 
-        History Length: 1
+        Scale X: 0.1
+        Scale Y: 0.1
+        Scale Z: 0.1
+        Color: 255;0;0  # drone_0: 빨강
+        History Length: 1000
+
+      - Class: rviz_default_plugins/Marker  # (/position_markers_drone_1)
+        Enabled: true
+        Name: position_markers_drone_1
+        Topic:
+          Value: /position_markers_drone_1
+          Depth: 20
+          History Policy: Keep Last
+          Reliability Policy: Best Effort
+          Durability Policy: Volatile
+        Value: true
+        Alpha: 0.8
+        Scale X: 0.1
+        Scale Y: 0.1
+        Scale Z: 0.1
+        Color: 0;255;0  # drone_1: 초록
+        History Length: 1000
+
+      - Class: rviz_default_plugins/Marker  # (/position_markers_drone_2)
+        Enabled: true
+        Name: position_markers_drone_2
+        Topic:
+          Value: /position_markers_drone_2
+          Depth: 20
+          History Policy: Keep Last
+          Reliability Policy: Best Effort
+          Durability Policy: Volatile
+        Value: true
+        Alpha: 0.8
+        Scale X: 0.1
+        Scale Y: 0.1
+        Scale Z: 0.1
+        Color: 0;0;255  # drone_1: 초록
+        History Length: 1000
 
       - Class: rviz_default_plugins/Grid
         Enabled: true

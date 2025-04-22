@@ -1,90 +1,140 @@
 #include "path_optimizer/poly_traj_optimizer.h"
+#include <iomanip>
+#include <ctime>
 
 namespace ego_planner
 {
+  // void PolyTrajOptimizer::initLogFile(const std::string &path)
+  // {
+  //   log_file_path_ = path;
+  //   log_file_.open(log_file_path_, std::ios::out | std::ios::app);
+  //   if (!log_file_.is_open())
+  //   {
+  //     std::cerr << "Failed to open log file: " << log_file_path_ << std::endl;
+  //   }
+  //   else
+  //   {
+  //     auto t = std::time(nullptr);
+  //     auto tm = *std::localtime(&t);
+  //     log_file_ << "=== Log started at " << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << " ===\n";
+  //   }
+  // }
+
+  // void PolyTrajOptimizer::closeLogFile()
+  // {
+  //   if (log_file_.is_open())
+  //   {
+  //     auto t = std::time(nullptr);
+  //     auto tm = *std::localtime(&t);
+  //     log_file_ << "=== Log ended at " << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << " ===\n";
+  //     log_file_.close();
+  //   }
+  // }
+
+  // void PolyTrajOptimizer::logToFile(const std::string &message, const std::string &level)
+  // {
+  //   if (log_file_.is_open())
+  //   {
+  //     auto t = std::time(nullptr);
+  //     auto tm = *std::localtime(&t);
+  //     log_file_ << "[" << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << "] [" << level << "] " << message << "\n";
+  //     log_file_.flush();
+  //   }
+  // }
+
   bool PolyTrajOptimizer::OptimizeTrajectory_lbfgs(
-    const Eigen::MatrixXd &iniState, const Eigen::MatrixXd &finState,
-    const Eigen::MatrixXd &initInnerPts, const Eigen::VectorXd &initT,
-    Eigen::MatrixXd &optimal_points, const bool use_formation)
-{
-  if (initInnerPts.cols() != (initT.size() - 1))
+      const Eigen::MatrixXd &iniState, const Eigen::MatrixXd &finState,
+      const Eigen::MatrixXd &initInnerPts, const Eigen::VectorXd &initT,
+      Eigen::MatrixXd &optimal_points, const bool use_formation)
   {
-    return false;
+    if (initInnerPts.cols() != (initT.size() - 1))
+    {
+      return false;
+    }
+
+    t_now_ = node_->get_clock()->now().seconds();
+    piece_num_ = initT.size();
+
+    jerkOpt_.reset(iniState, finState, piece_num_);
+    Eigen::Vector3d start_pos = iniState.col(0);
+
+    double final_cost;
+    variable_num_ = 4 * (piece_num_ - 1) + 1;
+
+    auto t0 = node_->get_clock()->now();
+    auto t1 = node_->get_clock()->now();
+    auto t2 = node_->get_clock()->now();
+    bool use_formation_temp = use_formation_;
+
+    std::vector<double> q(variable_num_);
+    memcpy(q.data(), initInnerPts.data(), initInnerPts.size() * sizeof(double));
+    Eigen::Map<Eigen::VectorXd> Vt(q.data() + initInnerPts.size(), initT.size());
+    RealT2VirtualT(initT, Vt);
+
+    lbfgs::lbfgs_parameter_t lbfgs_params;
+    lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
+    lbfgs_params.mem_size = 16;
+    lbfgs_params.g_epsilon = 0.1;
+    lbfgs_params.min_step = 1e-32;
+
+    if (use_formation)
+    {
+      lbfgs_params.max_iterations = 20;
+    }
+    else
+    {
+      lbfgs_params.max_iterations = 60;
+      use_formation_ = false;
+    }
+
+    iter_num_ = 0;
+    force_stop_type_ = DONT_STOP;
+
+    t1 = node_->get_clock()->now();
+
+    int result = lbfgs::lbfgs_optimize(
+        variable_num_,
+        q.data(),
+        &final_cost,
+        PolyTrajOptimizer::costFunctionCallback,
+        nullptr,
+        PolyTrajOptimizer::earlyExitCallback,
+        this,
+        &lbfgs_params);
+
+    bool occ = checkCollision();
+
+    use_formation_ = use_formation_temp;
+
+    t2 = node_->get_clock()->now();
+    double time_ms = (t2 - t1).seconds() * 1000;
+    double total_time_ms = (t2 - t0).seconds() * 1000;
+
+    RCLCPP_INFO(node_->get_logger(), "\033[32m id: %d, iter=%d, use_formation=%d, time(ms)=%5.3f \033[0m", drone_id_, iter_num_, use_formation, time_ms);
+    if (drone_id_ == formation_size_ - 1)
+    {
+      RCLCPP_INFO(node_->get_logger(), "=================================================");
+    }
+    // std::string msg_iter = "iter=" + std::to_string(iter_num_) +
+    //                        ", use_formation=" + std::to_string(use_formation) +
+    //                        ", time(ms)=" + std::to_string(time_ms);
+    // RCLCPP_INFO(node_->get_logger(), "\033[32m%s\n\033[0m", msg_iter.c_str());
+    // logToFile(msg_iter);
+
+    // std::string msg_result = "RESULT: " + std::to_string(result) +
+    //                          ", Final cost: " + std::to_string(final_cost);
+    // RCLCPP_INFO(node_->get_logger(), "%s", msg_result.c_str());
+    // logToFile(msg_result);
+
+    optimal_points = cps_.points;
+
+    showFormationInformation(false, start_pos);
+
+    if (occ)
+      return false;
+    else
+      return true;
   }
-
-  t_now_ = node_->get_clock()->now().seconds();
-  piece_num_ = initT.size();
-
-  jerkOpt_.reset(iniState, finState, piece_num_);
-  Eigen::Vector3d start_pos = iniState.col(0);
-
-  double final_cost;
-  variable_num_ = 4 * (piece_num_ - 1) + 1;
-
-  auto t0 = node_->get_clock()->now();
-  auto t1 = node_->get_clock()->now();
-  auto t2 = node_->get_clock()->now();
-  bool use_formation_temp = use_formation_;
-
-  std::vector<double> q(variable_num_);
-  memcpy(q.data(), initInnerPts.data(), initInnerPts.size() * sizeof(double));
-  Eigen::Map<Eigen::VectorXd> Vt(q.data() + initInnerPts.size(), initT.size());
-  RealT2VirtualT(initT, Vt);
-
-  lbfgs::lbfgs_parameter_t lbfgs_params;
-  lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
-  lbfgs_params.mem_size = 16;
-  lbfgs_params.g_epsilon = 0.01;
-  lbfgs_params.min_step = 1e-32;
-
-  if (use_formation)
-  {
-    lbfgs_params.max_iterations = 100; //20
-  }
-  else
-  {
-    lbfgs_params.max_iterations = 200; //60
-    use_formation_ = false;
-  }
-
-  iter_num_ = 0;
-  force_stop_type_ = DONT_STOP;
-
-  t1 = node_->get_clock()->now();
-
-  poly_traj::Trajectory initial_traj = jerkOpt_.getTraj();
-  if (intermediate_traj_callback_)
-  {
-    intermediate_traj_callback_(initial_traj, iter_num_);
-  }
-
-  int result = lbfgs::lbfgs_optimize(
-      variable_num_,
-      q.data(),
-      &final_cost,
-      PolyTrajOptimizer::costFunctionCallback,
-      nullptr,
-      PolyTrajOptimizer::earlyExitCallback,
-      this,
-      &lbfgs_params);
-
-  bool occ = checkCollision();
-
-  use_formation_ = use_formation_temp;
-
-  t2 = node_->get_clock()->now();
-  double time_ms = (t2 - t1).seconds() * 1000;
-  double total_time_ms = (t2 - t0).seconds() * 1000;
-
-  RCLCPP_INFO(node_->get_logger(), "\033[32miter=%d, time(ms)=%5.3f, \033[0m", iter_num_, time_ms);
-  RCLCPP_INFO(node_->get_logger(), "RESULT: %d, Final cost: %f", result, final_cost);
-
-  optimal_points = cps_.points;
-
-  showFormationInformation(false, start_pos);
-
-  return result >= 0 && !occ;
-}
   bool PolyTrajOptimizer::checkCollision(void)
   {
     double T_end;
@@ -145,7 +195,6 @@ namespace ego_planner
     opt->VirtualTGradCost(T, t, gradT, gradt, time_cost);
 
     opt->iter_num_ += 1;
-    // std::cout << "debug: !!!!! " << smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost << std::endl;
 
     return smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost;
   }
@@ -258,37 +307,35 @@ namespace ego_planner
           gdT(i) += omg * (costp / K + step * gradViolaPt);
           costs(0) += omg * step * costp;
         }
-        // double gradt, grad_prev_t;
+        double gradt, grad_prev_t;
 
-        // if (swarmGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp))
-        // {
-
-        //     gradViolaPc = beta0 * gradp.transpose();
-        //     gradViolaPt = alpha * gradt;
-        //     jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
-        //     gdT(i) += omg * (costp / K + step * gradViolaPt);
-        //     if (i > 0)
-        //     {
-        //         gdT.head(i).array() += omg * step * grad_prev_t;
-        //     }
-        //     costs(1) += omg * step * costp;
-        // }
-        // if (use_formation_)
-        // {
-
-        //     if (swarmGraphGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp))
-        //     {
-        //         gradViolaPc = beta0 * gradp.transpose();
-        //         gradViolaPt = alpha * gradt;
-        //         jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
-        //         gdT(i) += omg * (costp / K + step * gradViolaPt);
-        //         if (i > 0)
-        //         {
-        //             gdT.head(i).array() += omg * step * grad_prev_t;
-        //         }
-        //         costs(2) += omg * step * costp;
-        //     }
-        // }
+        if (swarmGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp))
+        {
+          gradViolaPc = beta0 * gradp.transpose();
+          gradViolaPt = alpha * gradt;
+          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+          gdT(i) += omg * (costp / K + step * gradViolaPt);
+          if (i > 0)
+          {
+            gdT.head(i).array() += omg * step * grad_prev_t;
+          }
+          costs(1) += omg * step * costp;
+        }
+        if (use_formation_)
+        {
+          if (swarmGraphGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp))
+          {
+            gradViolaPc = beta0 * gradp.transpose();
+            gradViolaPt = alpha * gradt;
+            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+            gdT(i) += omg * (costp / K + step * gradViolaPt);
+            if (i > 0)
+            {
+              gdT.head(i).array() += omg * step * grad_prev_t;
+            }
+            costs(2) += omg * step * costp;
+          }
+        }
         if (feasibilityGradCostV(vel, gradv, costv))
         {
 
@@ -370,6 +417,9 @@ namespace ego_planner
     if (size < formation_size_)
       return false;
 
+    if (i_dp <= 0 || i_dp >= cps_.cp_size * 2 / 3)
+      return false;
+
     bool ret = false;
     gradp.setZero();
     gradt = 0;
@@ -408,6 +458,13 @@ namespace ego_planner
 
     double similarity_error;
     swarm_graph_->calcFNorm2(similarity_error);
+
+    // RCLCPP_INFO(node_->get_logger(), "similarity_error : %f", similarity_error);
+    // std::stringstream ss;
+    // ss << std::fixed << std::setprecision(6);
+    // ss << "[drone_id=" << drone_id_ << "] "
+    //    << "SwarmGraphGradCostP similarity_error=" << similarity_error;
+    // logToFile(ss.str(), "INFO");
 
     if (similarity_error > 0)
     {
@@ -708,6 +765,11 @@ namespace ego_planner
     node_->declare_parameter("optimization/max_acc", 1.0);
     node_->get_parameter("optimization/max_acc", max_acc_);
 
+    // std::string log_file_path;
+    // node_->declare_parameter("optimization/log_file_path", "/home/lim/workspace/ros_ws/log/optimizer.log");
+    // node_->get_parameter("optimization/log_file_path", log_file_path);
+    // initLogFile(log_file_path);
+
     swarm_graph_.reset(new SwarmGraph);
     setDesiredFormation(formation_type_);
   }
@@ -716,7 +778,7 @@ namespace ego_planner
   {
     grid_map_ = map;
     a_star_.reset(new AStar);
-    a_star_->initGridMap(grid_map_, Eigen::Vector3i(800, 200, 10));
+    a_star_->initGridMap(grid_map_, Eigen::Vector3i(800, 200, 40));
   }
 
   void PolyTrajOptimizer::setControlPoints(const Eigen::MatrixXd &points)
