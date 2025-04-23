@@ -5,10 +5,10 @@ namespace path_manager
 
     PathManager::PathManager(const std::shared_ptr<rclcpp::Node> &node)
         : node_(node),
-          max_vel_(1.5),
-          max_acc_(8.0),
-          poly_traj_piece_length_(2.0),
-          planning_horizen_(7.5),
+          max_vel_(-1.0),
+          max_acc_(-1.0),
+          poly_traj_piece_length_(-1.0),
+          planning_horizen_(-1.0),
           is_optimizer_initialized_(false),
           first_call_(true)
     {
@@ -16,10 +16,10 @@ namespace path_manager
         node_->get_parameter("drone_id", drone_id);
         traj_.local_traj.drone_id = drone_id;
 
-        node_->declare_parameter("manager/max_vel", 1.5);
-        node_->declare_parameter("manager/max_acc", 8.0);
-        node_->declare_parameter("manager/polyTraj_piece_length", 2.0);
-        node_->declare_parameter("manager/planning_horizon", 7.5);
+        node_->declare_parameter("manager/max_vel", -1.0);
+        node_->declare_parameter("manager/max_acc", -1.0);
+        node_->declare_parameter("manager/polyTraj_piece_length", -1.0);
+        node_->declare_parameter("manager/planning_horizon", -1.0);
         node_->get_parameter("manager/max_vel", max_vel_);
         node_->get_parameter("manager/max_acc", max_acc_);
         node_->get_parameter("manager/polyTraj_piece_length", poly_traj_piece_length_);

@@ -14,9 +14,9 @@ ReplanFSM::ReplanFSM()
       have_recv_pre_agent_(false),
       flag_relan_astar_(false),
       drone_id_(0),
-      replan_thresh_(1.0),
-      no_replan_thresh_(1.0),
-      replan_trajectory_time_(0.1),
+      replan_thresh_(-1.0),
+      no_replan_thresh_(-1.0),
+      replan_trajectory_time_(-1.0),
       current_time_(0.0),
       last_start_time_(0.0) {
 
@@ -24,9 +24,9 @@ ReplanFSM::ReplanFSM()
     this->get_parameter("drone_id", drone_id_);
     RCLCPP_INFO(this->get_logger(), "Starting ReplanFSM for drone_id: %d", drone_id_);
 
-    this->declare_parameter("fsm/thresh_replan_time", 1.0);
-    this->declare_parameter("fsm/thresh_no_replan_meter", 1.0);
-    this->declare_parameter("fsm/replan_trajectory_time", 0.1);
+    this->declare_parameter("fsm/thresh_replan_time", -1.0);
+    this->declare_parameter("fsm/thresh_no_replan_meter", -1.0);
+    this->declare_parameter("fsm/replan_trajectory_time", -1.0);
     this->get_parameter("fsm/thresh_replan_time", replan_thresh_);
     this->get_parameter("fsm/thresh_no_replan_meter", no_replan_thresh_);
     this->get_parameter("fsm/replan_trajectory_time", replan_trajectory_time_);
