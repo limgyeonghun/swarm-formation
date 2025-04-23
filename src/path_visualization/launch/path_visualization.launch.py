@@ -7,21 +7,32 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
 
-    pkg_path_visualization = FindPackageShare('path_visualization')
+    # Reference path_manager package for config files
+    pkg_path_manager = FindPackageShare('path_manager')
 
+    # Path to obstacles.yaml in path_manager
     obstacles_param_file = PathJoinSubstitution([
-        pkg_path_visualization,
+        pkg_path_manager,
         'config',
         'obstacles.yaml'
     ])
 
-    # RViz config (path_visualization/config/rviz_config.rviz)
+    # Path to drones.yaml in path_manager
+    drones_param_file = PathJoinSubstitution([
+        pkg_path_manager,
+        'config',
+        'drones.yaml'
+    ])
+
+    # RViz config (still from path_visualization)
+    pkg_path_visualization = FindPackageShare('path_visualization')
     rviz_config_file = PathJoinSubstitution([
         pkg_path_visualization,
         'config',
         'rviz_config.rviz'
     ])
 
+    # Path visualization node, passing both drones.yaml and obstacles.yaml
     path_visualization = Node(
         package='path_visualization',
         executable='path_visualization_node',
@@ -29,10 +40,12 @@ def generate_launch_description():
         output='screen',
         parameters=[
             {'use_sim_time': use_sim_time},
-            obstacles_param_file
+            obstacles_param_file,
+            drones_param_file
         ]
     )
 
+    # RViz2 node
     rviz2_node = Node(
         package='rviz2',
         executable='rviz2',

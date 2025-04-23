@@ -20,7 +20,7 @@ struct MappingParameters
   Eigen::Vector3d map_min_boundary_, map_max_boundary_;
   Eigen::Vector3i map_voxel_num_;
   double resolution_, resolution_inv_;
-  double obstacles_inflation_ = 0.2;
+  double obstacles_inflation_ = 0.1;
   double virtual_ceil_height_ = -0.1;
 };
 

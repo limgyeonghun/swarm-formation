@@ -61,7 +61,7 @@ private:
         double dist;
     grid_map_->evaluateEDT(pos, dist);
     // std::cout << "Checking pos: " << pos.transpose() << ", dist: " << dist << std::endl; // debug
-    return dist < 0.2; // 0.3m dist
+    return dist < 0.3; // 0.3m dist
     }
 
     std::vector<GridNodePtr> retrievePath(GridNodePtr current);

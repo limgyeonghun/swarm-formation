@@ -11,4 +11,4 @@
     optimization/swarm_clearance: 0.5 
     optimization/formation_type: 1   
     optimization/max_vel: 1.5        
-    optimization/max_acc: 1.5 
+    optimization/max_acc: 8.0 

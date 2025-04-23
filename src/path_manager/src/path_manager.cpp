@@ -53,14 +53,14 @@ namespace path_manager
             }
         }
 
-        // for (const auto &obs : obstacle_centers_)
-        // {
-        //     Eigen::Vector3i idx;
-        //     grid_map_->posToIndex(obs, idx);
-        //     grid_map_->setOccupancy(idx, 1.0);
-        //     grid_map_->inflatePoint(idx, 5);
-        // }
-        // grid_map_->updateESDF3d();
+        for (const auto &obs : obstacle_centers_)
+        {
+            Eigen::Vector3i idx;
+            grid_map_->posToIndex(obs, idx);
+            grid_map_->setOccupancy(idx, 1.0);
+            grid_map_->inflatePoint(idx, 5);
+        }
+        grid_map_->updateESDF3d();
     }
 
     void PathManager::initOptimizer()

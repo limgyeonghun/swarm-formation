@@ -40,10 +40,10 @@ def create_drone_nodes(context, *args, **kwargs):
 
     drones_params = load_yaml_file(drones_param_file_path)
 
-    if '/path_manager' not in drones_params:
-        raise RuntimeError("drones.yaml does not contain '/path_manager' namespace")
+    if '/**' not in drones_params:
+        raise RuntimeError("drones.yaml does not contain '/**' namespace")
 
-    drone_config = drones_params['/path_manager']['ros__parameters']
+    drone_config = drones_params['/**']['ros__parameters']
 
     num_drones = drone_config.get('num_drones', 1)
     if not isinstance(num_drones, int) or num_drones < 1:
@@ -97,7 +97,7 @@ def create_drone_nodes(context, *args, **kwargs):
         condition=IfCondition(visualize)
     )
 
-    return replan_fsm_nodes + [ visualization_launch]
+    return replan_fsm_nodes + [visualization_launch]
 
 def generate_launch_description():
     return LaunchDescription([
@@ -108,7 +108,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'visualize',
-            default_value='false',
+            default_value='true',  # Changed to true for testing
             description='Enable visualization with path_visualization and RViz if true'
         ),
         OpaqueFunction(function=create_drone_nodes)

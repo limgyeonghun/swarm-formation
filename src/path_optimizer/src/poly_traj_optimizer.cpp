@@ -778,7 +778,7 @@ namespace ego_planner
   {
     grid_map_ = map;
     a_star_.reset(new AStar);
-    a_star_->initGridMap(grid_map_, Eigen::Vector3i(800, 200, 40));
+    a_star_->initGridMap(grid_map_, Eigen::Vector3i(800, 200, 10));
   }
 
   void PolyTrajOptimizer::setControlPoints(const Eigen::MatrixXd &points)
