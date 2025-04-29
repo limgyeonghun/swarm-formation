@@ -14,6 +14,7 @@ void GridMap::initMap(const Eigen::Vector3d& map_size, double resolution) {
   int buffer_size = mp_.map_voxel_num_(0) * mp_.map_voxel_num_(1) * mp_.map_voxel_num_(2);
   md_.occupancy_buffer_.resize(buffer_size, 0.0);
   md_.occupancy_buffer_inflate_.resize(buffer_size, 0);
+  md_.occupancy_buffer_neg_.resize(buffer_size, 0);
   md_.distance_buffer_.resize(buffer_size, 10000.0);
   md_.distance_buffer_neg_.resize(buffer_size, 10000.0);
   md_.distance_buffer_all_.resize(buffer_size, 10000.0);
@@ -107,81 +108,148 @@ void GridMap::fillESDF(F_get_val f_get_val, F_set_val f_set_val, int start, int 
   }
 }
 
-void GridMap::updateESDF3d() {
-  Eigen::Vector3i min_esdf(0, 0, 0);
-  Eigen::Vector3i max_esdf = mp_.map_voxel_num_ - Eigen::Vector3i(1, 1, 1);
+void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3i &max_esdf)
+{
+  for (int i = 0; i < 3; ++i)
+  {
+    if (min_esdf[i] < 0 || max_esdf[i] >= mp_.map_voxel_num_[i])
+    {
+      std::cerr << "[GridMap::updateESDF3d] Error: Out of bounds! Dim " << i
+                << ": min=" << min_esdf[i] << ", max=" << max_esdf[i]
+                << ", voxel_num=" << mp_.map_voxel_num_[i] << std::endl;
+      return;
+    }
+  }
 
-  // Positive ESDF
-  for (int x = min_esdf[0]; x <= max_esdf[0]; ++x) {
-    for (int y = min_esdf[1]; y <= max_esdf[1]; ++y) {
+  // int voxel_count = (max_esdf[0] - min_esdf[0] + 1) *
+  //                   (max_esdf[1] - min_esdf[1] + 1) *
+  //                   (max_esdf[2] - min_esdf[2] + 1);
+
+  /* ========== compute positive DT ========== */
+  for (int x = min_esdf[0]; x <= max_esdf[0]; x++)
+  {
+    for (int y = min_esdf[1]; y <= max_esdf[1]; y++)
+    {
       fillESDF(
-          [&](int z) { return md_.occupancy_buffer_inflate_[toAddress(x, y, z)] == 1 ? 0 : std::numeric_limits<double>::max(); },
-          [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
-          min_esdf[2], max_esdf[2], 2);
+          [&](int z)
+          {
+            return md_.occupancy_buffer_inflate_[toAddress(x, y, z)] == 1 ? 0 : std::numeric_limits<double>::max();
+          },
+          [&](int z, double val)
+          { md_.tmp_buffer1_[toAddress(x, y, z)] = val; }, min_esdf[2],
+          max_esdf[2], 2);
     }
   }
-  for (int x = min_esdf[0]; x <= max_esdf[0]; ++x) {
-    for (int z = min_esdf[2]; z <= max_esdf[2]; ++z) {
-      fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
-               [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
-               min_esdf[1], max_esdf[1], 1);
+  for (int x = min_esdf[0]; x <= max_esdf[0]; x++)
+  {
+    for (int z = min_esdf[2]; z <= max_esdf[2]; z++)
+    {
+      fillESDF([&](int y)
+               { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
+               [&](int y, double val)
+               { md_.tmp_buffer2_[toAddress(x, y, z)] = val; }, min_esdf[1],
+               max_esdf[1], 1);
     }
   }
-  for (int y = min_esdf[1]; y <= max_esdf[1]; ++y) {
-    for (int z = min_esdf[2]; z <= max_esdf[2]; ++z) {
-      fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
-               [&](int x, double val) { md_.distance_buffer_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val); },
+
+  for (int y = min_esdf[1]; y <= max_esdf[1]; y++)
+  {
+    for (int z = min_esdf[2]; z <= max_esdf[2]; z++)
+    {
+      fillESDF([&](int x)
+               { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
+               [&](int x, double val)
+               {
+                 md_.distance_buffer_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
+               },
                min_esdf[0], max_esdf[0], 0);
     }
   }
 
-  // Negative ESDF
-  md_.occupancy_buffer_neg_.resize(md_.occupancy_buffer_.size(), 0);
-  for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
-    for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
-      for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
+  /* ========== compute negative DT ========== */
+  for (int x = min_esdf(0); x <= max_esdf(0); ++x)
+    for (int y = min_esdf(1); y <= max_esdf(1); ++y)
+      for (int z = min_esdf(2); z <= max_esdf(2); ++z)
+      {
         int idx = toAddress(x, y, z);
-        md_.occupancy_buffer_neg_[idx] = (md_.occupancy_buffer_inflate_[idx] == 0) ? 1 : 0;
+        if (md_.occupancy_buffer_inflate_[idx] == 0)
+        {
+          md_.occupancy_buffer_neg_[idx] = 1;
+        }
+        else if (md_.occupancy_buffer_inflate_[idx] == 1)
+        {
+          md_.occupancy_buffer_neg_[idx] = 0;
+        }
+        else
+        {
+          std::cerr << "what? " << std::endl;
+        }
       }
+
+  md_.tmp_buffer1_.clear();
+  md_.tmp_buffer2_.clear();
+
+  for (int x = min_esdf[0]; x <= max_esdf[0]; x++)
+  {
+    for (int y = min_esdf[1]; y <= max_esdf[1]; y++)
+    {
+      fillESDF(
+          [&](int z)
+          {
+            return md_.occupancy_buffer_neg_[toAddress(x, y, z)] == 1
+                       ? 0
+                       : std::numeric_limits<double>::max();
+          },
+          [&](int z, double val)
+          { md_.tmp_buffer1_[toAddress(x, y, z)] = val; }, min_esdf[2],
+          max_esdf[2], 2);
     }
   }
 
-  for (int x = min_esdf[0]; x <= max_esdf[0]; ++x) {
-    for (int y = min_esdf[1]; y <= max_esdf[1]; ++y) {
-      fillESDF(
-          [&](int z) { return md_.occupancy_buffer_neg_[toAddress(x, y, z)] == 1 ? 0 : std::numeric_limits<double>::max(); },
-          [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
-          min_esdf[2], max_esdf[2], 2);
+  for (int x = min_esdf[0]; x <= max_esdf[0]; x++)
+  {
+    for (int z = min_esdf[2]; z <= max_esdf[2]; z++)
+    {
+      fillESDF([&](int y)
+               { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
+               [&](int y, double val)
+               { md_.tmp_buffer2_[toAddress(x, y, z)] = val; }, min_esdf[1],
+               max_esdf[1], 1);
     }
   }
-  for (int x = min_esdf[0]; x <= max_esdf[0]; ++x) {
-    for (int z = min_esdf[2]; z <= max_esdf[2]; ++z) {
-      fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
-               [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
-               min_esdf[1], max_esdf[1], 1);
-    }
-  }
-  for (int y = min_esdf[1]; y <= max_esdf[1]; ++y) {
-    for (int z = min_esdf[2]; z <= max_esdf[2]; ++z) {
-      fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
-               [&](int x, double val) { md_.distance_buffer_neg_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val); },
+
+  for (int y = min_esdf[1]; y <= max_esdf[1]; y++)
+  {
+    for (int z = min_esdf[2]; z <= max_esdf[2]; z++)
+    {
+      fillESDF([&](int x)
+               { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
+               [&](int x, double val)
+               {
+                 md_.distance_buffer_neg_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
+               },
                min_esdf[0], max_esdf[0], 0);
     }
   }
 
-  // Combine Positive and Negative
-  for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
-    for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
-      for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
+  /* ========== combine pos and neg DT ========== */
+  for (int x = min_esdf(0); x <= max_esdf(0); ++x)
+    for (int y = min_esdf(1); y <= max_esdf(1); ++y)
+      for (int z = min_esdf(2); z <= max_esdf(2); ++z)
+      {
         int idx = toAddress(x, y, z);
         md_.distance_buffer_all_[idx] = md_.distance_buffer_[idx];
+
         if (md_.distance_buffer_neg_[idx] > 0.0)
           md_.distance_buffer_all_[idx] += (-md_.distance_buffer_neg_[idx] + mp_.resolution_);
       }
-    }
-  }
 
-  std::cout << "ESDF updated for static map" << std::endl;
+  // std::cout << "[GridMap::updateESDF3d] Updated " << voxel_count << " voxels." << std::endl;
+}
+
+void GridMap::updateESDF3d()
+{
+    updateESDF3d(Eigen::Vector3i(0, 0, 0), mp_.map_voxel_num_ - Eigen::Vector3i(1, 1, 1));
 }
 
 void GridMap::getSurroundPts(const Eigen::Vector3d& pos, Eigen::Vector3d pts[2][2][2], Eigen::Vector3d& diff) {

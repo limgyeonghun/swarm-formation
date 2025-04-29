@@ -54,6 +54,7 @@ public:
   void inflatePoint(const Eigen::Vector3i &pt, int step);
 
   void updateESDF3d();
+  void updateESDF3d(const Eigen::Vector3i& min_esdf, const Eigen::Vector3i& max_esdf);
   double getDistance(const Eigen::Vector3d &pos);
   double getDistance(const Eigen::Vector3i &id);
 
@@ -71,9 +72,11 @@ public:
   inline int getOccupancy(const Eigen::Vector3d &pos);
   inline int getOccupancy(const Eigen::Vector3i &id);
   inline int getInflateOccupancy(const Eigen::Vector3d &pos);
-
   inline double getResolution();
+
   Eigen::Vector3i getVoxelNum() const { return mp_.map_voxel_num_; }
+  Eigen::Vector3d getMapMinBoundary() const { return mp_.map_min_boundary_; }
+  Eigen::Vector3d getMapMaxBoundary() const { return mp_.map_max_boundary_; }
 
   void getSurroundPts(const Eigen::Vector3d &pos, Eigen::Vector3d pts[2][2][2], Eigen::Vector3d &diff);
   void getSurroundDistance(Eigen::Vector3d pts[2][2][2], double dists[2][2][2]);

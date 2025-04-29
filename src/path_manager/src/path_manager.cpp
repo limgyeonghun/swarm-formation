@@ -60,8 +60,51 @@ namespace path_manager
             grid_map_->setOccupancy(idx, 1.0);
             grid_map_->inflatePoint(idx, 5);
         }
-        grid_map_->updateESDF3d();
+        // grid_map_->updateESDF3d(); // not used? -> esdf_timer
+
+        esdf_timer_ = node_->create_wall_timer(
+            std::chrono::milliseconds(50),
+            std::bind(&PathManager::updateESDFCallback, this));
+        int occupied_voxels = std::count_if(static_map.begin(), static_map.end(),
+                                            [](double v)
+                                            { return v > 0.5; });
+        std::cout << "Occupied voxels: " << occupied_voxels << " ("
+                  << (occupied_voxels * 100.0 / static_map.size()) << "%)" << std::endl;
     }
+
+    void PathManager::updateRobotState(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& local_target_pt)
+    {
+        current_start_pt_ = start_pt;
+        current_target_pt_ = local_target_pt;
+        has_valid_state_ = true;
+    }
+
+    void PathManager::updateESDFCallback() {
+        // auto t_start = std::chrono::high_resolution_clock::now();
+        if (!has_valid_state_) return;
+      
+        Eigen::Vector3d min_pos = current_start_pt_.cwiseMin(current_target_pt_);
+        Eigen::Vector3d max_pos = current_start_pt_.cwiseMax(current_target_pt_);
+        double margin = planning_horizen_ / 10.0;
+        min_pos -= Eigen::Vector3d(margin * 0.3, margin * 0.3, 0.05);
+        max_pos += Eigen::Vector3d(margin * 0.3, margin * 0.3, 0.05);
+        min_pos = min_pos.cwiseMax(grid_map_->getMapMinBoundary());
+        max_pos = max_pos.cwiseMin(grid_map_->getMapMaxBoundary());
+      
+        Eigen::Vector3i min_idx, max_idx;
+        grid_map_->posToIndex(min_pos, min_idx);
+        grid_map_->posToIndex(max_pos, max_idx);
+        for (int i = 0; i < 3; ++i) {
+          min_idx[i] = std::max(0, min_idx[i]);
+          max_idx[i] = std::min(grid_map_->getVoxelNum()[i] - 1, max_idx[i]);
+        }
+      
+        grid_map_->updateESDF3d(min_idx, max_idx);
+      
+        // auto t_end = std::chrono::high_resolution_clock::now();
+        // double duration = std::chrono::duration_cast<std::chrono::microseconds>(t_end - t_start).count() / 1000.0;
+        // std::cout << "[PathManager::updateESDFCallback] Execution time: " << duration << " ms" << std::endl;
+      }
 
     void PathManager::initOptimizer()
     {
@@ -87,6 +130,8 @@ namespace path_manager
         {
             return false;
         }
+
+        updateRobotState(start_pt, local_target_pt);
 
         double ts = poly_traj_piece_length_ / max_vel_;
         poly_traj::MinJerkOpt initMJO;

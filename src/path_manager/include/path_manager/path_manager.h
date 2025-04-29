@@ -16,7 +16,6 @@ using namespace ego_planner;
 
 namespace path_manager
 {
-
   class PathManager
   {
   public:
@@ -35,12 +34,12 @@ namespace path_manager
                         const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
 
     void deliverTrajToOptimizer(void) { poly_traj_opt_->setSwarmTrajs(&traj_.swarm_traj); };
-
     void setDroneIdtoOpt(void) { poly_traj_opt_->setDroneId(0); }
-
     double getSwarmClearance(void) { return poly_traj_opt_->getSwarmClearance(); }
 
     TrajContainer traj_;
+    
+    void updateRobotState(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& local_target_pt);
 
   private:
     bool computeInitReferenceState(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel,
@@ -48,8 +47,9 @@ namespace path_manager
                                    const Eigen::Vector3d &local_target_vel, const double &ts,
                                    poly_traj::MinJerkOpt &initMJO, const bool flag_polyInit);
 
-    std::shared_ptr<rclcpp::Node> node_;
+    void updateESDFCallback();
 
+    std::shared_ptr<rclcpp::Node> node_;
     GridMap::Ptr grid_map_;
     AStar astar_;
     std::vector<Eigen::Vector3d> simple_path_;
@@ -62,6 +62,9 @@ namespace path_manager
     ego_planner::PolyTrajOptimizer::Ptr poly_traj_opt_;
     bool is_optimizer_initialized_;
     bool first_call_;
+    rclcpp::TimerBase::SharedPtr esdf_timer_;
+    Eigen::Vector3d current_start_pt_, current_target_pt_;
+    bool has_valid_state_;
   };
 
 } // namespace path_manager
