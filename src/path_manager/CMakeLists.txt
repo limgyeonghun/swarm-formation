@@ -13,6 +13,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(px4_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(path_optimizer REQUIRED)
 find_package(path_planner REQUIRED)
@@ -32,6 +34,8 @@ add_library(${PROJECT_NAME}_lib
 ament_target_dependencies(${PROJECT_NAME}_lib
   rclcpp
   std_msgs
+  px4_msgs
+  nav_msgs
   Eigen3
   path_optimizer
   path_planner
@@ -55,6 +59,8 @@ target_link_libraries(${PROJECT_NAME}_node
 ament_target_dependencies(${PROJECT_NAME}_node
   rclcpp
   std_msgs
+  px4_msgs
+  nav_msgs
   path_optimizer
   path_planner
   geometry_msgs
@@ -88,6 +94,6 @@ install(DIRECTORY config launch
 )
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp std_msgs Eigen3 path_optimizer geometry_msgs path_planner rosidl_default_generators)
+ament_export_dependencies(rclcpp std_msgs px4_msgs nav_msgs Eigen3 path_optimizer geometry_msgs path_planner rosidl_default_generators)
 
 ament_package()

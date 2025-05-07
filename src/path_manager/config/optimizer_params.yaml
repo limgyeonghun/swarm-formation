@@ -9,16 +9,16 @@
     optimization/weight_formation: 15000.0    
     optimization/obstacle_clearance: 0.8 
     optimization/swarm_clearance: 0.5 
-    optimization/formation_type: 1
+    optimization/formation_type: 2
     optimization/max_vel: 1.0
-    optimization/max_acc: 8.0
+    optimization/max_acc: 6.0
 
     manager/max_vel: 1.5
-    manager/max_acc: 8.0
+    manager/max_acc: 6.0
     manager/polyTraj_piece_length: 2.0
     manager/planning_horizon: 7.5
     
-    fsm/thresh_replan_time: 1.0
+    fsm/thresh_replan_time: 0.5
     fsm/thresh_no_replan_meter: 1.0
     fsm/replan_trajectory_time: 0.1
     

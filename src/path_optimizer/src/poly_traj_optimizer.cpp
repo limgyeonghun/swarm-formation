@@ -4,43 +4,43 @@
 
 namespace ego_planner
 {
-  // void PolyTrajOptimizer::initLogFile(const std::string &path)
-  // {
-  //   log_file_path_ = path;
-  //   log_file_.open(log_file_path_, std::ios::out | std::ios::app);
-  //   if (!log_file_.is_open())
-  //   {
-  //     std::cerr << "Failed to open log file: " << log_file_path_ << std::endl;
-  //   }
-  //   else
-  //   {
-  //     auto t = std::time(nullptr);
-  //     auto tm = *std::localtime(&t);
-  //     log_file_ << "=== Log started at " << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << " ===\n";
-  //   }
-  // }
+  void PolyTrajOptimizer::initLogFile(const std::string &path)
+  {
+    log_file_path_ = path;
+    log_file_.open(log_file_path_, std::ios::out | std::ios::app);
+    if (!log_file_.is_open())
+    {
+      std::cerr << "Failed to open log file: " << log_file_path_ << std::endl;
+    }
+    else
+    {
+      auto t = std::time(nullptr);
+      auto tm = *std::localtime(&t);
+      log_file_ << "=== Log started at " << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << " ===\n";
+    }
+  }
 
-  // void PolyTrajOptimizer::closeLogFile()
-  // {
-  //   if (log_file_.is_open())
-  //   {
-  //     auto t = std::time(nullptr);
-  //     auto tm = *std::localtime(&t);
-  //     log_file_ << "=== Log ended at " << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << " ===\n";
-  //     log_file_.close();
-  //   }
-  // }
+  void PolyTrajOptimizer::closeLogFile()
+  {
+    if (log_file_.is_open())
+    {
+      auto t = std::time(nullptr);
+      auto tm = *std::localtime(&t);
+      log_file_ << "=== Log ended at " << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << " ===\n";
+      log_file_.close();
+    }
+  }
 
-  // void PolyTrajOptimizer::logToFile(const std::string &message, const std::string &level)
-  // {
-  //   if (log_file_.is_open())
-  //   {
-  //     auto t = std::time(nullptr);
-  //     auto tm = *std::localtime(&t);
-  //     log_file_ << "[" << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << "] [" << level << "] " << message << "\n";
-  //     log_file_.flush();
-  //   }
-  // }
+  void PolyTrajOptimizer::logToFile(const std::string &message, const std::string &level)
+  {
+    if (log_file_.is_open())
+    {
+      auto t = std::time(nullptr);
+      auto tm = *std::localtime(&t);
+      log_file_ << "[" << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << "] [" << level << "] " << message << "\n";
+      log_file_.flush();
+    }
+  }
 
   bool PolyTrajOptimizer::OptimizeTrajectory_lbfgs(
       const Eigen::MatrixXd &iniState, const Eigen::MatrixXd &finState,
@@ -125,6 +125,28 @@ namespace ego_planner
     //                          ", Final cost: " + std::to_string(final_cost);
     // RCLCPP_INFO(node_->get_logger(), "%s", msg_result.c_str());
     // logToFile(msg_result);
+
+    if (drone_id_ == 2) {
+      RCLCPP_INFO(node_->get_logger(), "similarity_error : %f", debug_similarity_);
+    
+      // 현재 시간 얻기
+      auto now = std::chrono::system_clock::now();
+      std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+      std::tm now_tm = *std::localtime(&now_time);
+    
+      std::stringstream ss;
+      ss << std::fixed << std::setprecision(6);
+
+      // 시간 정보 앞에 붙이기
+      ss << "[seq=" << seq_ << "] "
+         << "[" << std::put_time(&now_tm, "%Y-%m-%d %H:%M:%S") << "] "
+         << "[drone_id=" << drone_id_ << "] "
+         << "SwarmGraphGradCostP similarity_error=" << debug_similarity_;
+
+         seq_++;
+
+      logToFile(ss.str(), "INFO");
+    }
 
     optimal_points = cps_.points;
 
@@ -459,13 +481,6 @@ namespace ego_planner
     double similarity_error;
     swarm_graph_->calcFNorm2(similarity_error);
 
-    // RCLCPP_INFO(node_->get_logger(), "similarity_error : %f", similarity_error);
-    // std::stringstream ss;
-    // ss << std::fixed << std::setprecision(6);
-    // ss << "[drone_id=" << drone_id_ << "] "
-    //    << "SwarmGraphGradCostP similarity_error=" << similarity_error;
-    // logToFile(ss.str(), "INFO");
-
     if (similarity_error > 0)
     {
       ret = true;
@@ -482,6 +497,8 @@ namespace ego_planner
           grad_prev_t += wei_formation_ * swarm_grad[id].dot(swarm_graph_vel[id]);
       }
     }
+
+    debug_similarity_ = similarity_error;
     return ret;
   }
 
@@ -765,10 +782,10 @@ namespace ego_planner
     node_->declare_parameter("optimization/max_acc", 1.0);
     node_->get_parameter("optimization/max_acc", max_acc_);
 
-    // std::string log_file_path;
-    // node_->declare_parameter("optimization/log_file_path", "/home/lim/workspace/ros_ws/log/optimizer.log");
-    // node_->get_parameter("optimization/log_file_path", log_file_path);
-    // initLogFile(log_file_path);
+    std::string log_file_path;
+    node_->declare_parameter("optimization/log_file_path", "/home/lim/workspace/ros_ws/log/optimizer.log");
+    node_->get_parameter("optimization/log_file_path", log_file_path);
+    initLogFile(log_file_path);
 
     swarm_graph_.reset(new SwarmGraph);
     setDesiredFormation(formation_type_);

@@ -18,7 +18,8 @@ ReplanFSM::ReplanFSM()
       no_replan_thresh_(-1.0),
       replan_trajectory_time_(-1.0),
       current_time_(0.0),
-      last_start_time_(0.0) {
+      last_start_time_(0.0),
+      n_seconds_ahead_(0.3) {
 
     this->declare_parameter("drone_id", 0);
     this->get_parameter("drone_id", drone_id_);
@@ -53,17 +54,24 @@ ReplanFSM::ReplanFSM()
     rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
     auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 20), qos_profile);
 
+    std::string position_topic = "/drone_" + std::to_string(drone_id_) + "/current_position";
+    std::string px4_position_topic = "/vehicle" + std::to_string(drone_id_+1) + "/fmu/out/vehicle_local_position";
+    std::string odom_topic = "/vehicle" + std::to_string(drone_id_+1) + "/target_position";
+
     optimized_path_pub_ = this->create_publisher<path_manager::msg::PolyTraj>("planning/trajectory", sensor_qos);
     global_path_pub_ = this->create_publisher<path_manager::msg::PolyTraj>("planning/global", sensor_qos);
     broadcast_traj_pub_ = this->create_publisher<path_manager::msg::PolyTraj>("planning/broadcast_traj_recv", sensor_qos);
+    odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(odom_topic, sensor_qos);
 
-    std::string position_topic = "/drone_" + std::to_string(drone_id_) + "/current_position";
     position_sub_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
         position_topic, sensor_qos, std::bind(&ReplanFSM::positionCallback, this, std::placeholders::_1));
+    px4_position_sub_ = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
+        px4_position_topic, sensor_qos, std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1));
     broadcast_traj_sub_ = this->create_subscription<path_manager::msg::PolyTraj>(
         "planning/broadcast_traj_recv", sensor_qos,
         std::bind(&ReplanFSM::recvBroadcastPolyTrajCallback, this, std::placeholders::_1));
 
+    odom_timer_ = this->create_wall_timer(10ms, std::bind(&ReplanFSM::publishOdometry, this));
     timer_ = this->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this));
 }
 
@@ -100,6 +108,44 @@ void ReplanFSM::init()
     // path_manager::msg::PolyTraj msg;
     // globalTraj2ROSMsg(msg);
     // global_path_pub_->publish(msg);
+}
+
+void ReplanFSM::publishOdometry() {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (exec_state_ != FSM_EXEC_STATE::EXEC_TRAJ || !have_local_traj_) {
+        return;
+    }
+
+    auto local_traj = &path_manager_->traj_.local_traj;
+    double t_cur = this->now().seconds() - local_traj->start_time;
+    t_cur = std::min(local_traj->duration, t_cur);
+    
+    double t_ahead = std::min(t_cur + n_seconds_ahead_, local_traj->duration);
+    Eigen::Vector3d pos = local_traj->traj.getPos(t_ahead);
+    Eigen::Vector3d vel = local_traj->traj.getVel(t_ahead);
+
+    // RCLCPP_INFO(this->get_logger(), "[vehicle %d] t_cur: %f ",drone_id_ + 1, t_cur);
+
+    nav_msgs::msg::Odometry msg{};
+    msg.header.stamp = this->now();
+    msg.header.frame_id = "odom";
+    msg.child_frame_id = "base_link";
+
+    // position
+    msg.pose.pose.position.x = pos(0);
+    msg.pose.pose.position.y = pos(1);
+    msg.pose.pose.position.z = pos(2);
+
+    // velocity
+    msg.twist.twist.linear.x = vel(0);
+    msg.twist.twist.linear.y = vel(1);
+    msg.twist.twist.linear.z = vel(2);
+
+    odom_pub_->publish(msg);
+
+    // RCLCPP_INFO(this->get_logger(), "[vehicle %d] Published Odometry: pos=(%.2f, %.2f, %.2f), vel=(%.2f, %.2f, %.2f)",
+    //             drone_id_ + 1, pos(0), pos(1), pos(2), vel(0), vel(1), vel(2));
 }
 
 void ReplanFSM::computeAndPublishPaths() {
@@ -176,24 +222,33 @@ void ReplanFSM::computeAndPublishPaths() {
             break;
         }
 
-        case EXEC_TRAJ: {
+        case EXEC_TRAJ:
+        {
             auto local_traj = &path_manager_->traj_.local_traj;
             double t_cur = current_time_ - local_traj->start_time;
             t_cur = std::min(local_traj->duration, t_cur);
 
             Eigen::Vector3d pos = local_traj->traj.getPos(t_cur);
 
-            if ((local_target_pt_ - end_pt_).norm() < 0.1) {
-                if (t_cur > local_traj->duration - 0.2) {
+            if ((local_target_pt_ - end_pt_).norm() < 0.1)
+            {
+
+                if (t_cur > local_traj->duration - 0.2)
+                {
                     have_target_ = false;
                     have_local_traj_ = false;
                     changeFSMExecState(WAIT_POSITION, "FSM");
                     RCLCPP_INFO(this->get_logger(), "[drone %d reached goal]", drone_id_);
                     return;
-                } else if ((end_pt_ - pos).norm() > no_replan_thresh_ && t_cur > replan_thresh_) {
+                }
+                else if ((end_pt_ - pos).norm() > no_replan_thresh_ && t_cur > replan_thresh_)
+                {
+                    RCLCPP_ERROR(this->get_logger(), "No Replan Thresh");
                     changeFSMExecState(REPLAN_TRAJ, "FSM");
                 }
-            } else if (t_cur > replan_thresh_) {
+            }
+            else if (t_cur > replan_thresh_)
+            {
                 changeFSMExecState(REPLAN_TRAJ, "FSM");
             }
             break;
@@ -209,6 +264,13 @@ void ReplanFSM::computeAndPublishPaths() {
 void ReplanFSM::positionCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg) {
     current_pos_ = Eigen::Vector3d(msg->point.x, msg->point.y, msg->point.z);
     // RCLCPP_ERROR(this->get_logger(), "Current position: %.2f, %.2f, %.2f", current_pos_(0), current_pos_(1), current_pos_(2));
+    current_time_ = this->now().seconds();
+    have_position_ = true;
+}
+
+void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
+    current_pos_ = Eigen::Vector3d(msg->x, msg->y + (1.5 * drone_id_), 2.5);
+    // RCLCPP_ERROR(this->get_logger(), "PX4 Current position: %.2f, %.2f, %.2f", current_pos_(0), current_pos_(1), current_pos_(2));
     current_time_ = this->now().seconds();
     have_position_ = true;
 }
@@ -348,7 +410,6 @@ void ReplanFSM::globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
     }
 }
 
-
 bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTraj, bool use_formation) {
 
     path_manager_->getLocalTarget(start_pt_, end_pt_, local_target_pt_, local_target_vel_, t_to_target_);
@@ -367,6 +428,20 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
         desired_start_vel = Eigen::Vector3d(1.0, 0.0, 0.0);
         desired_start_acc = Eigen::Vector3d::Zero();
     }
+
+    // if (have_local_traj_ && use_formation) {
+    //     desired_start_time = this->now().seconds() + replan_trajectory_time_;
+    //     double t_adj = desired_start_time - path_manager_->traj_.local_traj.start_time;
+    //     double t_ahead = std::min(t_adj + n_seconds_ahead_, path_manager_->traj_.local_traj.duration);
+        
+    //     desired_start_pt = path_manager_->traj_.local_traj.traj.getPos(t_adj);
+    //     desired_start_vel = path_manager_->traj_.local_traj.traj.getVel(t_adj);
+    //     desired_start_acc = path_manager_->traj_.local_traj.traj.getAcc(t_adj);
+    // } else {
+    //     desired_start_pt = start_pt_;
+    //     desired_start_vel = Eigen::Vector3d(1.0, 0.0, 0.0);
+    //     desired_start_acc = Eigen::Vector3d::Zero();
+    // }
 
     // RCLCPP_ERROR(this->get_logger(), "desired_start_pt: %.2f, %.2f, %.2f", desired_start_pt(0), desired_start_pt(1), desired_start_pt(2));
 
@@ -413,9 +488,14 @@ bool ReplanFSM::planFromLocalTraj(bool flag_use_poly_init, bool use_formation) {
     LocalTrajData *info = &path_manager_->traj_.local_traj;
     double t_cur = this->now().seconds() - path_manager_->traj_.local_traj.start_time;
 
+    // start_pt_ = current_pos_;
+    // RCLCPP_ERROR(this->get_logger(), "start_pt_: %.2f, %.2f, %.2f", start_pt_(0), start_pt_(1), start_pt_(2));
     start_pt_ = info->traj.getPos(t_cur);
     start_vel_ = info->traj.getVel(t_cur);
     start_acc_ = info->traj.getAcc(t_cur);
+
+    double t_ahead = std::min(t_cur + n_seconds_ahead_, info->duration);
+    Eigen::Vector3d desired_start_pt = info->traj.getPos(t_cur);
 
     bool success = callPathManager(flag_use_poly_init, false, use_formation);
     return success;
@@ -430,7 +510,7 @@ void ReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_cal
 
     static std::string state_str[7] = {"INIT", "WAIT_POSITION", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START"};
 
-    //RCLCPP_INFO(this->get_logger(), "[%s]: from %s to %s", pos_call.c_str(), state_str[static_cast<int>(exec_state_)].c_str(), state_str[static_cast<int>(new_state)].c_str());
+    RCLCPP_INFO(this->get_logger(), "[%s]: from %s to %s", pos_call.c_str(), state_str[static_cast<int>(exec_state_)].c_str(), state_str[static_cast<int>(new_state)].c_str());
     exec_state_ = new_state;
 }
 

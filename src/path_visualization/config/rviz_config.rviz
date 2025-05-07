@@ -103,6 +103,23 @@ Visualization Manager:
         Color: 0;0;255  # drone_1: 초록
         History Length: 1000
 
+      - Class: rviz_default_plugins/Marker  # (/position_markers_drone_3)
+        Enabled: true
+        Name: position_markers_drone_3
+        Topic:
+          Value: /position_markers_drone_3
+          Depth: 20
+          History Policy: Keep Last
+          Reliability Policy: Best Effort
+          Durability Policy: Volatile
+        Value: true
+        Alpha: 0.8
+        Scale X: 0.1
+        Scale Y: 0.1
+        Scale Z: 0.1
+        Color: 50;50;50  # drone_1: 초록
+        History Length: 1000
+
       - Class: rviz_default_plugins/Grid
         Enabled: true
         Name: Grid

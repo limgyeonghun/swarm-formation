@@ -41,15 +41,15 @@ namespace path_manager
         if (obstacle_params.empty() || obstacle_params.size() % 3 != 0)
         {
             obstacle_centers_ = {
-                Eigen::Vector3d(-2.0, -2.25, 0.5),
-                Eigen::Vector3d(1.0, 0.0, 0.5),
-                Eigen::Vector3d(0.0, 1.0, 0.5)};
+                Eigen::Vector3d(-2.0, -2.25, 2.5),
+                Eigen::Vector3d(1.0, 0.0, 2.5),
+                Eigen::Vector3d(0.0, 1.0, 2.5)};
         }
         else
         {
             for (size_t i = 0; i < obstacle_params.size(); i += 3)
             {
-                obstacle_centers_.emplace_back(obstacle_params[i], obstacle_params[i + 1], 0.5);
+                obstacle_centers_.emplace_back(obstacle_params[i], obstacle_params[i + 1], 2.0);
             }
         }
 

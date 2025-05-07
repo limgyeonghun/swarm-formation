@@ -3,7 +3,10 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
+#include <px4_msgs/msg/vehicle_local_position.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 #include <Eigen/Dense>
+#include <mutex>
 #include "path_manager/msg/poly_traj.hpp"
 #include "path_manager/path_manager.h"
 #include "path_optimizer/plan_container.hpp"
@@ -26,8 +29,10 @@ public:
     ~ReplanFSM() = default;
     
     void init();
+    void publishOdometry();
     void computeAndPublishPaths();
     void positionCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg);
+    void PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
     void recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg);
     void polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     void globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
@@ -43,9 +48,12 @@ private:
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr optimized_path_pub_;
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr global_path_pub_;
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr broadcast_traj_pub_;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
     rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr position_sub_;
     rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr broadcast_traj_sub_;
+    rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr px4_position_sub_;
     rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::TimerBase::SharedPtr odom_timer_;
 
     FSM_EXEC_STATE exec_state_;
     int continously_called_times_;
@@ -67,6 +75,8 @@ private:
     double t_to_target_;
     double current_time_;
     double last_start_time_;
+    double n_seconds_ahead_;
+    std::mutex mutex_;
 };
 
 }  // namespace path_manager

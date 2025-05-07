@@ -186,6 +186,9 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
   float r = (drone_id == 0) ? 1.0 : (drone_id == 1) ? 0.0 : 0.0;
   float g = (drone_id == 0) ? 0.0 : (drone_id == 1) ? 1.0 : 0.0;
   float b = (drone_id == 0) ? 0.0 : (drone_id == 1) ? 0.0 : 1.0;
+  if(drone_id == 3) {
+    r = 0.5; g = 0.5; b = 0.5;
+  }
   publishPath(optimized_path, drone_id, r, g, b, 0.5, optimized_traj_pub_);
   publishObstacles();
 
@@ -297,6 +300,9 @@ void PathVisualization::updatePosition()
     float r = (drone_id == 0) ? 1.0 : (drone_id == 1) ? 0.0 : 0.0;
     float g = (drone_id == 0) ? 0.0 : (drone_id == 1) ? 1.0 : 0.0;
     float b = (drone_id == 0) ? 0.0 : (drone_id == 1) ? 0.0 : 1.0;
+    if(drone_id == 3) {
+      r = 0.5; g = 0.5; b = 0.5;
+    }
     auto marker = createMarker("position_drone_" + std::to_string(drone_id), 0,
                               visualization_msgs::msg::Marker::POINTS, 0.3, r, g, b, 1.0);
     geometry_msgs::msg::Point p;

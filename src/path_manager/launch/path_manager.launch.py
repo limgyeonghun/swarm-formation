@@ -17,6 +17,7 @@ def create_drone_nodes(context, *args, **kwargs):
     visualize = LaunchConfiguration('visualize')
 
     pkg_path_manager = FindPackageShare('path_manager')
+    pkg_rover_control = FindPackageShare('rover_control')
 
     obstacles_param_file = PathJoinSubstitution([
         pkg_path_manager,
@@ -52,6 +53,7 @@ def create_drone_nodes(context, *args, **kwargs):
     print(f"Launching {num_drones} drones from drones.yaml")
 
     replan_fsm_nodes = []
+    rover_control_nodes = []
     for i in range(num_drones):
         drone_key = f'drone_{i}'
         if drone_key not in drone_config:
@@ -72,7 +74,7 @@ def create_drone_nodes(context, *args, **kwargs):
 
         print(f"Creating drone {drone_params['drone_id']}: start=({params['start_point_x']}, {params['start_point_y']}, {params['start_point_z']}), end=({params['end_point_x']}, {params['end_point_y']}, {params['end_point_z']})")
 
-        node = Node(
+        replan_fsm_node = Node(
             package='path_manager',
             executable='path_manager_node',
             name=f'replan_fsm_drone_{i}',
@@ -84,7 +86,19 @@ def create_drone_nodes(context, *args, **kwargs):
                 drones_param_file
             ],
         )
-        replan_fsm_nodes.append(node)
+        replan_fsm_nodes.append(replan_fsm_node)
+
+        rover_control_node = Node(
+            package='rover_control',
+            executable='rover_control_node',
+            name=f'RoverControl_drone_{i}',
+            output='screen',
+            parameters=[
+                {'rover_id': drone_params['drone_id']},
+                {'use_sim_time': use_sim_time}
+            ]
+        )
+        rover_control_nodes.append(rover_control_node)
 
     visualization_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -97,7 +111,7 @@ def create_drone_nodes(context, *args, **kwargs):
         condition=IfCondition(visualize)
     )
 
-    return replan_fsm_nodes + [visualization_launch]
+    return replan_fsm_nodes + rover_control_nodes + [visualization_launch]
 
 def generate_launch_description():
     return LaunchDescription([
@@ -108,7 +122,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'visualize',
-            default_value='true',  # Changed to true for testing
+            default_value='false',
             description='Enable visualization with path_visualization and RViz if true'
         ),
         OpaqueFunction(function=create_drone_nodes)

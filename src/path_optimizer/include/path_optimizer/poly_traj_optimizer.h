@@ -40,8 +40,8 @@ namespace ego_planner
     SwarmTrajData *swarm_trajs_{nullptr};
     ConstrainPoints cps_;
     SwarmGraph::Ptr swarm_graph_;
-    // std::ofstream log_file_;
-    // std::string log_file_path_;
+    std::ofstream log_file_;
+    std::string log_file_path_;
 
     int drone_id_;
     int cps_num_prePiece_;
@@ -65,7 +65,8 @@ namespace ego_planner
     enum FORMATION_TYPE
     {
       NONE_FORMATION = 0,
-      REGULAR_HEXAGON = 1
+      REGULAR_HEXAGON = 1,
+      REGULAR_SQUARE = 2
     };
 
     double wei_obs_;
@@ -83,6 +84,8 @@ namespace ego_planner
     int formation_size_;
     bool use_formation_ = true;
     bool is_other_assigning_ = false;
+    uint64_t seq_ = 0;
+    double debug_similarity_ = 0.0;
 
     double t_now_;
 
@@ -90,12 +93,12 @@ namespace ego_planner
 
   public:
     PolyTrajOptimizer() {}
-    ~PolyTrajOptimizer() { }
-    // ~PolyTrajOptimizer() { closeLogFile(); }
+    // ~PolyTrajOptimizer() { }
+    ~PolyTrajOptimizer() { closeLogFile(); }
 
     void setParam(const rclcpp::Node::SharedPtr &node);
-    // void initLogFile(const std::string &path);
-    // void closeLogFile();
+    void initLogFile(const std::string &path);
+    void closeLogFile();
     void setEnvironment(const GridMap::Ptr &map);
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
@@ -182,7 +185,7 @@ namespace ego_planner
 
     bool getFormationPos(std::vector<Eigen::Vector3d> &swarm_graph_pos, Eigen::Vector3d pos);
 
-    // void logToFile(const std::string &message, const std::string &level = "INFO");
+    void logToFile(const std::string &message, const std::string &level = "INFO");
 
     void setDesiredFormation(int type)
     {
@@ -216,6 +219,24 @@ namespace ego_planner
         formation_size_ = swarm_des.size();
         swarm_graph_->setDesiredForm(swarm_des);
         RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "Triangle formation set: size=%zu", swarm_des.size());
+        break;
+      }
+
+      case FORMATION_TYPE::REGULAR_SQUARE:
+      {
+        Eigen::Vector3d v0(0, 0, 0);
+        Eigen::Vector3d v1(1.0, 0, 0);
+        Eigen::Vector3d v2(1.0, 1.0, 0);
+        Eigen::Vector3d v3(0.0, 1.0, 0);
+
+        swarm_des.push_back(v0);
+        swarm_des.push_back(v1);
+        swarm_des.push_back(v2);
+        swarm_des.push_back(v3);
+
+        formation_size_ = swarm_des.size();
+        swarm_graph_->setDesiredForm(swarm_des);
+        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "CUSTOM formation set: size=%zu", swarm_des.size());
         break;
       }
 
