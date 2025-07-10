@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <chrono>
 
+using namespace Eigen;
+
 AStar::~AStar()
 {
     for (int i = 0; i < POOL_SIZE_(0); i++)
@@ -129,7 +131,7 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(const Eigen::Vector3d start_pt
 
 bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check)
 {
-    auto time_1 = std::chrono::steady_clock::now();
+    rclcpp::Time time_1 = rclcpp::Clock().now();
     ++rounds_;
     
     step_size_ = step_size;
@@ -171,9 +173,9 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
 
         if (current->index == endPtr->index)
         {
-            auto time_2 = std::chrono::steady_clock::now();
-            std::chrono::duration<double> elapsed = time_2 - time_1;
-            std::cout << "A* iter:" << num_iter << ", time:" << elapsed.count()*1000 << " ms" << std::endl;
+            rclcpp::Time time_2 = rclcpp::Clock().now();
+            rclcpp::Duration elapsed = time_2 - time_1;
+            std::cout << "A* iter:" << num_iter << ", time:" << elapsed.seconds() * 1000 << " ms" << std::endl;
             gridPath_ = retrievePath(current);
             return true;
         }
@@ -234,19 +236,20 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
                         neighborPtr->fScore = tentative_gScore + getHeu(neighborPtr, endPtr);
                     }
                 }
-        auto time_2 = std::chrono::steady_clock::now();
-        std::chrono::duration<double> elapsed = time_2 - time_1;
-        if (elapsed.count() > 0.2)
+        rclcpp::Time time_2 = rclcpp::Clock().now();
+        rclcpp::Duration elapsed = time_2 - time_1;
+        // std::cout << "A* iter:" << num_iter << ", time:" << elapsed.seconds() * 1000 << " ms" << std::endl;
+        if (elapsed.seconds() > 0.2)
         {
             std::cerr << "Failed in A* path searching !!! 0.2 seconds time limit exceeded." << std::endl;
             return false;
         }
     }
 
-    auto time_2 = std::chrono::steady_clock::now();
-    std::chrono::duration<double> elapsed_total = time_2 - time_1;
-    if (elapsed_total.count() > 0.1)
-        std::cerr << "Time consumed in A* path finding is " << elapsed_total.count() << " s, iter=" << num_iter << std::endl;
+    rclcpp::Time time_2 = rclcpp::Clock().now();
+    rclcpp::Duration elapsed_total = time_2 - time_1;
+    if (elapsed_total.seconds() > 0.1)
+        std::cerr << "Time consumed in A* path finding is " << elapsed_total.seconds() << " s, iter=" << num_iter << std::endl;
     return false;
 }
 
@@ -259,93 +262,132 @@ std::vector<Eigen::Vector3d> AStar::getPath()
     return path;
 }
 
-std::vector<Eigen::Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt)
-{
-    AstarSearch(step_size, start_pt, end_pt, true);
-    std::vector<Eigen::Vector3d> path = getPath();
-    // bool is_show_debug = false;
+vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vector3d start_pt, Vector3d end_pt){
+    // call astar search and get the path
+    AstarSearch(step_size, start_pt, end_pt, false);
+    vector<Vector3d> path = getPath();
+    bool is_show_debug = false;
 
-    if ((path[0] - start_pt).norm() > 0.5) {
+    // I don't know why, but only try A* again
+    if ((path[0]-start_pt).norm() > 0.5){
         std::cerr << "I don't know why, but only try A* again" << std::endl;
         AstarSearch(step_size, start_pt, end_pt, false);
         path = getPath();
     }
     
-    std::vector<Eigen::Vector3d> simple_path;
+    // generate the simple path
+    vector<Vector3d> simple_path;
     int size = path.size();
-    if (size <= 2) {
-        std::cerr << "The path only has two points" << std::endl;
+    if (size <= 2){
+        std::cerr << "the path only have two points" << std::endl;
         return path;
     }
         
-    int end_idx = 1;
-    Eigen::Vector3d cut_start = path[0];
+    int end_idx   = 1;
+    Vector3d cut_start = path[0];
     simple_path.push_back(cut_start);
     
     bool finish = false;
     while (!finish) {
-        for (int i = end_idx; i < size; i++) {
+        for (int i = end_idx; i < size; i++){
             bool is_safe = true;
-            Eigen::Vector3d check_pt = path[i];
-            int check_num = std::ceil((check_pt - cut_start).norm() / 0.01);
-            for (int j = 0; j <= check_num; j++) {
-                double alpha = (1.0 / check_num) * j;
-                Eigen::Vector3d check_safe_pt = (1 - alpha) * cut_start + alpha * check_pt;
-                if (checkOccupancy_esdf(check_safe_pt)) {
+            Vector3d check_pt = path[i];
+            int check_num = ceil((check_pt - cut_start).norm() / 0.01);
+            // check collision
+            for (int j=0; j<=check_num; j++){
+                double alpha = double(1.0 / check_num) * j;
+                Vector3d check_safe_pt = (1 - alpha) * cut_start + alpha * check_pt;
+                if (checkOccupancy_esdf(check_safe_pt)){
                     is_safe = false;
                     break;
                 }
             }
             
-            if (is_safe && i == (size - 1)) {
+            if (is_safe && i == (size -1)){
                 finish = true;
                 simple_path.push_back(check_pt);
             }
-            if (is_safe) {
+
+            if (is_safe){
                 continue;
-            } else {
+            }
+            else{
                 end_idx = i;
-                cut_start = path[end_idx - 1];
+                cut_start = path[end_idx-1];
                 simple_path.push_back(cut_start);
             }
         }
     }
 
+    // debug
+    if (is_show_debug){
+        cout << "[simple A* path] : --------- " << endl;
+        int n1 = simple_path.size();
+        cout << "simple A* path size : " << n1 << endl;
+        for (int i=0; i<n1; i++)
+            cout << simple_path[i].transpose() << endl;
+    }
+    
+
+    // check the near points and delete it
     bool near_flag;
     do
     {
         near_flag = false;
-        if (simple_path.size() <= 2)
+        if (simple_path.size() <=2){
+            near_flag = false;
             break;
+        }
+
         int num_same_check = simple_path.size();
-        for (int i = 0; i < num_same_check - 1; i++) {
-            double len = (simple_path[i + 1] - simple_path[i]).norm();
-            if (len < 0.3) {
-                simple_path.erase(simple_path.begin() + i + 1);
+        for (int i=0; i<num_same_check-1; i++){
+            double len = (simple_path[i+1] - simple_path[i]).norm();
+            if (len < 0.3){
+                simple_path.erase(simple_path.begin()+i+1);
                 near_flag = true;
                 break;
             }
         }
+        
     } while (near_flag);
 
+    // debug
+    if (is_show_debug){
+        cout << "[delete simple path] : --------- " << endl;
+        int n2 = simple_path.size();
+        cout << "delete simple path size : " << n2 << endl;
+        for (int i=0; i<n2; i++)
+            cout << simple_path[i].transpose() << endl;
+    }
+    
+    // check the path and add a point if two of them are too far away
     bool too_long_flag;
     const double length_threshold = 3;
     int debug_num = 0;
     do
     {
-        debug_num++;
+        debug_num ++;
         too_long_flag = false;
         int num = simple_path.size();
-        for (int i = 0; i < num - 1; i++) {
-            double leng = (simple_path[i + 1] - simple_path[i]).norm();
-            if (leng > length_threshold) {
-                Eigen::Vector3d insert_point = (simple_path[i + 1] + simple_path[i]) / 2;
-                simple_path.insert(simple_path.begin() + i + 1, insert_point);
+        for (int i=0; i<num-1; i++){
+            double leng = (simple_path[i+1] - simple_path[i]).norm();
+            if (leng > length_threshold){
+                Vector3d insert_point = (simple_path[i+1] + simple_path[i]) / 2;
+                simple_path.insert(simple_path.begin()+i+1 ,insert_point);
                 too_long_flag = true;
                 break;
             }
         }
     } while (too_long_flag && debug_num < 10);
 
-    return simple_path;
+    // debug
+    if (is_show_debug){
+        cout << "[final simple path] : --------- " << endl;
+        int n3 = simple_path.size();
+        cout << "final simple path size : " << n3 << endl;
+        for (int i=0; i<n3; i++)
+            cout << simple_path[i].transpose() << endl;
+    }
+    
+    return simple_path;    
 }

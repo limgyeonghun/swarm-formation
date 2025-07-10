@@ -15,6 +15,7 @@ find_package(rclcpp REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(swarm_graph REQUIRED)
 find_package(path_planner REQUIRED)
+find_package(nav_msgs REQUIRED)
 
 add_library(${PROJECT_NAME}_lib
   src/poly_traj_optimizer.cpp
@@ -31,6 +32,7 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   Eigen3
   swarm_graph
   path_planner
+  nav_msgs
 )
 
 install(TARGETS ${PROJECT_NAME}_lib
@@ -45,6 +47,6 @@ install(DIRECTORY include/
 )
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp Eigen3 swarm_graph path_planner)
+ament_export_dependencies(rclcpp Eigen3 swarm_graph path_planner nav_msgs)
 
 ament_package()

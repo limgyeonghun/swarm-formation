@@ -1,10 +1,16 @@
 #include <rover_control/rover_control.hpp>
 #include <algorithm>
 
-RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1)
+RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(0.0), offset_y_pt_(0.0)
 {
     this->declare_parameter<int>("rover_id", 1);
     this->get_parameter("rover_id", rover_id_);
+
+    this->declare_parameter<float>("start_point_x", 0.0);
+    this->get_parameter("start_point_x", offset_x_pt_);
+
+    this->declare_parameter<float>("start_point_y", 0.0);
+    this->get_parameter("start_point_y", offset_y_pt_);
 
     std::string sid = std::to_string(rover_id_ + 1);
     const std::string topic_prefix_out = "/vehicle" + sid + "/fmu/out/";
@@ -14,7 +20,7 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1)
     auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 20), qos_profile);
 
     status_sub_ = this->create_subscription<VehicleStatus>(
-        topic_prefix_out + "vehicle_status", qos, bind(&RoverControl::status_cb, this, std::placeholders::_1));
+        topic_prefix_out + "vehicle_status_v1", qos, bind(&RoverControl::status_cb, this, std::placeholders::_1));
     position_sub_ = this->create_subscription<VehicleLocalPosition>(
         topic_prefix_out + "vehicle_local_position", qos, bind(&RoverControl::pos_cb, this, std::placeholders::_1));
     // odom_sub_ = this->create_subscription<Odometry>(
@@ -28,6 +34,13 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1)
     timer_ = this->create_wall_timer(10ms, bind(&RoverControl::timer_cb, this));
 }
 
+void RoverControl::target_cb (const Odometry::SharedPtr msg)
+{
+    target_pos_ = *msg;
+    have_target_ = true;
+}
+    
+
 void RoverControl::publish_offboard_control_mode()
 {
     OffboardControlMode msg{};
@@ -38,7 +51,7 @@ void RoverControl::publish_offboard_control_mode()
     msg.acceleration = false;
     msg.attitude = false;
     msg.body_rate = false;
-    msg.actuator = false;
+    msg.direct_actuator = false;
 
     offboard_control_mode_pub_->publish(msg);
 }
@@ -46,22 +59,31 @@ void RoverControl::publish_offboard_control_mode()
 void RoverControl::publish_trajectory_setpoint()
 {
     // RCLCPP_INFO(this->get_logger(), "status_.nav_state: %d", status_.nav_state);
-    if (status_.nav_state == 14)
+    if (status_.nav_state == VehicleStatus::NAVIGATION_STATE_OFFBOARD && status_.arming_state == VehicleStatus::ARMING_STATE_ARMED && have_target_)
     {
         TrajectorySetpoint msg{};
         msg.timestamp = this->now().nanoseconds();
-        msg.position[0] = target_pos_.pose.pose.position.x;
-        msg.position[1] = target_pos_.pose.pose.position.y - (1.5 * rover_id_);
-        msg.position[2] = - target_pos_.pose.pose.position.z;
+        msg.position[0] = target_pos_.pose.pose.position.x - offset_x_pt_;
+        msg.position[1] = target_pos_.pose.pose.position.y - offset_y_pt_;
+        // msg.position[2] = 0.0;
 
-        // double average_velocity = std::sqrt(
-            // std::pow(target_pos_.twist.twist.linear.x, 2) + std::pow(target_pos_.twist.twist.linear.y, 2));
         msg.velocity[0] = target_pos_.twist.twist.linear.x;
         msg.velocity[1] = target_pos_.twist.twist.linear.y;
         msg.velocity[2] = target_pos_.twist.twist.linear.z;
 
-        // msg.acceleration[0] = target_pos_.twist.twist.linear.x;
-        // msg.acceleration[1] = target_pos_.twist.twist.linear.y;
+        trajectory_setpoint_pub_->publish(msg);
+    }
+    else 
+    {
+        TrajectorySetpoint msg{};
+        msg.timestamp = this->now().nanoseconds();
+        msg.position[0] = 0.0;
+        msg.position[1] = 0.0;
+        msg.position[2] = 0.0;
+
+        msg.velocity[0] = 0.0;
+        msg.velocity[1] = 0.0;
+        msg.velocity[2] = 0.0;
 
         trajectory_setpoint_pub_->publish(msg);
     }

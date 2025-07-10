@@ -66,7 +66,8 @@ namespace ego_planner
     {
       NONE_FORMATION = 0,
       REGULAR_HEXAGON = 1,
-      REGULAR_SQUARE = 2
+      REGULAR_SQUARE = 2,
+      TEST_FORMATION = 3
     };
 
     double wei_obs_;
@@ -237,6 +238,28 @@ namespace ego_planner
         formation_size_ = swarm_des.size();
         swarm_graph_->setDesiredForm(swarm_des);
         RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "CUSTOM formation set: size=%zu", swarm_des.size());
+        break;
+      }
+
+      case FORMATION_TYPE::TEST_FORMATION:
+      {
+        Eigen::Vector3d v0(0, 0, 0);
+        Eigen::Vector3d v1(2, 0, 0);
+        Eigen::Vector3d v2(4, 0, 0);
+        Eigen::Vector3d v3(-1.7321, -1, 0);
+        Eigen::Vector3d v4(-1.7321, 1, 0);
+        Eigen::Vector3d v5(0, 2, 0);
+
+        swarm_des.push_back(v0);
+        swarm_des.push_back(v1);
+        swarm_des.push_back(v2);
+        swarm_des.push_back(v3);
+        swarm_des.push_back(v4);
+        swarm_des.push_back(v5);
+
+        formation_size_ = swarm_des.size();
+        swarm_graph_->setDesiredForm(swarm_des);
+        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "TEST formation set: size=%zu", swarm_des.size());
         break;
       }
 

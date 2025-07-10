@@ -5,6 +5,7 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <path_manager/msg/poly_traj.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <Eigen/Dense>
 #include <vector>
 #include <string>
@@ -36,6 +37,7 @@ private:
   void publishPath(const std::vector<Eigen::Vector3d>& path, int id, float r, float g, float b, float alpha,
                    const rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr& pub);
   void publishObstacles();
+  void simplePathCallback(const nav_msgs::msg::Path::SharedPtr msg, int drone_id);
 
   int num_drones_;
   std::vector<Eigen::Vector3d> obstacle_centers_;
@@ -44,10 +46,12 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr optimized_traj_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr global_traj_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr simple_path_marker_pub_;
   std::vector<rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr> position_pubs_;
   std::vector<rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr> position_marker_pubs_;
   rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr optimized_path_sub_;
   rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr global_path_sub_;
+  std::vector<rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr> simple_path_subs_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr log_timer_;
 };

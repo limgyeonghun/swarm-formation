@@ -1,134 +1,191 @@
 Visualization Manager:
   Class: ""
   Displays:
-      - Class: rviz_default_plugins/Marker  #(/path_markers)
-        Enabled: true
-        Name: Path and Obstacles
-        Topic:
-          Value: /path_markers
-          Depth: 20
-          History Policy: Keep Last
-          Reliability Policy: Best Effort
-          Durability Policy: Volatile
-        Value: true
-        Namespaces:
-          path: true
-          obstacle: true
-        Alpha: 1.0
-        Scale X: 0.1
-        Scale Y: 0.1
-        Scale Z: 0.1
-      - Class: rviz_default_plugins/Marker  # (/opt_trajectory)
-        Enabled: true
-        Name: Min Jerk Trajectory
-        Topic:
-          Value: /opt_trajectory
-          Depth: 20
-          History Policy: Keep Last
-          Reliability Policy: Best Effort
-          Durability Policy: Volatile
-        Value: true
-        Alpha: 0.4
-        Scale X: 0.05
-        Scale Y: 0.05
-        Scale Z: 0.05
-        Color: 0;255;0 
-        History Length: 1000
+    - Class: rviz_default_plugins/Marker  # (/path_markers)
+      Enabled: true
+      Name: Path and Obstacles
+      Topic:
+        Value: /path_markers
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Namespaces:
+        path: true
+        obstacle: true
+      Alpha: 1.0
+      Scale X: 0.1
+      Scale Y: 0.1
+      Scale Z: 0.1
+    - Class: rviz_default_plugins/Marker  # (/opt_trajectory)
+      Enabled: true
+      Name: Min Jerk Trajectory
+      Topic:
+        Value: /opt_trajectory
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Alpha: 0.4
+      Scale X: 0.05
+      Scale Y: 0.05
+      Scale Z: 0.05
+      Color: 0;255;0
+      History Length: 1000
+    - Class: rviz_default_plugins/Marker  # (/global_trajectory)
+      Enabled: true
+      Name: Global Trajectory
+      Topic:
+        Value: /global_trajectory
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Alpha: 0.4
+      Scale X: 0.05
+      Scale Y: 0.05
+      Scale Z: 0.05
+      Color: 50;50;10
+      History Length: 1000
+    - Class: rviz_default_plugins/Marker  # (/position_markers_drone_0)
+      Enabled: true
+      Name: position_markers_drone_0
+      Topic:
+        Value: /position_markers_drone_0
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Alpha: 0.8
+      Scale X: 0.1
+      Scale Y: 0.1
+      Scale Z: 0.1
+      Color: 255;0;0  # drone_0: 빨강
+      History Length: 1000
+    - Class: rviz_default_plugins/Marker  # (/position_markers_drone_1)
+      Enabled: true
+      Name: position_markers_drone_1
+      Topic:
+        Value: /position_markers_drone_1
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Alpha: 0.8
+      Scale X: 0.1
+      Scale Y: 0.1
+      Scale Z: 0.1
+      Color: 0;255;0  # drone_1: 초록
+      History Length: 1000
+    - Class: rviz_default_plugins/Marker  # (/position_markers_drone_2)
+      Enabled: true
+      Name: position_markers_drone_2
+      Topic:
+        Value: /position_markers_drone_2
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Alpha: 0.8
+      Scale X: 0.1
+      Scale Y: 0.1
+      Scale Z: 0.1
+      Color: 0;0;255  # drone_2: 파랑
+      History Length: 1000
 
-      - Class: rviz_default_plugins/Marker  # (/global_traj)
-        Enabled: true
-        Name: Min Jerk Trajectory
-        Topic:
-          Value: /global_trajectory
-          Depth: 20
-          History Policy: Keep Last
-          Reliability Policy: Best Effort
-          Durability Policy: Volatile
-        Value: true
-        Alpha: 0.4
-        Scale X: 0.05
-        Scale Y: 0.05
-        Scale Z: 0.05
-        Color: 50;50;10 
-        History Length: 1000
+    - Class: rviz_default_plugins/Marker  # (/position_markers_drone_3)
+      Enabled: true
+      Name: position_markers_drone_3
+      Topic:
+        Value: /position_markers_drone_3
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Alpha: 0.8
+      Scale X: 0.1
+      Scale Y: 0.1
+      Scale Z: 0.1
+      Color: 50;50;50  # drone_3: 회색
+      History Length: 1000
 
-      - Class: rviz_default_plugins/Marker  # (/position_markers_drone_0)
-        Enabled: true
-        Name: position_markers_drone_0
-        Topic:
-          Value: /position_markers_drone_0
-          Depth: 20
-          History Policy: Keep Last
-          Reliability Policy: Best Effort
-          Durability Policy: Volatile
-        Value: true
-        Alpha: 0.8
-        Scale X: 0.1
-        Scale Y: 0.1
-        Scale Z: 0.1
-        Color: 255;0;0  # drone_0: 빨강
-        History Length: 1000
 
-      - Class: rviz_default_plugins/Marker  # (/position_markers_drone_1)
-        Enabled: true
-        Name: position_markers_drone_1
-        Topic:
-          Value: /position_markers_drone_1
-          Depth: 20
-          History Policy: Keep Last
-          Reliability Policy: Best Effort
-          Durability Policy: Volatile
-        Value: true
-        Alpha: 0.8
-        Scale X: 0.1
-        Scale Y: 0.1
-        Scale Z: 0.1
-        Color: 0;255;0  # drone_1: 초록
-        History Length: 1000
+    - Class: rviz_default_plugins/Marker  # (/position_markers_drone_4)
+      Enabled: true
+      Name: position_markers_drone_4
+      Topic:
+        Value: /position_markers_drone_4
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Alpha: 0.8
+      Scale X: 0.1
+      Scale Y: 0.1
+      Scale Z: 0.1
+      Color: 50;50;50  # drone_3: 회색
+      History Length: 1000
 
-      - Class: rviz_default_plugins/Marker  # (/position_markers_drone_2)
-        Enabled: true
-        Name: position_markers_drone_2
-        Topic:
-          Value: /position_markers_drone_2
-          Depth: 20
-          History Policy: Keep Last
-          Reliability Policy: Best Effort
-          Durability Policy: Volatile
-        Value: true
-        Alpha: 0.8
-        Scale X: 0.1
-        Scale Y: 0.1
-        Scale Z: 0.1
-        Color: 0;0;255  # drone_1: 초록
-        History Length: 1000
+    - Class: rviz_default_plugins/Marker  # (/position_markers_drone_5)
+      Enabled: true
+      Name: position_markers_drone_5
+      Topic:
+        Value: /position_markers_drone_5
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Alpha: 0.8
+      Scale X: 0.1
+      Scale Y: 0.1
+      Scale Z: 0.1
+      Color: 50;50;50  # drone_3: 회색
+      History Length: 1000
 
-      - Class: rviz_default_plugins/Marker  # (/position_markers_drone_3)
-        Enabled: true
-        Name: position_markers_drone_3
-        Topic:
-          Value: /position_markers_drone_3
-          Depth: 20
-          History Policy: Keep Last
-          Reliability Policy: Best Effort
-          Durability Policy: Volatile
-        Value: true
-        Alpha: 0.8
-        Scale X: 0.1
-        Scale Y: 0.1
-        Scale Z: 0.1
-        Color: 50;50;50  # drone_1: 초록
-        History Length: 1000
 
-      - Class: rviz_default_plugins/Grid
-        Enabled: true
-        Name: Grid
-        Cell Size: 1
-        Number of Cells: 50
-        Plane: XY
-        Color: 160;160;160
+    - Class: rviz_default_plugins/Marker  # (/simple_path_trajectory)
+      Enabled: true
+      Name: Simple Path Trajectory
+      Topic:
+        Value: /simple_path_trajectory
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Alpha: 0.5
+      Scale X: 0.05
+      Scale Y: 0.05
+      Scale Z: 0.05
+      Namespaces:
+        opt_path_drone_0: true
+        opt_path_drone_1: true
+        opt_path_drone_2: true
+        opt_path_drone_3: true
+      Namespace Colors:
+        opt_path_drone_0: 255;0;0    # drone_0: 빨강
+        opt_path_drone_1: 0;255;0    # drone_1: 초록
+        opt_path_drone_2: 0;0;255    # drone_2: 파랑
+        opt_path_drone_3: 50;50;50   # drone_3: 회색
+      History Length: 1000
+    - Class: rviz_default_plugins/Grid
+      Enabled: true
+      Name: Grid
+      Cell Size: 1
+      Number of Cells: 50
+      Plane: XY
+      Color: 160;160;160
   Global Options:
-    Background Color: 200; 200; 200
+    Background Color: 200;200;200
     Fixed Frame: map
     Frame Rate: 30
   Name: root
@@ -161,14 +218,14 @@ Visualization Manager:
       Value: Orbit (rviz)
       Yaw: 0.8014
 Window Geometry:
-    Displays:
-        collapsed: false
-    Height: 1524
-    Hide Left Dock: false
-    Hide Right Dock: false
-    QMainWindow State: 000000ff00000000fd0000000100000000000002d800000562fc0200000002fb000000100044006900730070006c0061007900730100000069000003050000017800fffffffb0000000a00560069006500770073010000037a000002510000012300ffffff000004ba0000056200000004000000040000000800000008fc0000000100000002000000010000000a0054006f006c00730100000000ffffffff0000000000000000
-    Views:
-        collapsed: false
-    Width: 1950
-    X: 870
-    Y: 397
+  Displays:
+    collapsed: false
+  Height: 1524
+  Hide Left Dock: false
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd0000000100000000000002d800000562fc0200000002fb000000100044006900730070006c0061007900730100000069000003050000017800fffffffb0000000a00560069006500770073010000037a000002510000012300ffffff000004ba0000056200000004000000040000000800000008fc0000000100000002000000010000000a0054006f006c00730100000000ffffffff0000000000000000
+  Views:
+    collapsed: false
+  Width: 1950
+  X: 870
+  Y: 397

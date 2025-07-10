@@ -7,7 +7,7 @@ ReplanFSM::ReplanFSM()
     : Node("replan_fsm"),
       exec_state_(FSM_EXEC_STATE::INIT),
       continously_called_times_(0),
-      have_position_(true),
+      have_position_(false),
       have_target_(false),
       have_new_target_(false),
       have_local_traj_(false),
@@ -19,11 +19,16 @@ ReplanFSM::ReplanFSM()
       replan_trajectory_time_(-1.0),
       current_time_(0.0),
       last_start_time_(0.0),
-      n_seconds_ahead_(0.3) {
+      n_seconds_ahead_(0.0), 
+      visualize_ (false) {
 
     this->declare_parameter("drone_id", 0);
     this->get_parameter("drone_id", drone_id_);
     RCLCPP_INFO(this->get_logger(), "Starting ReplanFSM for drone_id: %d", drone_id_);
+
+    this->declare_parameter("visualize", false);
+    this->get_parameter("visualize", visualize_);
+    RCLCPP_INFO(this->get_logger(), "visualize: %s", visualize_ ? "true" : "false");
 
     this->declare_parameter("fsm/thresh_replan_time", -1.0);
     this->declare_parameter("fsm/thresh_no_replan_meter", -1.0);
@@ -34,10 +39,10 @@ ReplanFSM::ReplanFSM()
 
     this->declare_parameter("start_point_x", 0.0);
     this->declare_parameter("start_point_y", 0.0);
-    this->declare_parameter("start_point_z", 0.5);
+    this->declare_parameter("start_point_z", 0.0);
     this->declare_parameter("end_point_x", 12.0);
     this->declare_parameter("end_point_y", 12.0);
-    this->declare_parameter("end_point_z", 0.5);
+    this->declare_parameter("end_point_z", 0.0);
 
     double start_x, start_y, start_z, end_x, end_y, end_z;
     this->get_parameter("start_point_x", start_x);
@@ -47,15 +52,14 @@ ReplanFSM::ReplanFSM()
     this->get_parameter("end_point_y", end_y);
     this->get_parameter("end_point_z", end_z);
 
-    start_pt_ = Eigen::Vector3d(start_x, start_y, start_z);
+    offset_pt_ = Eigen::Vector3d(start_x, start_y, start_z);
+    start_pt_ = offset_pt_;
     end_pt_ = Eigen::Vector3d(end_x, end_y, end_z);
     have_target_ = true;
 
     rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
-    auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 20), qos_profile);
+    auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
-    std::string position_topic = "/drone_" + std::to_string(drone_id_) + "/current_position";
-    std::string px4_position_topic = "/vehicle" + std::to_string(drone_id_+1) + "/fmu/out/vehicle_local_position";
     std::string odom_topic = "/vehicle" + std::to_string(drone_id_+1) + "/target_position";
 
     optimized_path_pub_ = this->create_publisher<path_manager::msg::PolyTraj>("planning/trajectory", sensor_qos);
@@ -63,10 +67,19 @@ ReplanFSM::ReplanFSM()
     broadcast_traj_pub_ = this->create_publisher<path_manager::msg::PolyTraj>("planning/broadcast_traj_recv", sensor_qos);
     odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(odom_topic, sensor_qos);
 
-    position_sub_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
-        position_topic, sensor_qos, std::bind(&ReplanFSM::positionCallback, this, std::placeholders::_1));
-    px4_position_sub_ = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-        px4_position_topic, sensor_qos, std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1));
+    if (visualize_)
+    {
+        std::string position_topic = "/drone_" + std::to_string(drone_id_) + "/current_position";
+        position_sub_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
+            position_topic, sensor_qos, std::bind(&ReplanFSM::positionCallback, this, std::placeholders::_1));
+    }
+    else
+    {
+        std::string px4_position_topic = "/vehicle" + std::to_string(drone_id_ + 1) + "/fmu/out/vehicle_local_position";
+        px4_position_sub_ = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
+            px4_position_topic, sensor_qos, std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1));
+    }
+
     broadcast_traj_sub_ = this->create_subscription<path_manager::msg::PolyTraj>(
         "planning/broadcast_traj_recv", sensor_qos,
         std::bind(&ReplanFSM::recvBroadcastPolyTrajCallback, this, std::placeholders::_1));
@@ -269,8 +282,10 @@ void ReplanFSM::positionCallback(const geometry_msgs::msg::PointStamped::SharedP
 }
 
 void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
-    current_pos_ = Eigen::Vector3d(msg->x, msg->y + (1.5 * drone_id_), 2.5);
-    // RCLCPP_ERROR(this->get_logger(), "PX4 Current position: %.2f, %.2f, %.2f", current_pos_(0), current_pos_(1), current_pos_(2));
+    current_pos_(0) = msg->x + offset_pt_(0);
+    current_pos_(1) = msg->y + offset_pt_(1);
+    current_pos_(2) = offset_pt_(2);
+
     current_time_ = this->now().seconds();
     have_position_ = true;
 }
@@ -425,7 +440,7 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
         desired_start_acc = path_manager_->traj_.local_traj.traj.getAcc(t_adj);
     } else {
         desired_start_pt = start_pt_;
-        desired_start_vel = Eigen::Vector3d(1.0, 0.0, 0.0);
+        desired_start_vel = Eigen::Vector3d(0.0, 0.0, 0.0);
         desired_start_acc = Eigen::Vector3d::Zero();
     }
 

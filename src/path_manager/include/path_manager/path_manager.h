@@ -11,6 +11,8 @@
 #include <chrono>
 #include "path_manager/msg/poly_traj.hpp"
 #include <geometry_msgs/msg/point_stamped.hpp>
+#include <nav_msgs/msg/path.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 
 using namespace ego_planner;
 
@@ -46,9 +48,6 @@ namespace path_manager
                                    const Eigen::Vector3d &start_acc, const Eigen::Vector3d &local_target_pt,
                                    const Eigen::Vector3d &local_target_vel, const double &ts,
                                    poly_traj::MinJerkOpt &initMJO, const bool flag_polyInit);
-
-    void updateESDFCallback();
-
     std::shared_ptr<rclcpp::Node> node_;
     GridMap::Ptr grid_map_;
     AStar astar_;
@@ -65,6 +64,8 @@ namespace path_manager
     rclcpp::TimerBase::SharedPtr esdf_timer_;
     Eigen::Vector3d current_start_pt_, current_target_pt_;
     bool has_valid_state_;
+
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr simple_path_pub_;
   };
 
 } // namespace path_manager

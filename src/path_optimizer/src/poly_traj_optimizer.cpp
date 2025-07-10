@@ -126,10 +126,9 @@ namespace ego_planner
     // RCLCPP_INFO(node_->get_logger(), "%s", msg_result.c_str());
     // logToFile(msg_result);
 
-    if (drone_id_ == 2) {
+    if (true) {
       RCLCPP_INFO(node_->get_logger(), "similarity_error : %f", debug_similarity_);
-    
-      // 현재 시간 얻기
+
       auto now = std::chrono::system_clock::now();
       std::time_t now_time = std::chrono::system_clock::to_time_t(now);
       std::tm now_tm = *std::localtime(&now_time);
@@ -137,7 +136,6 @@ namespace ego_planner
       std::stringstream ss;
       ss << std::fixed << std::setprecision(6);
 
-      // 시간 정보 앞에 붙이기
       ss << "[seq=" << seq_ << "] "
          << "[" << std::put_time(&now_tm, "%Y-%m-%d %H:%M:%S") << "] "
          << "[drone_id=" << drone_id_ << "] "
@@ -519,7 +517,8 @@ namespace ego_planner
     grid_map_->evaluateEDT(p, dist);
 
     double dist_err = obs_clearance_ - dist;
-    // RCLCPP_INFO(node_->get_logger(), "pos (%f,%f,%f) | dist_err(%f) = obs_clearance: (%f) - dist(%f)", p(0), p(1), p(2), dist_err, obs_clearance_, dist);
+    // if (drone_id_== 2)
+    //   RCLCPP_INFO(node_->get_logger(), "pos (%f,%f,%f) | dist_err(%f) = obs_clearance: (%f) - dist(%f)", p(0), p(1), p(2), dist_err, obs_clearance_, dist);
 
     if (dist_err > 0)
     {
@@ -783,7 +782,7 @@ namespace ego_planner
     node_->get_parameter("optimization/max_acc", max_acc_);
 
     std::string log_file_path;
-    node_->declare_parameter("optimization/log_file_path", "/home/lim/workspace/ros_ws/log/optimizer.log");
+    node_->declare_parameter("optimization/log_file_path", "/home/suv/ws/ros_ws/optimizer.log");
     node_->get_parameter("optimization/log_file_path", log_file_path);
     initLogFile(log_file_path);
 
@@ -795,7 +794,7 @@ namespace ego_planner
   {
     grid_map_ = map;
     a_star_.reset(new AStar);
-    a_star_->initGridMap(grid_map_, Eigen::Vector3i(800, 200, 10));
+    a_star_->initGridMap(grid_map_, Eigen::Vector3i(400, 200, 10));
   }
 
   void PolyTrajOptimizer::setControlPoints(const Eigen::MatrixXd &points)

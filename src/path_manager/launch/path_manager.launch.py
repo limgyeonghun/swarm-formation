@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -13,11 +13,9 @@ def load_yaml_file(file_path):
         return yaml.safe_load(file)
 
 def create_drone_nodes(context, *args, **kwargs):
-    use_sim_time = LaunchConfiguration('use_sim_time')
     visualize = LaunchConfiguration('visualize')
 
     pkg_path_manager = FindPackageShare('path_manager')
-    pkg_rover_control = FindPackageShare('rover_control')
 
     obstacles_param_file = PathJoinSubstitution([
         pkg_path_manager,
@@ -35,6 +33,12 @@ def create_drone_nodes(context, *args, **kwargs):
         pkg_path_manager,
         'config',
         'drones.yaml'
+    ])
+
+    map_param_file = PathJoinSubstitution([
+        pkg_path_manager,
+        'config',
+        'map.yaml'
     ])
 
     drones_param_file_path = context.perform_substitution(drones_param_file)
@@ -62,7 +66,7 @@ def create_drone_nodes(context, *args, **kwargs):
         drone_params = drone_config[drone_key]
 
         params = {
-            'use_sim_time': use_sim_time,
+            'visualize': visualize,
             'drone_id': drone_params['drone_id'],
             'start_point_x': float(drone_params['start_point_x']),
             'start_point_y': float(drone_params['start_point_y']),
@@ -83,7 +87,8 @@ def create_drone_nodes(context, *args, **kwargs):
                 params,
                 obstacles_param_file,
                 optimizer_params_file,
-                drones_param_file
+                drones_param_file,
+                map_param_file
             ],
         )
         replan_fsm_nodes.append(replan_fsm_node)
@@ -95,7 +100,10 @@ def create_drone_nodes(context, *args, **kwargs):
             output='screen',
             parameters=[
                 {'rover_id': drone_params['drone_id']},
-                {'use_sim_time': use_sim_time}
+                {'visualize': visualize},
+                {'start_point_x': drone_params['start_point_x']},
+                {'start_point_y': drone_params['start_point_y']},
+                {'start_point_z': drone_params['start_point_z']},
             ]
         )
         rover_control_nodes.append(rover_control_node)
@@ -111,15 +119,17 @@ def create_drone_nodes(context, *args, **kwargs):
         condition=IfCondition(visualize)
     )
 
-    return replan_fsm_nodes + rover_control_nodes + [visualization_launch]
+    # Wrap replan_fsm_nodes and visualization_launch in a TimerAction to delay by 5 seconds
+    delayed_nodes = TimerAction(
+        period=0.0,
+        actions=replan_fsm_nodes + [visualization_launch]
+    )
+
+    # Return rover_control_nodes immediately, and the delayed nodes
+    return rover_control_nodes + [delayed_nodes]
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument(
-            'use_sim_time',
-            default_value='false',
-            description='Use simulation (Gazebo) clock if true'
-        ),
         DeclareLaunchArgument(
             'visualize',
             default_value='false',

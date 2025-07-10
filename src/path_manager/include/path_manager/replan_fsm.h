@@ -72,10 +72,12 @@ private:
     Eigen::Vector3d end_pt_;
     Eigen::Vector3d local_target_pt_;
     Eigen::Vector3d local_target_vel_;
+    Eigen::Vector3d offset_pt_;
     double t_to_target_;
     double current_time_;
     double last_start_time_;
     double n_seconds_ahead_;
+    bool visualize_;
     std::mutex mutex_;
 };
 

@@ -8,6 +8,27 @@
 using namespace std;
 using namespace std::chrono_literals;
 
+std::tuple<float, float, float> getDroneColor(int drone_id)
+{
+  switch (drone_id)
+  {
+  case 0:
+    return {1.0f, 0.0f, 0.0f}; // red
+  case 1:
+    return {0.0f, 1.0f, 0.0f}; // green
+  case 2:
+    return {0.0f, 0.0f, 1.0f}; // blue
+  case 3:
+    return {1.0f, 1.0f, 0.0f}; // yellow
+  case 4:
+    return {1.0f, 0.0f, 1.0f}; // magenta
+  case 5:
+    return {0.0f, 1.0f, 1.0f}; // cyan
+  default:
+    return {0.5f, 0.5f, 0.5f}; // gray for any id >=6
+  }
+};
+
 PathVisualization::PathVisualization() : Node("path_visualization")
 {
   // Load drone parameters from drones.yaml
@@ -17,20 +38,30 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   loadObstacleParameters();
 
   rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
-  auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 20), qos_profile);
+  auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
   marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("path_markers", sensor_qos);
   optimized_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("opt_trajectory", sensor_qos);
   global_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("global_trajectory", sensor_qos);
+  simple_path_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("simple_path_trajectory", sensor_qos);
 
   position_pubs_.resize(num_drones_);
   position_marker_pubs_.resize(num_drones_);
   drone_data_.resize(num_drones_);
-  for (int drone_id = 0; drone_id < num_drones_; ++drone_id) {
+  simple_path_subs_.resize(num_drones_);
+
+  for (int drone_id = 0; drone_id < num_drones_; ++drone_id)
+  {
     std::string position_topic = "/drone_" + std::to_string(drone_id) + "/current_position";
     position_pubs_[drone_id] = this->create_publisher<geometry_msgs::msg::PointStamped>(position_topic, sensor_qos);
     position_marker_pubs_[drone_id] = this->create_publisher<visualization_msgs::msg::Marker>(
         "position_markers_drone_" + std::to_string(drone_id), sensor_qos);
+
+    std::string simple_path_topic = "/drone_" + std::to_string(drone_id) + "/simple_path";
+    simple_path_subs_[drone_id] = this->create_subscription<nav_msgs::msg::Path>(
+        simple_path_topic, sensor_qos,
+        [this, drone_id](const nav_msgs::msg::Path::SharedPtr msg)
+        { this->simplePathCallback(msg, drone_id); });
 
     drone_data_[drone_id].start_pt = Eigen::Vector3d(
         drone_params_[drone_id].start_x,
@@ -56,18 +87,50 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   publishObstacles();
 }
 
+void PathVisualization::simplePathCallback(const nav_msgs::msg::Path::SharedPtr msg, int drone_id)
+{
+  if (drone_id < 0 || drone_id >= num_drones_)
+  {
+    RCLCPP_WARN(this->get_logger(), "Invalid drone_id: %d", drone_id);
+    return;
+  }
+
+  std::vector<Eigen::Vector3d> simple_path;
+  for (const auto &pose : msg->poses)
+  {
+    simple_path.emplace_back(
+        pose.pose.position.x,
+        pose.pose.position.y,
+        pose.pose.position.z);
+  }
+
+  if (simple_path.empty())
+  {
+    RCLCPP_WARN(this->get_logger(), "Drone %d: Empty simple path received", drone_id);
+    return;
+  }
+
+  auto [r, g, b] = getDroneColor(drone_id);
+
+  publishPath(simple_path, drone_id, r, g, b, 0.0, simple_path_marker_pub_);
+
+  RCLCPP_INFO(this->get_logger(), "Drone %d: Published simple path with %zu points", drone_id, simple_path.size());
+}
+
 void PathVisualization::loadDroneParameters()
 {
   // Declare and get num_drones
   this->declare_parameter("num_drones", 1);
-  
-  if (!this->get_parameter("num_drones", num_drones_)) {
+
+  if (!this->get_parameter("num_drones", num_drones_))
+  {
     RCLCPP_ERROR(this->get_logger(), "Failed to load num_drones from drones.yaml");
     throw std::runtime_error("Failed to load num_drones");
   }
 
   drone_params_.resize(num_drones_);
-  for (int i = 0; i < num_drones_; ++i) {
+  for (int i = 0; i < num_drones_; ++i)
+  {
     std::string drone_key = "drone_" + std::to_string(i);
     DroneParams drone;
 
@@ -75,7 +138,7 @@ void PathVisualization::loadDroneParameters()
     this->declare_parameter(drone_key + ".drone_id", i);
     this->declare_parameter(drone_key + ".start_point_x", 0.0);
     this->declare_parameter(drone_key + ".start_point_y", 0.0);
-    this->declare_parameter(drone_key + ".start_point_z", 0.5);
+    this->declare_parameter(drone_key + ".start_point_z", 0.0);
 
     if (!this->get_parameter(drone_key + ".drone_id", drone.id) ||
         !this->get_parameter(drone_key + ".start_point_x", drone.start_x) ||
@@ -97,22 +160,26 @@ void PathVisualization::loadObstacleParameters()
   // Declare and get obstacles as a vector of doubles
   this->declare_parameter("obstacles", std::vector<double>{});
   std::vector<double> obstacle_params;
-  if (this->get_parameter("obstacles", obstacle_params)) {
-    if (obstacle_params.size() % 3 != 0) {
+  if (this->get_parameter("obstacles", obstacle_params))
+  {
+    if (obstacle_params.size() % 3 != 0)
+    {
       RCLCPP_ERROR(this->get_logger(), "Invalid obstacles.yaml format, size not divisible by 3");
       throw std::runtime_error("Invalid obstacles.yaml format");
     }
-    for (size_t i = 0; i < obstacle_params.size(); i += 3) {
+    for (size_t i = 0; i < obstacle_params.size(); i += 3)
+    {
       obstacle_centers_.emplace_back(obstacle_params[i], obstacle_params[i + 1], obstacle_params[i + 2]);
     }
-  } else {
+  }
+  else
+  {
     RCLCPP_ERROR(this->get_logger(), "Failed to load obstacles.yaml, using default obstacles");
     obstacle_centers_ = {
         Eigen::Vector3d(-2.0, -2.25, 0.5),
         Eigen::Vector3d(1.0, 0.0, 0.5),
         Eigen::Vector3d(0.0, 1.0, 0.5),
-        Eigen::Vector3d(3.0, 3.0, 0.5)
-    };
+        Eigen::Vector3d(3.0, 3.0, 0.5)};
   }
 }
 
@@ -120,8 +187,9 @@ void PathVisualization::logPositions()
 {
   std::stringstream ss;
   ss << "Positions: ";
-  for (int drone_id = 0; drone_id < num_drones_; ++drone_id) {
-    const auto& data = drone_data_[drone_id];
+  for (int drone_id = 0; drone_id < num_drones_; ++drone_id)
+  {
+    const auto &data = drone_data_[drone_id];
     ss << "Drone " << drone_id << ": (" << std::fixed << std::setprecision(2)
        << data.start_pt(0) << ", " << data.start_pt(1) << ", " << data.start_pt(2) << ") ";
   }
@@ -129,7 +197,7 @@ void PathVisualization::logPositions()
 }
 
 visualization_msgs::msg::Marker PathVisualization::createMarker(const std::string &ns, int id, int type,
-                                                               double scale, float r, float g, float b, float a)
+                                                                double scale, float r, float g, float b, float a)
 {
   visualization_msgs::msg::Marker marker;
   marker.header.frame_id = "map";
@@ -151,30 +219,37 @@ visualization_msgs::msg::Marker PathVisualization::createMarker(const std::strin
 void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj::SharedPtr msg)
 {
   int drone_id = msg->drone_id;
-  if (drone_id < 0 || drone_id >= num_drones_) {
+  if (drone_id < 0 || drone_id >= num_drones_)
+  {
     RCLCPP_WARN(this->get_logger(), "Invalid drone_id: %d", drone_id);
     return;
   }
-  if (msg->coef_x.size() != msg->duration.size() * (msg->order + 1)) {
+  if (msg->coef_x.size() != msg->duration.size() * (msg->order + 1))
+  {
     RCLCPP_ERROR(this->get_logger(), "Invalid trajectory coefficients for drone %d", drone_id);
     return;
   }
-  auto& data = drone_data_[drone_id];
+  auto &data = drone_data_[drone_id];
   std::vector<Eigen::Vector3d> optimized_path;
   double dt = 0.1;
   int piece_num = msg->duration.size();
   double total_duration = 0.0;
-  for (int i = 0; i < piece_num; ++i) total_duration += msg->duration[i];
-  if (total_duration < 0.1) {
+  for (int i = 0; i < piece_num; ++i)
+    total_duration += msg->duration[i];
+  if (total_duration < 0.1)
+  {
     RCLCPP_WARN(this->get_logger(), "Drone %d: Trajectory too short (%.2f s)", drone_id, total_duration);
     return;
   }
-  for (int i = 0; i < piece_num; ++i) {
+  for (int i = 0; i < piece_num; ++i)
+  {
     double duration = msg->duration[i];
     int offset = i * (msg->order + 1);
-    for (double t = 0.0; t <= duration; t += dt) {
+    for (double t = 0.0; t <= duration; t += dt)
+    {
       double x = 0.0, y = 0.0, z = 0.0;
-      for (int j = 0; j <= msg->order; ++j) {
+      for (int j = 0; j <= msg->order; ++j)
+      {
         double t_pow = std::pow(t, msg->order - j);
         x += msg->coef_x[offset + j] * t_pow;
         y += msg->coef_y[offset + j] * t_pow;
@@ -183,26 +258,26 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
       optimized_path.push_back(Eigen::Vector3d(x, y, z));
     }
   }
-  float r = (drone_id == 0) ? 1.0 : (drone_id == 1) ? 0.0 : 0.0;
-  float g = (drone_id == 0) ? 0.0 : (drone_id == 1) ? 1.0 : 0.0;
-  float b = (drone_id == 0) ? 0.0 : (drone_id == 1) ? 0.0 : 1.0;
-  if(drone_id == 3) {
-    r = 0.5; g = 0.5; b = 0.5;
-  }
-  publishPath(optimized_path, drone_id, r, g, b, 0.5, optimized_traj_pub_);
+
+  auto [r, g, b] = getDroneColor(drone_id);
+  publishPath(optimized_path, drone_id, r, g, b, 1.0, optimized_traj_pub_);
   publishObstacles();
 
   Eigen::Vector3d current_pos = data.start_pt;
   double best_t = 0.0;
   double min_dist = std::numeric_limits<double>::max();
-  for (double t = 0.0; t <= total_duration; t += 0.01) {
+  for (double t = 0.0; t <= total_duration; t += 0.01)
+  {
     double x = 0.0, y = 0.0, z = 0.0;
     double t_remaining = t;
-    for (int i = 0; i < piece_num; ++i) {
+    for (int i = 0; i < piece_num; ++i)
+    {
       double duration = msg->duration[i];
-      if (t_remaining <= duration) {
+      if (t_remaining <= duration)
+      {
         int offset = i * (msg->order + 1);
-        for (int j = 0; j <= msg->order; ++j) {
+        for (int j = 0; j <= msg->order; ++j)
+        {
           double t_pow = std::pow(t_remaining, msg->order - j);
           x += msg->coef_x[offset + j] * t_pow;
           y += msg->coef_y[offset + j] * t_pow;
@@ -214,12 +289,14 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
     }
     Eigen::Vector3d traj_pos(x, y, z);
     double dist = (traj_pos - current_pos).norm();
-    if (dist < min_dist) {
+    if (dist < min_dist)
+    {
       min_dist = dist;
       best_t = t;
     }
   }
-  if (min_dist > 1.0) {
+  if (min_dist > 1.0)
+  {
     RCLCPP_WARN(this->get_logger(), "Drone %d: Large jump (%.2f m), keeping previous trajectory", drone_id, min_dist);
     return;
   }
@@ -235,14 +312,18 @@ void PathVisualization::globalPathCallback(const path_manager::msg::PolyTraj::Sh
 
   int piece_num = msg->duration.size();
   double total_duration = 0.0;
-  for (int i = 0; i < piece_num; ++i) total_duration += msg->duration[i];
+  for (int i = 0; i < piece_num; ++i)
+    total_duration += msg->duration[i];
 
-  for (int i = 0; i < piece_num; ++i) {
+  for (int i = 0; i < piece_num; ++i)
+  {
     double duration = msg->duration[i];
     int offset = i * (msg->order + 1);
-    for (double t = 0.0; t <= duration; t += dt) {
+    for (double t = 0.0; t <= duration; t += dt)
+    {
       double x = 0.0, y = 0.0, z = 0.0;
-      for (int j = 0; j <= msg->order; ++j) {
+      for (int j = 0; j <= msg->order; ++j)
+      {
         double t_pow = std::pow(t, msg->order - j);
         x += msg->coef_x[offset + j] * t_pow;
         y += msg->coef_y[offset + j] * t_pow;
@@ -255,24 +336,33 @@ void PathVisualization::globalPathCallback(const path_manager::msg::PolyTraj::Sh
 
 void PathVisualization::updatePosition()
 {
-  for (int drone_id = 0; drone_id < num_drones_; ++drone_id) {
-    auto& data = drone_data_[drone_id];
+  for (int drone_id = 0; drone_id < num_drones_; ++drone_id)
+  {
+    auto &data = drone_data_[drone_id];
     double x, y, z;
-    if (data.current_traj.duration.empty()) {
+    if (data.current_traj.duration.empty())
+    {
       x = data.start_pt.x();
       y = data.start_pt.y();
       z = data.start_pt.z();
-    } else {
+    }
+    else
+    {
       double total_duration = 0.0;
-      for (const auto& dur : data.current_traj.duration) total_duration += dur;
-      if (data.current_time <= total_duration) {
+      for (const auto &dur : data.current_traj.duration)
+        total_duration += dur;
+      if (data.current_time <= total_duration)
+      {
         double t_remaining = data.current_time;
-        for (size_t i = 0; i < data.current_traj.duration.size(); ++i) {
+        for (size_t i = 0; i < data.current_traj.duration.size(); ++i)
+        {
           double duration = data.current_traj.duration[i];
-          if (t_remaining <= duration) {
+          if (t_remaining <= duration)
+          {
             int offset = i * (data.current_traj.order + 1);
             x = 0.0, y = 0.0, z = 0.0;
-            for (int j = 0; j <= data.current_traj.order; ++j) {
+            for (int j = 0; j <= data.current_traj.order; ++j)
+            {
               double t_pow = std::pow(t_remaining, data.current_traj.order - j);
               x += data.current_traj.coef_x[offset + j] * t_pow;
               y += data.current_traj.coef_y[offset + j] * t_pow;
@@ -282,12 +372,15 @@ void PathVisualization::updatePosition()
           }
           t_remaining -= duration;
         }
-      } else {
+      }
+      else
+      {
         int last_piece = data.current_traj.duration.size() - 1;
         double last_duration = data.current_traj.duration[last_piece];
         int offset = last_piece * (data.current_traj.order + 1);
         x = 0.0, y = 0.0, z = 0.0;
-        for (int j = 0; j <= data.current_traj.order; ++j) {
+        for (int j = 0; j <= data.current_traj.order; ++j)
+        {
           double t_pow = std::pow(last_duration, data.current_traj.order - j);
           x += data.current_traj.coef_x[offset + j] * t_pow;
           y += data.current_traj.coef_y[offset + j] * t_pow;
@@ -297,16 +390,13 @@ void PathVisualization::updatePosition()
       data.start_pt = Eigen::Vector3d(x, y, z);
       data.current_time += 0.01;
     }
-    float r = (drone_id == 0) ? 1.0 : (drone_id == 1) ? 0.0 : 0.0;
-    float g = (drone_id == 0) ? 0.0 : (drone_id == 1) ? 1.0 : 0.0;
-    float b = (drone_id == 0) ? 0.0 : (drone_id == 1) ? 0.0 : 1.0;
-    if(drone_id == 3) {
-      r = 0.5; g = 0.5; b = 0.5;
-    }
+    auto [r, g, b] = getDroneColor(drone_id);
     auto marker = createMarker("position_drone_" + std::to_string(drone_id), 0,
-                              visualization_msgs::msg::Marker::POINTS, 0.3, r, g, b, 1.0);
+                               visualization_msgs::msg::Marker::POINTS, 0.3, r, g, b, 1.0);
     geometry_msgs::msg::Point p;
-    p.x = x; p.y = y; p.z = z;
+    p.x = x;
+    p.y = y;
+    p.z = z;
     marker.points.push_back(p);
     position_marker_pubs_[drone_id]->publish(marker);
     geometry_msgs::msg::PointStamped pos_msg;
@@ -320,14 +410,17 @@ void PathVisualization::updatePosition()
 }
 
 void PathVisualization::publishPath(const std::vector<Eigen::Vector3d> &path, int id, float r, float g, float b, float alpha,
-                                   const rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr &pub)
+                                    const rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr &pub)
 {
   std::string ns_prefix = (pub == global_traj_pub_) ? "global_path_drone_" : "opt_path_drone_";
   auto marker = createMarker(ns_prefix + std::to_string(id), id,
-                            visualization_msgs::msg::Marker::LINE_STRIP, 0.05, r, g, b, alpha);
-  for (const auto &pt : path) {
+                             visualization_msgs::msg::Marker::LINE_STRIP, 0.05, r, g, b, alpha);
+  for (const auto &pt : path)
+  {
     geometry_msgs::msg::Point p;
-    p.x = pt.x(); p.y = pt.y(); p.z = pt.z();
+    p.x = pt.x();
+    p.y = pt.y();
+    p.z = pt.z();
     marker.points.push_back(p);
   }
   pub->publish(marker);
@@ -335,8 +428,9 @@ void PathVisualization::publishPath(const std::vector<Eigen::Vector3d> &path, in
 
 void PathVisualization::publishObstacles()
 {
-  for (size_t i = 0; i < obstacle_centers_.size(); ++i) {
-    auto marker = createMarker("obstacle", i, visualization_msgs::msg::Marker::SPHERE, 1.0, 0.0, 1.0, 0.0, 0.5);
+  for (size_t i = 0; i < obstacle_centers_.size(); ++i)
+  {
+    auto marker = createMarker("obstacle", i, visualization_msgs::msg::Marker::SPHERE, 0.8, 0.0, 1.0, 0.0, 0.5);
     marker.pose.position.x = obstacle_centers_[i].x();
     marker.pose.position.y = obstacle_centers_[i].y();
     marker.pose.position.z = obstacle_centers_[i].z();

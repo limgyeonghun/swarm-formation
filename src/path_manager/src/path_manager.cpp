@@ -25,10 +25,8 @@ namespace path_manager
         node_->get_parameter("manager/polyTraj_piece_length", poly_traj_piece_length_);
         node_->get_parameter("manager/planning_horizon", planning_horizen_);
 
-        Eigen::Vector3d map_size(70.0, 30.0, 3.0);
-        double resolution = 0.1;
         grid_map_ = std::make_shared<GridMap>();
-        grid_map_->initMap(map_size, resolution);
+        grid_map_->initMap(node_);
 
         Eigen::Vector3i voxel_num = grid_map_->getVoxelNum();
         int buffer_size = voxel_num(0) * voxel_num(1) * voxel_num(2);
@@ -38,38 +36,30 @@ namespace path_manager
         node_->declare_parameter("obstacles", std::vector<double>{});
         std::vector<double> obstacle_params;
         node_->get_parameter("obstacles", obstacle_params);
-        if (obstacle_params.empty() || obstacle_params.size() % 3 != 0)
+
+        for (size_t i = 0; i < obstacle_params.size(); i += 3)
         {
-            obstacle_centers_ = {
-                Eigen::Vector3d(-2.0, -2.25, 2.5),
-                Eigen::Vector3d(1.0, 0.0, 2.5),
-                Eigen::Vector3d(0.0, 1.0, 2.5)};
+            obstacle_centers_.emplace_back(obstacle_params[i], obstacle_params[i + 1], obstacle_params[i + 2]);
         }
-        else
+
+        std::cout << "Obstacle centers: ";
+        for (const auto &obs : obstacle_centers_)
         {
-            for (size_t i = 0; i < obstacle_params.size(); i += 3)
-            {
-                obstacle_centers_.emplace_back(obstacle_params[i], obstacle_params[i + 1], 2.0);
-            }
+            std::cout << "(" << obs.x() << ", " << obs.y() << ", " << obs.z() << ") ";
         }
+        std::cout << std::endl;
 
         for (const auto &obs : obstacle_centers_)
         {
             Eigen::Vector3i idx;
             grid_map_->posToIndex(obs, idx);
             grid_map_->setOccupancy(idx, 1.0);
-            grid_map_->inflatePoint(idx, 5);
+            grid_map_->inflatePoint(idx, 3.0);
         }
-        // grid_map_->updateESDF3d(); // not used? -> esdf_timer
+        grid_map_->updateESDF3d(); // not used? -> esdf_timer
 
-        esdf_timer_ = node_->create_wall_timer(
-            std::chrono::milliseconds(50),
-            std::bind(&PathManager::updateESDFCallback, this));
-        int occupied_voxels = std::count_if(static_map.begin(), static_map.end(),
-                                            [](double v)
-                                            { return v > 0.5; });
-        std::cout << "Occupied voxels: " << occupied_voxels << " ("
-                  << (occupied_voxels * 100.0 / static_map.size()) << "%)" << std::endl;
+        simple_path_pub_ = node_->create_publisher<nav_msgs::msg::Path>(
+            "/drone_" + std::to_string(drone_id) + "/simple_path", 10);
     }
 
     void PathManager::updateRobotState(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& local_target_pt)
@@ -78,33 +68,6 @@ namespace path_manager
         current_target_pt_ = local_target_pt;
         has_valid_state_ = true;
     }
-
-    void PathManager::updateESDFCallback() {
-        // auto t_start = std::chrono::high_resolution_clock::now();
-        if (!has_valid_state_) return;
-      
-        Eigen::Vector3d min_pos = current_start_pt_.cwiseMin(current_target_pt_);
-        Eigen::Vector3d max_pos = current_start_pt_.cwiseMax(current_target_pt_);
-        double margin = planning_horizen_ / 10.0;
-        min_pos -= Eigen::Vector3d(margin * 0.3, margin * 0.3, 0.05);
-        max_pos += Eigen::Vector3d(margin * 0.3, margin * 0.3, 0.05);
-        min_pos = min_pos.cwiseMax(grid_map_->getMapMinBoundary());
-        max_pos = max_pos.cwiseMin(grid_map_->getMapMaxBoundary());
-      
-        Eigen::Vector3i min_idx, max_idx;
-        grid_map_->posToIndex(min_pos, min_idx);
-        grid_map_->posToIndex(max_pos, max_idx);
-        for (int i = 0; i < 3; ++i) {
-          min_idx[i] = std::max(0, min_idx[i]);
-          max_idx[i] = std::min(grid_map_->getVoxelNum()[i] - 1, max_idx[i]);
-        }
-      
-        grid_map_->updateESDF3d(min_idx, max_idx);
-      
-        // auto t_end = std::chrono::high_resolution_clock::now();
-        // double duration = std::chrono::duration_cast<std::chrono::microseconds>(t_end - t_start).count() / 1000.0;
-        // std::cout << "[PathManager::updateESDFCallback] Execution time: " << duration << " ms" << std::endl;
-      }
 
     void PathManager::initOptimizer()
     {
@@ -131,12 +94,13 @@ namespace path_manager
             return false;
         }
 
-        updateRobotState(start_pt, local_target_pt);
+        // updateRobotState(start_pt, local_target_pt);
 
         double ts = poly_traj_piece_length_ / max_vel_;
         poly_traj::MinJerkOpt initMJO;
         if (!computeInitReferenceState(start_pt, start_vel, start_acc, local_target_pt, local_target_vel, ts, initMJO, flag_polyInit))
         {
+            RCLCPP_ERROR(node_->get_logger(), "Failed to compute initial reference state.");
             return false;
         }
         
@@ -154,6 +118,7 @@ namespace path_manager
         bool flag_success = poly_traj_opt_->OptimizeTrajectory_lbfgs(headState, tailState, innerPts, initTraj.getDurations(), cstr_pts, true);
         if (!flag_success)
         {
+            RCLCPP_ERROR(node_->get_logger(), "Failed to optimize trajectory.");
             return false;
         }
 
@@ -179,16 +144,37 @@ namespace path_manager
                                                 const Eigen::Vector3d &local_target_vel, const double &ts,
                                                 poly_traj::MinJerkOpt &initMJO, const bool flag_polyInit)
     {
-        if (first_call_ || flag_polyInit)
-        {
-            first_call_ = false;
-            Eigen::Matrix3d headState, tailState;
-            headState << start_pt, start_vel, start_acc;
-            tailState << local_target_pt, local_target_vel, Eigen::Vector3d::Zero();
+        if (first_call_ || flag_polyInit) {
+        first_call_ = false;
+        Eigen::Matrix3d headState, tailState;
+        headState << start_pt, start_vel, start_acc;
+        tailState << local_target_pt, local_target_vel, Eigen::Vector3d::Zero();
 
-            Eigen::MatrixXd ctl_points;
-            poly_traj_opt_->astarWithMinTraj(headState, tailState, simple_path_, ctl_points, initMJO);
+        Eigen::MatrixXd ctl_points;
+
+        auto t1 = node_->get_clock()->now();
+        poly_traj_opt_->astarWithMinTraj(headState, tailState, simple_path_, ctl_points, initMJO);
+
+        auto t2 = node_->get_clock()->now();
+        double duration_ms = (t2 - t1).nanoseconds() / 1e6;
+        RCLCPP_INFO(node_->get_logger(), "[AStar::astarWithMinTraj] Execution time: %.3f ms", duration_ms);
+
+        nav_msgs::msg::Path path_msg;
+        path_msg.header.stamp = node_->get_clock()->now();
+        path_msg.header.frame_id = "world";
+
+        for (const auto &point : simple_path_) {
+            geometry_msgs::msg::PoseStamped pose;
+            pose.header = path_msg.header;
+            pose.pose.position.x = point.x();
+            pose.pose.position.y = point.y();
+            pose.pose.position.z = point.z();
+            pose.pose.orientation.w = 1.0;
+            path_msg.poses.push_back(pose);
         }
+
+        simple_path_pub_->publish(path_msg);
+    }
         else
         {
             if (traj_.global_traj.last_glb_t_of_lc_tgt < 0.0)
@@ -197,7 +183,7 @@ namespace path_manager
             }
 
             double passed_t_on_lctraj = rclcpp::Clock().now().seconds() - traj_.local_traj.start_time;
-            double t_to_lc_end = traj_.local_traj.duration - passed_t_on_lctraj; // local traj 끝나기까지 남은시간
+            double t_to_lc_end = traj_.local_traj.duration - passed_t_on_lctraj;
             double t_to_lc_tgt = t_to_lc_end + (traj_.global_traj.glb_t_of_lc_tgt - traj_.global_traj.last_glb_t_of_lc_tgt);\
                 // 새 궤적의 duration = 이전 local traj 기준 남은 시간(거리) + (새로 늘어난 목표지점)
 

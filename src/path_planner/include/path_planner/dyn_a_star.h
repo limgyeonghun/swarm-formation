@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <Eigen/Eigen>
+#include <rclcpp/rclcpp.hpp>
 #include <queue>
 #include <cmath>
 #include <memory>

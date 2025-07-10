@@ -28,13 +28,15 @@ public:
 
 private:
   int rover_id_;
+  float offset_x_pt_;
+  float offset_y_pt_;
 
   void publish_offboard_control_mode();
   void publish_trajectory_setpoint();
   void timer_cb();
   void pos_cb(const VehicleLocalPosition::SharedPtr msg) { curr_pos_ = *msg; }
   void status_cb(const VehicleStatus::SharedPtr msg) { status_ = *msg; }
-  void target_cb(const Odometry::SharedPtr msg) { target_pos_ = *msg; }
+  void target_cb(const Odometry::SharedPtr msg);
 
   rclcpp::Subscription<VehicleStatus>::SharedPtr status_sub_;
   rclcpp::Subscription<VehicleLocalPosition>::SharedPtr position_sub_;
@@ -50,6 +52,8 @@ private:
   VehicleCommand cmd_;
   VehicleLocalPosition curr_pos_;
   Odometry target_pos_;
+
+  bool have_target_{false};
 };
 
 #endif  // ROVER_CONTROL__ROVER_CONTROL_HPP_

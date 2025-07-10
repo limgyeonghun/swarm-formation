@@ -1,0 +1,13 @@
+/**:
+  ros__parameters:
+    grid_map/resolution: 0.2
+    grid_map/map_size_x: 30.0
+    grid_map/map_size_y: 70.0
+    grid_map/map_size_z: 0.05
+    grid_map/obstacles_inflation: 0.1
+    grid_map/virtual_ceil_height: -1.0
+    grid_map/local_map_margin: 10
+    grid_map/frame_id: "world"
+    grid_map/esdf_slice_height: 0.3
+    grid_map/show_esdf_time: false
+    grid_map/local_bound_inflate: 0.1
