@@ -21,4 +21,4 @@
     fsm/thresh_replan_time: 1.0
     fsm/thresh_no_replan_meter: 1.0
     fsm/replan_trajectory_time: 0.1
-    fsm/n_seconds_ahead: 1.0
+    fsm/n_seconds_ahead: 0.0

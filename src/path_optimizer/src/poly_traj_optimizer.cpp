@@ -127,7 +127,7 @@ namespace ego_planner
     // logToFile(msg_result);
 
     if (true) {
-      RCLCPP_INFO(node_->get_logger(), "similarity_error : %f", debug_similarity_);
+      // RCLCPP_INFO(node_->get_logger(), "similarity_error : %f", debug_similarity_);
 
       auto now = std::chrono::system_clock::now();
       std::time_t now_time = std::chrono::system_clock::to_time_t(now);

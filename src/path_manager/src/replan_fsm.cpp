@@ -20,15 +20,15 @@ ReplanFSM::ReplanFSM()
       current_time_(0.0),
       last_start_time_(0.0),
       n_seconds_ahead_(0.0), 
-      visualize_ (false) {
+      rviz_simulation_ (false) {
 
     this->declare_parameter("drone_id", 0);
     this->get_parameter("drone_id", drone_id_);
     RCLCPP_INFO(this->get_logger(), "Starting ReplanFSM for drone_id: %d", drone_id_);
 
-    this->declare_parameter("visualize", false);
-    this->get_parameter("visualize", visualize_);
-    RCLCPP_INFO(this->get_logger(), "visualize: %s", visualize_ ? "true" : "false");
+    this->declare_parameter("rviz_simulation", false);
+    this->get_parameter("rviz_simulation", rviz_simulation_);
+    RCLCPP_INFO(this->get_logger(), "rviz_simulation: %s", rviz_simulation_ ? "true" : "false");
 
     this->declare_parameter("fsm/thresh_replan_time", -1.0);
     this->declare_parameter("fsm/thresh_no_replan_meter", -1.0);
@@ -66,10 +66,10 @@ ReplanFSM::ReplanFSM()
 
     optimized_path_pub_ = this->create_publisher<path_manager::msg::PolyTraj>("planning/trajectory", sensor_qos);
     global_path_pub_ = this->create_publisher<path_manager::msg::PolyTraj>("planning/global", sensor_qos);
-    broadcast_traj_pub_ = this->create_publisher<path_manager::msg::PolyTraj>("planning/broadcast_traj_recv", sensor_qos);
+    broadcast_traj_pub_ = this->create_publisher<path_manager::msg::PolyTraj>("planning/broadcast_traj_send", sensor_qos);
     odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(odom_topic, sensor_qos);
 
-    if (visualize_)
+    if (rviz_simulation_)
     {
         std::string position_topic = "/drone_" + std::to_string(drone_id_) + "/current_position";
         position_sub_ = this->create_subscription<geometry_msgs::msg::PointStamped>(

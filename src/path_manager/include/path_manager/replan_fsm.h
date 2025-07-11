@@ -77,7 +77,7 @@ private:
     double current_time_;
     double last_start_time_;
     double n_seconds_ahead_;
-    bool visualize_;
+    bool rviz_simulation_;
     std::mutex mutex_;
 };
 

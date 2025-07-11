@@ -1,7 +1,15 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+    TimerAction,
+)
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    LaunchConfiguration,
+    PathJoinSubstitution,
+)
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -13,127 +21,115 @@ def load_yaml_file(file_path):
         return yaml.safe_load(file)
 
 def create_drone_nodes(context, *args, **kwargs):
-    visualize = LaunchConfiguration('visualize')
+    rviz_sim_str = context.perform_substitution(LaunchConfiguration('rviz_simulation'))
+    rviz_sim = (rviz_sim_str.lower() == 'true')
 
-    pkg_path_manager = FindPackageShare('path_manager')
+    real_str = context.perform_substitution(LaunchConfiguration('real'))
+    real_mode = (real_str.lower() == 'true')
 
-    obstacles_param_file = PathJoinSubstitution([
-        pkg_path_manager,
-        'config',
-        'obstacles.yaml'
-    ])
+    pkg_share = FindPackageShare('path_manager')
+    obstacles_file  = PathJoinSubstitution([pkg_share, 'config', 'obstacles.yaml'])
+    optimizer_file  = PathJoinSubstitution([pkg_share, 'config', 'optimizer_params.yaml'])
+    drones_file     = PathJoinSubstitution([pkg_share, 'config', 'drones.yaml'])
+    map_file        = PathJoinSubstitution([pkg_share, 'config', 'map.yaml'])
 
-    optimizer_params_file = PathJoinSubstitution([
-        pkg_path_manager,
-        'config',
-        'optimizer_params.yaml'
-    ])
+    drones_params = load_yaml_file(context.perform_substitution(drones_file))
+    drone_cfg = drones_params['/**']['ros__parameters']
+    num_drones = drone_cfg.get('num_drones', 1)
 
-    drones_param_file = PathJoinSubstitution([
-        pkg_path_manager,
-        'config',
-        'drones.yaml'
-    ])
-
-    map_param_file = PathJoinSubstitution([
-        pkg_path_manager,
-        'config',
-        'map.yaml'
-    ])
-
-    drones_param_file_path = context.perform_substitution(drones_param_file)
-
-    drones_params = load_yaml_file(drones_param_file_path)
-
-    if '/**' not in drones_params:
-        raise RuntimeError("drones.yaml does not contain '/**' namespace")
-
-    drone_config = drones_params['/**']['ros__parameters']
-
-    num_drones = drone_config.get('num_drones', 1)
-    if not isinstance(num_drones, int) or num_drones < 1:
-        raise RuntimeError(f"Invalid num_drones in drones.yaml: {num_drones}")
-
-    print(f"Launching {num_drones} drones from drones.yaml")
-
-    replan_fsm_nodes = []
-    rover_control_nodes = []
+    replan_nodes = []
+    rover_nodes  = []
     for i in range(num_drones):
-        drone_key = f'drone_{i}'
-        if drone_key not in drone_config:
-            raise RuntimeError(f"Drone configuration for {drone_key} not found in drones.yaml")
-
-        drone_params = drone_config[drone_key]
+        cfg = drone_cfg[f'drone_{i}']
+        did = cfg['drone_id']
 
         params = {
-            'visualize': visualize,
-            'drone_id': drone_params['drone_id'],
-            'start_point_x': float(drone_params['start_point_x']),
-            'start_point_y': float(drone_params['start_point_y']),
-            'start_point_z': float(drone_params['start_point_z']),
-            'end_point_x': float(drone_params['end_point_x']),
-            'end_point_y': float(drone_params['end_point_y']),
-            'end_point_z': float(drone_params['end_point_z']),
+            'rviz_simulation': rviz_sim,    # bool
+            'drone_id':        did,
+            'start_point_x':   float(cfg['start_point_x']),
+            'start_point_y':   float(cfg['start_point_y']),
+            'start_point_z':   float(cfg['start_point_z']),
+            'end_point_x':     float(cfg['end_point_x']),
+            'end_point_y':     float(cfg['end_point_y']),
+            'end_point_z':     float(cfg['end_point_z']),
         }
 
-        print(f"Creating drone {drone_params['drone_id']}: start=({params['start_point_x']}, {params['start_point_y']}, {params['start_point_z']}), end=({params['end_point_x']}, {params['end_point_y']}, {params['end_point_z']})")
-
-        replan_fsm_node = Node(
-            package='path_manager',
-            executable='path_manager_node',
-            name=f'replan_fsm_drone_{i}',
-            output='screen',
-            parameters=[
-                params,
-                obstacles_param_file,
-                optimizer_params_file,
-                drones_param_file,
-                map_param_file
-            ],
-        )
-        replan_fsm_nodes.append(replan_fsm_node)
-
-        rover_control_node = Node(
-            package='rover_control',
-            executable='rover_control_node',
-            name=f'RoverControl_drone_{i}',
-            output='screen',
-            parameters=[
-                {'rover_id': drone_params['drone_id']},
-                {'visualize': visualize},
-                {'start_point_x': drone_params['start_point_x']},
-                {'start_point_y': drone_params['start_point_y']},
-                {'start_point_z': drone_params['start_point_z']},
+        remaps = []
+        if real_mode:
+            id_str = str(did+1)
+            remaps = [
+                (
+                    '/planning/broadcast_traj_send',
+                    f'from_vehicle{id_str}/planning/broadcast_traj_send'
+                ),
+                (
+                    '/planning/broadcast_traj_recv',
+                    f'to_vehicle{id_str}/planning/broadcast_traj_recv'
+                ),
             ]
-        )
-        rover_control_nodes.append(rover_control_node)
 
-    visualization_launch = IncludeLaunchDescription(
+        replan_nodes.append(
+            Node(
+                package='path_manager',
+                executable='path_manager_node',
+                name=f'replan_fsm_drone_{i}',
+                output='screen',
+                parameters=[
+                    params,
+                    obstacles_file,
+                    optimizer_file,
+                    drones_file,
+                    map_file,
+                ],
+                remappings=remaps,
+            )
+        )
+
+        rover_nodes.append(
+            Node(
+                package='rover_control',
+                executable='rover_control_node',
+                name=f'RoverControl_drone_{i}',
+                output='screen',
+                parameters=[
+                    {'rover_id':        did},
+                    {'rviz_simulation': rviz_sim},  # bool
+                    {'start_point_x':   cfg['start_point_x']},
+                    {'start_point_y':   cfg['start_point_y']},
+                    {'start_point_z':   cfg['start_point_z']},
+                ],
+            )
+        )
+
+    visualization = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
                 FindPackageShare('path_visualization'),
                 'launch',
-                'path_visualization.launch.py'
+                'path_visualization.launch.py',
             ])
         ]),
-        condition=IfCondition(visualize)
+        condition=IfCondition(LaunchConfiguration('rviz_simulation'))
     )
 
-    # Wrap replan_fsm_nodes and visualization_launch in a TimerAction to delay by 5 seconds
-    delayed_nodes = TimerAction(
+    delayed = TimerAction(
         period=0.0,
-        actions=replan_fsm_nodes + [visualization_launch]
+        actions=replan_nodes + [visualization],
     )
 
-    # Return rover_control_nodes immediately, and the delayed nodes
-    return rover_control_nodes + [delayed_nodes]
+    return rover_nodes + [delayed]
 
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
-            'visualize',
+            'rviz_simulation',
             default_value='false',
-            description='Enable visualization with path_visualization and RViz if true'
+            description='Enable RViz visualization (bool)'
         ),
-        OpaqueFunction(function=create_drone_nodes)
+        DeclareLaunchArgument(
+            'real',
+            default_value='false',
+            description='Enable real-topic remapping'
+        ),
+        OpaqueFunction(function=create_drone_nodes),
     ])

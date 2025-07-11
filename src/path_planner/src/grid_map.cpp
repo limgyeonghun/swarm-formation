@@ -74,8 +74,8 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
 
 void GridMap::setStaticMap(const std::vector<double>& static_occupancy) {
   if (static_occupancy.size() != md_.occupancy_buffer_.size()) {
-    // RCLCPP_ERROR(node_->get_logger(), "Static map size (%zu) does not match buffer size (%zu)!",
-    //              static_occupancy.size(), md_.occupancy_buffer_.size());
+    RCLCPP_ERROR(node_->get_logger(), "Static map size (%zu) does not match buffer size (%zu)!",
+                 static_occupancy.size(), md_.occupancy_buffer_.size());
     return;
   }
 
@@ -101,9 +101,6 @@ void GridMap::setStaticMap(const std::vector<double>& static_occupancy) {
       }
     }
   }
-
-      RCLCPP_ERROR(node_->get_logger(), "Static map size (%zu) does not match buffer size (%zu)!",
-                 static_occupancy.size(), md_.occupancy_buffer_.size());
 
   md_.esdf_need_update_ = true;
 }
