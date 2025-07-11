@@ -33,9 +33,11 @@ ReplanFSM::ReplanFSM()
     this->declare_parameter("fsm/thresh_replan_time", -1.0);
     this->declare_parameter("fsm/thresh_no_replan_meter", -1.0);
     this->declare_parameter("fsm/replan_trajectory_time", -1.0);
+    this->declare_parameter("fsm/n_seconds_ahead", -1.0);
     this->get_parameter("fsm/thresh_replan_time", replan_thresh_);
     this->get_parameter("fsm/thresh_no_replan_meter", no_replan_thresh_);
     this->get_parameter("fsm/replan_trajectory_time", replan_trajectory_time_);
+    this->get_parameter("fsm/n_seconds_ahead", n_seconds_ahead_);
 
     this->declare_parameter("start_point_x", 0.0);
     this->declare_parameter("start_point_y", 0.0);
