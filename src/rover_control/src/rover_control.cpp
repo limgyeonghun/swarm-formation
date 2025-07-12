@@ -20,7 +20,7 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(
     auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 20), qos_profile);
 
     status_sub_ = this->create_subscription<VehicleStatus>(
-        topic_prefix_out + "vehicle_status_v1", qos, bind(&RoverControl::status_cb, this, std::placeholders::_1));
+        topic_prefix_out + "vehicle_status", qos, bind(&RoverControl::status_cb, this, std::placeholders::_1));
     position_sub_ = this->create_subscription<VehicleLocalPosition>(
         topic_prefix_out + "vehicle_local_position", qos, bind(&RoverControl::pos_cb, this, std::placeholders::_1));
     // odom_sub_ = this->create_subscription<Odometry>(
@@ -51,7 +51,7 @@ void RoverControl::publish_offboard_control_mode()
     msg.acceleration = false;
     msg.attitude = false;
     msg.body_rate = false;
-    msg.direct_actuator = false;
+    msg.actuator = false;
 
     offboard_control_mode_pub_->publish(msg);
 }
