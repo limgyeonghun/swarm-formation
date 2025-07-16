@@ -55,16 +55,16 @@ def create_drone_nodes(context, *args, **kwargs):
         }
 
         remaps = []
-        if real_mode:
+        if not real_mode:
             id_str = str(did+1)
             remaps = [
                 (
-                    '/planning/broadcast_traj_send',
-                    f'from_vehicle{id_str}/planning/broadcast_traj_send'
+                    f'V{id_str}/planning/broadcast_traj_send',
+                    '/planning/broadcast_traj_recv'
                 ),
                 (
-                    '/planning/broadcast_traj_recv',
-                    f'to_vehicle{id_str}/planning/broadcast_traj_recv'
+                    f'V{id_str}/j_fi/broadcast_traj_recv',
+                    '/planning/broadcast_traj_recv'
                 ),
             ]
 

@@ -63,10 +63,11 @@ ReplanFSM::ReplanFSM()
     auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
     std::string odom_topic = "/vehicle" + std::to_string(drone_id_+1) + "/target_position";
+    std::string topic_prefix = "/V" + std::to_string(drone_id_+1);    
 
     optimized_path_pub_ = this->create_publisher<path_manager::msg::PolyTraj>("planning/trajectory", sensor_qos);
     global_path_pub_ = this->create_publisher<path_manager::msg::PolyTraj>("planning/global", sensor_qos);
-    broadcast_traj_pub_ = this->create_publisher<path_manager::msg::PolyTraj>("planning/broadcast_traj_send", sensor_qos);
+    broadcast_traj_pub_ = this->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/broadcast_traj_send", sensor_qos);
     odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(odom_topic, sensor_qos);
 
     if (rviz_simulation_)
@@ -83,7 +84,7 @@ ReplanFSM::ReplanFSM()
     }
 
     broadcast_traj_sub_ = this->create_subscription<path_manager::msg::PolyTraj>(
-        "planning/broadcast_traj_recv", sensor_qos,
+        topic_prefix + "/j_fi/broadcast_traj_recv", sensor_qos,
         std::bind(&ReplanFSM::recvBroadcastPolyTrajCallback, this, std::placeholders::_1));
 
     odom_timer_ = this->create_wall_timer(10ms, std::bind(&ReplanFSM::publishOdometry, this));
