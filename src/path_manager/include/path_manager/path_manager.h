@@ -21,7 +21,7 @@ namespace path_manager
   class PathManager
   {
   public:
-    PathManager(const std::shared_ptr<rclcpp::Node> &node);
+    PathManager(rclcpp::Node::SharedPtr node);
 
     void initOptimizer();
     void getLocalTarget(const Eigen::Vector3d &start_pt,

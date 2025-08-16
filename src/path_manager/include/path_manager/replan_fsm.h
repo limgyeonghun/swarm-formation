@@ -13,7 +13,7 @@
 
 namespace path_manager {
 
-class ReplanFSM : public rclcpp::Node {
+class ReplanFSM {
 public:
     enum FSM_EXEC_STATE {
         INIT,
@@ -25,8 +25,8 @@ public:
         SEQUENTIAL_START
     };
 
-    ReplanFSM();
-    ~ReplanFSM() = default;
+    ReplanFSM(rclcpp::Node::SharedPtr node);
+    ~ReplanFSM() {};
     
     void init();
     void publishOdometry();
@@ -36,8 +36,11 @@ public:
     void recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg);
     void polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     void globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
+    rclcpp::CallbackGroup::SharedPtr odom_callback_group_;
+    rclcpp::CallbackGroup::SharedPtr timer_callback_group_;
 
 private:
+    rclcpp::Node::SharedPtr node_;
     bool callPathManager(bool flag_use_poly_init, bool flag_randomPolyTraj, bool use_formation);
     bool planFromGlobalTraj(int trial_times = 1);
     bool planFromLocalTraj(bool flag_use_poly_init, bool use_formation);

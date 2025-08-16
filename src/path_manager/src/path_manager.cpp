@@ -3,7 +3,7 @@
 namespace path_manager
 {
 
-    PathManager::PathManager(const std::shared_ptr<rclcpp::Node> &node)
+    PathManager::PathManager(rclcpp::Node::SharedPtr node)
         : node_(node),
           max_vel_(-1.0),
           max_acc_(-1.0),
