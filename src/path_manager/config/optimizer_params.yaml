@@ -1,15 +1,15 @@
 /**:
   ros__parameters:
     optimization/constrain_points_perPiece: 3  
-    optimization/weight_obstacle: 80000.0  
-    optimization/weight_swarm: 100000.0        
+    optimization/weight_obstacle: 50000.0  
+    optimization/weight_swarm: 50000.0        
     optimization/weight_feasibility: 10000.0 
     optimization/weight_sqrvariance: 10000.0  
     optimization/weight_time: 80.0      
-    optimization/weight_formation: 1.0    
-    optimization/obstacle_clearance: 0.5
-    optimization/swarm_clearance: 0.5 
-    optimization/formation_type: 3
+    optimization/weight_formation: 15000.0    
+    optimization/obstacle_clearance: 1.0
+    optimization/swarm_clearance: 1.0 
+    optimization/formation_type: 2
     optimization/max_vel: 1.5
     optimization/max_acc: 6.0
 
@@ -18,7 +18,7 @@
     manager/polyTraj_piece_length: 2.0
     manager/planning_horizon: 7.5
     
-    fsm/thresh_replan_time: 1.0
+    fsm/thresh_replan_time: 0.5
     fsm/thresh_no_replan_meter: 1.0
     fsm/replan_trajectory_time: 0.1
     fsm/n_seconds_ahead: 0.0

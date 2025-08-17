@@ -266,9 +266,9 @@ namespace path_manager
             // cout << "max vel : " << globalMJO.getTraj().getMaxVelRate() << endl;
             // cout << "time_vec : " << time_vec.transpose() << endl;
 
-            des_vel /= 1.2;
+            des_vel /= 1.5;
             try_num++;
-        } while (globalMJO.getTraj().getMaxVelRate() > max_vel_ && try_num <= 5);
+        } while (globalMJO.getTraj().getMaxVelRate() > max_vel_ && try_num <= 15);
 
         auto time_now = rclcpp::Clock().now().seconds();
         traj_.setGlobalTraj(globalMJO.getTraj(), time_now);

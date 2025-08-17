@@ -35,7 +35,7 @@
     #   end_point_z: 0.0
 
 
-    num_drones: 6
+    num_drones: 1
     drone_0:
       drone_id: 0
       start_point_x: 0.0
