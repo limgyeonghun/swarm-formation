@@ -29,7 +29,7 @@ public:
     ~ReplanFSM() {};
     
     void init();
-    void publishOdometry();
+    // void publishOdometry();
     void computeAndPublishPaths();
     void positionCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg);
     void PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
@@ -65,7 +65,7 @@ private:
     bool have_new_target_;
     bool have_local_traj_;
     bool have_recv_pre_agent_;
-    bool flag_relan_astar_;
+    bool flag_replan_astar_;
     int drone_id_;
     double replan_thresh_;
     double no_replan_thresh_;

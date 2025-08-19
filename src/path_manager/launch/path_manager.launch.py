@@ -37,8 +37,13 @@ def create_drone_nodes(context, *args, **kwargs):
     drone_cfg = drones_params['/**']['ros__parameters']
     num_drones = drone_cfg.get('num_drones', 1)
 
+    fsm_params = drone_cfg.get('fsm', {})
+    n_seconds_ahead = float(fsm_params.get('n_seconds_ahead', 0.0))
+
     replan_nodes = []
+    traj_nodes   = []
     rover_nodes  = []
+
     for i in range(num_drones):
         cfg = drone_cfg[f'drone_{i}']
         did = cfg['drone_id']
@@ -85,6 +90,20 @@ def create_drone_nodes(context, *args, **kwargs):
             )
         )
 
+        traj_nodes.append(
+            Node(
+                package='path_manager',
+                executable='traj_server',
+                name=f'TrajServer_drone_{i}',
+                output='screen',
+                parameters=[{
+                    'drone_id': did,
+                    'rviz_simulation': rviz_sim,
+                    'fsm/n_seconds_ahead': n_seconds_ahead,
+                }],
+            )
+        )
+
         rover_nodes.append(
             Node(
                 package='rover_control',
@@ -113,8 +132,8 @@ def create_drone_nodes(context, *args, **kwargs):
     )
 
     delayed = TimerAction(
-        period=0.0,
-        actions=replan_nodes + [visualization],
+        period = 5.0,
+        actions = traj_nodes + replan_nodes + [visualization],
     )
 
     return rover_nodes + [delayed]

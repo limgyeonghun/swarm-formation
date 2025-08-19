@@ -87,7 +87,7 @@ namespace path_manager
     bool PathManager::computeAndOptimizePath(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                                              const double trajectory_start_time, const Eigen::Vector3d &local_target_pt,
                                              const Eigen::Vector3d &local_target_vel, const bool flag_polyInit,
-                                             const bool flag_randomPolyTraj, const bool use_formation, const bool have_local_traj)
+                                             const bool flag_randomPolyTraj, const bool sync_start, const bool have_local_traj)
     {
         if ((start_pt - local_target_pt).norm() < 0.2)
         {
@@ -122,7 +122,7 @@ namespace path_manager
             return false;
         }
 
-        if (have_local_traj && use_formation)
+        if (have_local_traj && sync_start)
         {
             double delta_replan_time = trajectory_start_time - rclcpp::Clock().now().seconds();
             if (delta_replan_time > 0)
@@ -185,7 +185,6 @@ namespace path_manager
             double passed_t_on_lctraj = rclcpp::Clock().now().seconds() - traj_.local_traj.start_time;
             double t_to_lc_end = traj_.local_traj.duration - passed_t_on_lctraj;
             double t_to_lc_tgt = t_to_lc_end + (traj_.global_traj.glb_t_of_lc_tgt - traj_.global_traj.last_glb_t_of_lc_tgt);\
-                // 새 궤적의 duration = 이전 local traj 기준 남은 시간(거리) + (새로 늘어난 목표지점)
 
             int piece_nums = std::ceil((start_pt - local_target_pt).norm() / poly_traj_piece_length_);
             if (piece_nums < 2)
@@ -202,11 +201,11 @@ namespace path_manager
             double t = piece_dur_vec(0);
             for (int i = 0; i < piece_nums - 1; ++i)
             {
-                if (t < t_to_lc_end) // 현재 가리키는 지점(t) 가 이전로컬궤적안에 있다면 로컬궤적의 위치에서 가져오기
+                if (t < t_to_lc_end)
                 {
                     innerPs.col(i) = traj_.local_traj.traj.getPos(t + passed_t_on_lctraj);
                 }
-                else if (t <= t_to_lc_tgt) // 현재 가리키는 지점(t)가 새로생긴 로컬궤적밖이라면 글로벌궤적에서 위치 가져오기
+                else if (t <= t_to_lc_tgt)
                 {
                     double glb_t = t - t_to_lc_end + traj_.global_traj.last_glb_t_of_lc_tgt - traj_.global_traj.global_start_time;
                     innerPs.col(i) = traj_.global_traj.traj.getPos(glb_t);
@@ -266,9 +265,9 @@ namespace path_manager
             // cout << "max vel : " << globalMJO.getTraj().getMaxVelRate() << endl;
             // cout << "time_vec : " << time_vec.transpose() << endl;
 
-            des_vel /= 1.5;
+            des_vel /= 1.2;
             try_num++;
-        } while (globalMJO.getTraj().getMaxVelRate() > max_vel_ && try_num <= 15);
+        } while (globalMJO.getTraj().getMaxVelRate() > max_vel_ && try_num <= 5);
 
         auto time_now = rclcpp::Clock().now().seconds();
         traj_.setGlobalTraj(globalMJO.getTraj(), time_now);

@@ -148,7 +148,8 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
     GridNodePtr startPtr = GridNodeMap_[start_idx(0)][start_idx(1)][start_idx(2)];
     GridNodePtr endPtr = GridNodeMap_[end_idx(0)][end_idx(1)][end_idx(2)];
 
-    while (!openSet_.empty()) openSet_.pop();
+    // while (!openSet_.empty()) openSet_.pop();
+    openSet_ = decltype(openSet_)();
 
     GridNodePtr neighborPtr = nullptr;
     GridNodePtr current = nullptr;

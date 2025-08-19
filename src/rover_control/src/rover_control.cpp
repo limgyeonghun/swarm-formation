@@ -23,10 +23,10 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(
         topic_prefix_out + "vehicle_status", qos, bind(&RoverControl::status_cb, this, std::placeholders::_1));
     position_sub_ = this->create_subscription<VehicleLocalPosition>(
         topic_prefix_out + "vehicle_local_position", qos, bind(&RoverControl::pos_cb, this, std::placeholders::_1));
-    // odom_sub_ = this->create_subscription<Odometry>(
+    // target_sub_ = this->create_subscription<PositionCommand>(
     //     topic_prefix_in + "target_position", qos, bind(&RoverControl::target_cb, this, std::placeholders::_1));
 
-    odom_sub_ = this->create_subscription<Odometry>(
+    target_sub_ = this->create_subscription<PositionCommand>(
         "vehicle" + sid + "/target_position", qos, bind(&RoverControl::target_cb, this, std::placeholders::_1));    
     trajectory_setpoint_pub_ = this->create_publisher<TrajectorySetpoint>(topic_prefix_in + "trajectory_setpoint", qos);
     offboard_control_mode_pub_ = this->create_publisher<OffboardControlMode>(topic_prefix_in + "offboard_control_mode", qos);
@@ -34,7 +34,7 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(
     timer_ = this->create_wall_timer(10ms, bind(&RoverControl::timer_cb, this));
 }
 
-void RoverControl::target_cb (const Odometry::SharedPtr msg)
+void RoverControl::target_cb (const PositionCommand::SharedPtr msg)
 {
     target_pos_ = *msg;
     have_target_ = true;
@@ -63,13 +63,13 @@ void RoverControl::publish_trajectory_setpoint()
     {
         TrajectorySetpoint msg{};
         msg.timestamp = this->now().nanoseconds();
-        msg.position[0] = target_pos_.pose.pose.position.x - offset_x_pt_;
-        msg.position[1] = target_pos_.pose.pose.position.y - offset_y_pt_;
+        msg.position[0] = target_pos_.position.x - offset_x_pt_;
+        msg.position[1] = target_pos_.position.y - offset_y_pt_;
         // msg.position[2] = 0.0;
 
-        msg.velocity[0] = target_pos_.twist.twist.linear.x;
-        msg.velocity[1] = target_pos_.twist.twist.linear.y;
-        msg.velocity[2] = target_pos_.twist.twist.linear.z;
+        msg.velocity[0] = target_pos_.velocity.x;
+        msg.velocity[1] = target_pos_.velocity.y;
+        msg.velocity[2] = target_pos_.velocity.z;
 
         trajectory_setpoint_pub_->publish(msg);
     }

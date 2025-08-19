@@ -8,6 +8,7 @@
 #include "px4_msgs/msg/vehicle_local_position.hpp"
 #include "px4_msgs/msg/offboard_control_mode.hpp"
 #include "px4_msgs/msg/trajectory_setpoint.hpp"
+#include <path_manager/msg/position_command.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 
 
@@ -19,6 +20,7 @@ using px4_msgs::msg::TrajectorySetpoint;
 using px4_msgs::msg::VehicleCommand;
 using px4_msgs::msg::VehicleLocalPosition;
 using px4_msgs::msg::VehicleStatus;
+using path_manager::msg::PositionCommand;
 using nav_msgs::msg::Odometry;
 
 class RoverControl : public rclcpp::Node
@@ -36,12 +38,12 @@ private:
   void timer_cb();
   void pos_cb(const VehicleLocalPosition::SharedPtr msg) { curr_pos_ = *msg; }
   void status_cb(const VehicleStatus::SharedPtr msg) { status_ = *msg; }
-  void target_cb(const Odometry::SharedPtr msg);
+  void target_cb(const PositionCommand::SharedPtr msg);
 
   rclcpp::Subscription<VehicleStatus>::SharedPtr status_sub_;
   rclcpp::Subscription<VehicleLocalPosition>::SharedPtr position_sub_;
   rclcpp::Subscription<VehicleCommand>::SharedPtr command_sub_;
-  rclcpp::Subscription<Odometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<PositionCommand>::SharedPtr target_sub_;
 
   rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_pub_;
   rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_pub_;
@@ -51,7 +53,7 @@ private:
   VehicleStatus status_;
   VehicleCommand cmd_;
   VehicleLocalPosition curr_pos_;
-  Odometry target_pos_;
+  PositionCommand target_pos_;
 
   bool have_target_{false};
 };
