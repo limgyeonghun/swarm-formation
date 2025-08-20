@@ -138,7 +138,7 @@ void ReplanFSM::init()
 //     }
 
 //     auto local_traj = &path_manager_->traj_.local_traj;
-//     double t_cur = node_->now().seconds() - local_traj->start_time;
+//     double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - local_traj->start_time;
 //     t_cur = std::min(local_traj->duration, t_cur);
 
 //     double t_ahead = std::min(t_cur + n_seconds_ahead_, local_traj->duration);
@@ -148,7 +148,7 @@ void ReplanFSM::init()
 //     // RCLCPP_INFO(node_->get_logger(), "[vehicle %d] t_cur: %f ",drone_id_ + 1, t_cur);
 
 //     nav_msgs::msg::Odometry msg{};
-//     msg.header.stamp = node_->now();
+//     msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
 //     msg.header.frame_id = "odom";
 //     msg.child_frame_id = "base_link";
 
@@ -243,6 +243,7 @@ void ReplanFSM::computeAndPublishPaths() {
             double t_cur = current_time_ - local_traj->start_time;
             t_cur = std::min(local_traj->duration, t_cur);
 
+	    //RCLCPP_INFO(node_->get_logger(), "t_cur: %.2f, duration: %.2f", t_cur, local_traj->duration);
             Eigen::Vector3d pos = local_traj->traj.getPos(t_cur);
 
             if ((local_target_pt_ - end_pt_).norm() < 0.1)
@@ -271,6 +272,7 @@ void ReplanFSM::computeAndPublishPaths() {
 
         case EMERGENCY_STOP: {
             // TODO: Implement emergency stop logic
+            RCLCPP_ERROR(node_->get_logger(), "EMERGENCY_STOP");
             break;
         }
     }
@@ -279,7 +281,7 @@ void ReplanFSM::computeAndPublishPaths() {
 void ReplanFSM::positionCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg) {
     current_pos_ = Eigen::Vector3d(msg->point.x, msg->point.y, msg->point.z);
     // RCLCPP_ERROR(node_->get_logger(), "Current position: %.2f, %.2f, %.2f", current_pos_(0), current_pos_(1), current_pos_(2));
-    current_time_ = node_->now().seconds();
+    current_time_ = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
     have_position_ = true;
 }
 
@@ -288,7 +290,7 @@ void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::S
     current_pos_(1) = msg->y + offset_pt_(1);
     current_pos_(2) = offset_pt_(2);
 
-    current_time_ = node_->now().seconds();
+    current_time_ = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
     have_position_ = true;
 }
 
@@ -306,7 +308,7 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
         return;
     }
     rclcpp::Time msg_time(msg->start_time);
-    double time_diff = (node_->now() - msg_time).seconds();
+    double time_diff = (rclcpp::Clock(RCL_ROS_TIME).now() - msg_time).seconds();
     if (std::abs(time_diff) > 0.25) {
         RCLCPP_WARN(node_->get_logger(), "Time stamp diff: Local - Remote Agent %d = %fs",
                     msg->drone_id, time_diff);
@@ -368,11 +370,12 @@ void ReplanFSM::polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
 
     msg.drone_id = drone_id_;
     msg.traj_id = data->traj_id;
-    const double s = data->start_time;
+    msg.order = 5;
+
+        const double s = data->start_time;
 
     msg.start_time.sec     = static_cast<int32_t>(std::floor(s));
     msg.start_time.nanosec = static_cast<uint32_t>(std::llround((s - msg.start_time.sec) * 1e9));
-    msg.order = 5;
 
     Eigen::VectorXd durs = data->traj.getDurations();
     int piece_num = data->traj.getPieceNum();
@@ -401,7 +404,7 @@ void ReplanFSM::globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
 
     auto data = &path_manager_->traj_.global_traj;
 
-    rclcpp::Time now = node_->now();
+    rclcpp::Time now = rclcpp::Clock(RCL_ROS_TIME).now();
     msg.start_time.sec = now.seconds();
     msg.start_time.nanosec = now.nanoseconds() % 1000000000;
     msg.order = 5;
@@ -434,20 +437,21 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
     Eigen::Vector3d desired_start_pt, desired_start_vel, desired_start_acc;
     double desired_start_time;
 
-    if (have_local_traj_) {
-        desired_start_time = node_->now().seconds() + replan_trajectory_time_;
+    if (have_local_traj_ && use_formation) {
+        desired_start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds() + replan_trajectory_time_;
         double t_adj = desired_start_time - path_manager_->traj_.local_traj.start_time;
         desired_start_pt = path_manager_->traj_.local_traj.traj.getPos(t_adj);
         desired_start_vel = path_manager_->traj_.local_traj.traj.getVel(t_adj);
         desired_start_acc = path_manager_->traj_.local_traj.traj.getAcc(t_adj);
     } else {
+        RCLCPP_INFO(node_->get_logger(), "No local trajectory, using start point as desired start point.");
         desired_start_pt = start_pt_;
         desired_start_vel = Eigen::Vector3d(0.0, 0.0, 0.0);
         desired_start_acc = Eigen::Vector3d::Zero();
     }
 
     // if (have_local_traj_) {
-    //     desired_start_time = node_->now().seconds() + replan_trajectory_time_;
+    //     desired_start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds() + replan_trajectory_time_;
     //     double t_adj = desired_start_time - path_manager_->traj_.local_traj.start_time;
     //     double t_ahead = std::min(t_adj + n_seconds_ahead_, path_manager_->traj_.local_traj.duration);
         
@@ -501,9 +505,9 @@ bool ReplanFSM::planFromGlobalTraj(int trial_times) {
 }
 
 bool ReplanFSM::planFromLocalTraj(bool flag_use_poly_init, bool use_formation) {
-    double t_debug_start = node_->now().seconds();
+    double t_debug_start = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
     LocalTrajData *info = &path_manager_->traj_.local_traj;
-    double t_cur = node_->now().seconds() - path_manager_->traj_.local_traj.start_time;
+    double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - path_manager_->traj_.local_traj.start_time;
 
     // start_pt_ = current_pos_;
     // RCLCPP_ERROR(node_->get_logger(), "start_pt_: %.2f, %.2f, %.2f", start_pt_(0), start_pt_(1), start_pt_(2));

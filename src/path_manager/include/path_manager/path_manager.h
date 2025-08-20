@@ -30,7 +30,7 @@ namespace path_manager
     bool computeAndOptimizePath(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                                 const double trajectory_start_time, const Eigen::Vector3d &local_target_pt,
                                 const Eigen::Vector3d &local_target_vel, const bool flag_polyInit, const bool flag_randomPolyTraj,
-                                const bool sync_start, const bool have_local_traj);
+                                const bool use_formation, const bool have_local_traj);
     bool planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel,
                         const Eigen::Vector3d &start_acc, const std::vector<Eigen::Vector3d> &waypoints,
                         const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);

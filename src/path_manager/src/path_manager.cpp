@@ -87,15 +87,12 @@ namespace path_manager
     bool PathManager::computeAndOptimizePath(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                                              const double trajectory_start_time, const Eigen::Vector3d &local_target_pt,
                                              const Eigen::Vector3d &local_target_vel, const bool flag_polyInit,
-                                             const bool flag_randomPolyTraj, const bool sync_start, const bool have_local_traj)
+                                             const bool flag_randomPolyTraj, const bool use_formation, const bool have_local_traj)
     {
         if ((start_pt - local_target_pt).norm() < 0.2)
         {
             return false;
         }
-
-        // updateRobotState(start_pt, local_target_pt);
-
         double ts = poly_traj_piece_length_ / max_vel_;
         poly_traj::MinJerkOpt initMJO;
         if (!computeInitReferenceState(start_pt, start_vel, start_acc, local_target_pt, local_target_vel, ts, initMJO, flag_polyInit))
@@ -103,7 +100,7 @@ namespace path_manager
             RCLCPP_ERROR(node_->get_logger(), "Failed to compute initial reference state.");
             return false;
         }
-        
+
         Eigen::MatrixXd cstr_pts = initMJO.getInitConstrainPoints(poly_traj_opt_->get_cps_num_prePiece_());
         poly_traj_opt_->setControlPoints(cstr_pts);
 
@@ -115,27 +112,29 @@ namespace path_manager
         headState << initTraj.getJuncPos(0), initTraj.getJuncVel(0), initTraj.getJuncAcc(0);
         tailState << initTraj.getJuncPos(PN), initTraj.getJuncVel(PN), initTraj.getJuncAcc(PN);
 
-        bool flag_success = poly_traj_opt_->OptimizeTrajectory_lbfgs(headState, tailState, innerPts, initTraj.getDurations(), cstr_pts, true);
+        bool flag_success = poly_traj_opt_->OptimizeTrajectory_lbfgs(headState, tailState, innerPts, initTraj.getDurations(), cstr_pts, use_formation);
         if (!flag_success)
         {
             RCLCPP_ERROR(node_->get_logger(), "Failed to optimize trajectory.");
             return false;
         }
 
-        if (have_local_traj && sync_start)
+        if (have_local_traj && use_formation)
         {
-            double delta_replan_time = trajectory_start_time - rclcpp::Clock().now().seconds();
+            double delta_replan_time = trajectory_start_time - rclcpp::Clock(RCL_ROS_TIME).now().seconds();
             if (delta_replan_time > 0)
             {
-                rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(delta_replan_time)));
+                RCLCPP_INFO(node_->get_logger(), "Waiting for %.2f seconds to sync start time", delta_replan_time);
+                rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::duration<double>(delta_replan_time)));
             }
             traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(), trajectory_start_time);
         }
         else
         {
-            traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(), rclcpp::Clock().now().seconds());
+            traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(),
+                            rclcpp::Clock(RCL_ROS_TIME).now().seconds());
         }
-
         return true;
     }
 
@@ -152,15 +151,15 @@ namespace path_manager
 
         Eigen::MatrixXd ctl_points;
 
-        auto t1 = node_->get_clock()->now();
+        auto t1 = rclcpp::Clock(RCL_ROS_TIME).now();
         poly_traj_opt_->astarWithMinTraj(headState, tailState, simple_path_, ctl_points, initMJO);
 
-        auto t2 = node_->get_clock()->now();
+        auto t2 = rclcpp::Clock(RCL_ROS_TIME).now();
         double duration_ms = (t2 - t1).nanoseconds() / 1e6;
         RCLCPP_INFO(node_->get_logger(), "[AStar::astarWithMinTraj] Execution time: %.3f ms", duration_ms);
 
         nav_msgs::msg::Path path_msg;
-        path_msg.header.stamp = node_->get_clock()->now();
+        path_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
         path_msg.header.frame_id = "world";
 
         for (const auto &point : simple_path_) {
@@ -182,7 +181,7 @@ namespace path_manager
                 return false;
             }
 
-            double passed_t_on_lctraj = rclcpp::Clock().now().seconds() - traj_.local_traj.start_time;
+            double passed_t_on_lctraj = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - traj_.local_traj.start_time;
             double t_to_lc_end = traj_.local_traj.duration - passed_t_on_lctraj;
             double t_to_lc_tgt = t_to_lc_end + (traj_.global_traj.glb_t_of_lc_tgt - traj_.global_traj.last_glb_t_of_lc_tgt);\
 
@@ -269,7 +268,7 @@ namespace path_manager
             try_num++;
         } while (globalMJO.getTraj().getMaxVelRate() > max_vel_ && try_num <= 5);
 
-        auto time_now = rclcpp::Clock().now().seconds();
+        auto time_now = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
         traj_.setGlobalTraj(globalMJO.getTraj(), time_now);
 
         return true;
@@ -299,12 +298,6 @@ namespace path_manager
                 break;
             }
         }
-        // 이전 목표지점(시간) 가져오기 (traj_.global_traj.glb_t_of_lc_tgt)
-        // 이전 목표지점부터 전역궤적 끝까지 탐색
-        // t_step 만큼 증가하며 최적 지점 찾기
-        // 시작지점부터 목표지점이 planning_horizen_ 보다 커지는 지점을 목표지점으로 설정
-        // 그때의 시간 t를 glb_t_of_lc_tgt 에 저장 (이 코드에선 위치를 시간으로 표현)
-        // 즉, 목표위치에 해당하는 전역 시간을 기록해둠 
 
         if ((t - traj_.global_traj.global_start_time) >= traj_.global_traj.duration) // Last global point
         {
@@ -319,7 +312,6 @@ namespace path_manager
         else
         {
             local_target_vel = traj_.global_traj.traj.getVel(t - traj_.global_traj.global_start_time);
-            // 목표지점에서의 목표속력 계산
         }
     }
 
