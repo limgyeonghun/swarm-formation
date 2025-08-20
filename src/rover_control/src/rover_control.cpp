@@ -12,6 +12,9 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(
     this->declare_parameter<float>("start_point_y", 0.0);
     this->get_parameter("start_point_y", offset_y_pt_);
 
+    this->declare_parameter<double>("target_idle_timeout_sec", 0.5);
+    this->get_parameter("target_idle_timeout_sec", target_idle_timeout_sec_);
+
     std::string sid = std::to_string(rover_id_ + 1);
     const std::string topic_prefix_out = "/vehicle" + sid + "/fmu/out/";
     const std::string topic_prefix_in = "/vehicle" + sid + "/fmu/in/";
@@ -34,12 +37,30 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(
     timer_ = this->create_wall_timer(10ms, bind(&RoverControl::timer_cb, this));
 }
 
-void RoverControl::target_cb (const PositionCommand::SharedPtr msg)
+bool RoverControl::positions_equal(const PositionCommand& a, const PositionCommand& b) const
 {
-    target_pos_ = *msg;
-    have_target_ = true;
+    return (a.position.x == b.position.x) &&
+           (a.position.y == b.position.y) &&
+           (a.position.z == b.position.z) &&
+           (a.velocity.x == b.velocity.x) &&
+           (a.velocity.y == b.velocity.y) &&
+           (a.velocity.z == b.velocity.z);
 }
-    
+
+void RoverControl::target_cb(const PositionCommand::SharedPtr msg)
+{
+    PositionCommand new_target = *msg;
+
+    if (have_target_) {
+        if (!positions_equal(new_target, target_pos_)) {
+            last_target_update_time_ = this->now();
+        }
+    } else {
+        have_target_ = true;
+        last_target_update_time_ = this->now();
+    }
+    target_pos_ = new_target;
+}
 
 void RoverControl::publish_offboard_control_mode()
 {
@@ -51,7 +72,7 @@ void RoverControl::publish_offboard_control_mode()
     msg.acceleration = false;
     msg.attitude = false;
     msg.body_rate = false;
-    msg.actuator = false;
+    msg.direct_actuator = false;
 
     offboard_control_mode_pub_->publish(msg);
 }
@@ -93,6 +114,14 @@ void RoverControl::timer_cb()
 {
     publish_offboard_control_mode();
     publish_trajectory_setpoint();
+
+     if (have_target_) {
+        const double elapsed = (this->now() - last_target_update_time_).seconds();
+        target_not_changing_ = (elapsed >= target_idle_timeout_sec_);
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10,
+            "target_not_changing_: %s (elapsed=%.3f s, threshold=%.3f s)",
+            target_not_changing_ ? "true" : "false", elapsed, target_idle_timeout_sec_);
+    }
 }
 
 int main(int argc, char **argv)

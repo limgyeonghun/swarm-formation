@@ -32,7 +32,11 @@ private:
   int rover_id_;
   float offset_x_pt_;
   float offset_y_pt_;
+  double target_idle_timeout_sec_;
+  bool target_not_changing_{false};
+  bool have_target_{false};
 
+  bool positions_equal(const PositionCommand& a, const PositionCommand& b) const;
   void publish_offboard_control_mode();
   void publish_trajectory_setpoint();
   void timer_cb();
@@ -49,13 +53,12 @@ private:
   rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_pub_;
 
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::Time last_target_update_time_;
 
   VehicleStatus status_;
   VehicleCommand cmd_;
   VehicleLocalPosition curr_pos_;
   PositionCommand target_pos_;
-
-  bool have_target_{false};
 };
 
 #endif  // ROVER_CONTROL__ROVER_CONTROL_HPP_
