@@ -81,9 +81,9 @@ void RoverControl::publish_trajectory_setpoint()
         msg.position[1] = 0.0;
         msg.position[2] = 0.0;
 
-        msg.velocity[0] = 0.0;
-        msg.velocity[1] = 0.0;
-        msg.velocity[2] = 0.0;
+        msg.velocity[0] = NAN;
+        msg.velocity[1] = NAN;
+        msg.velocity[2] = NAN;
 
         trajectory_setpoint_pub_->publish(msg);
     }
