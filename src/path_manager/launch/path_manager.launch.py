@@ -40,6 +40,9 @@ def create_drone_nodes(context, *args, **kwargs):
     fsm_params = drone_cfg.get('fsm', {})
     n_seconds_ahead = float(fsm_params.get('n_seconds_ahead', 0.0))
 
+    target_idle_timeout_sec = 0.25
+    arrival_distance_threshold = 0.25
+
     replan_nodes = []
     traj_nodes   = []
     rover_nodes  = []
@@ -116,6 +119,8 @@ def create_drone_nodes(context, *args, **kwargs):
                     {'start_point_x':   cfg['start_point_x']},
                     {'start_point_y':   cfg['start_point_y']},
                     {'start_point_z':   cfg['start_point_z']},
+                    {'target_idle_timeout_sec':   target_idle_timeout_sec},
+                    {'arrival_distance_threshold':   arrival_distance_threshold},
                 ],
             )
         )

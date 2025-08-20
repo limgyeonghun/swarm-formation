@@ -19,6 +19,9 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(
     this->declare_parameter<double>("arrival_distance_threshold", 0.5);
     this->get_parameter("arrival_distance_threshold", arrival_distance_threshold_);
 
+    RCLCPP_INFO(this->get_logger(), "ID: %d | target_timeout_threshold: %.2f  arrival_distance_threshold: %.2f", 
+                rover_id_, target_idle_timeout_sec_, arrival_distance_threshold_);
+
     std::string sid = std::to_string(rover_id_ + 1);
     const std::string topic_prefix_out = "/vehicle" + sid + "/fmu/out/";
     const std::string topic_prefix_in = "/vehicle" + sid + "/fmu/in/";
@@ -77,7 +80,7 @@ void RoverControl::publish_offboard_control_mode()
     msg.acceleration = false;
     msg.attitude = false;
     msg.body_rate = false;
-    msg.direct_actuator = false;
+    msg.actuator = false;
 
     offboard_control_mode_pub_->publish(msg);
 }
@@ -144,15 +147,15 @@ void RoverControl::timer_cb()
     if (have_target_) {
         const double elapsed = (this->now() - last_target_update_time_).seconds();
         target_not_changing_ = (elapsed >= target_idle_timeout_sec_);
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10,
-            "target_not_changing_: %s (elapsed=%.3f s, threshold=%.3f s)",
-            target_not_changing_ ? "true" : "false", elapsed, target_idle_timeout_sec_);
+        // RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10,
+        //     "target_not_changing_: %s (elapsed=%.3f s, threshold=%.3f s)",
+        //     target_not_changing_ ? "true" : "false", elapsed, target_idle_timeout_sec_);
 
         if (target_not_changing_) {
             double adjusted_tx = target_pos_.position.x - offset_x_pt_;
             double adjusted_ty = target_pos_.position.y - offset_y_pt_;
             double dist = std::hypot(curr_pos_.x - adjusted_tx, curr_pos_.y - adjusted_ty);
-            if (dist <= arrival_distance_threshold_) {
+            if (dist <= arrival_distance_threshold_ && status_.arming_state == VehicleStatus::ARMING_STATE_ARMED) {
                 disarm();
                 have_target_ = false;
                 RCLCPP_INFO(this->get_logger(), "Arrived at target. Distance: %.2f m <= threshold %.2f m", dist, arrival_distance_threshold_);
