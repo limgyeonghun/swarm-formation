@@ -1,5 +1,6 @@
 #include <rover_control/rover_control.hpp>
 #include <algorithm>
+#include <cmath>
 
 RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(0.0), offset_y_pt_(0.0)
 {
@@ -14,6 +15,9 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(
 
     this->declare_parameter<double>("target_idle_timeout_sec", 0.5);
     this->get_parameter("target_idle_timeout_sec", target_idle_timeout_sec_);
+
+    this->declare_parameter<double>("arrival_distance_threshold", 0.5);
+    this->get_parameter("arrival_distance_threshold", arrival_distance_threshold_);
 
     std::string sid = std::to_string(rover_id_ + 1);
     const std::string topic_prefix_out = "/vehicle" + sid + "/fmu/out/";
@@ -33,6 +37,7 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(
         "vehicle" + sid + "/target_position", qos, bind(&RoverControl::target_cb, this, std::placeholders::_1));    
     trajectory_setpoint_pub_ = this->create_publisher<TrajectorySetpoint>(topic_prefix_in + "trajectory_setpoint", qos);
     offboard_control_mode_pub_ = this->create_publisher<OffboardControlMode>(topic_prefix_in + "offboard_control_mode", qos);
+    command_pub_ = this->create_publisher<VehicleCommand>(topic_prefix_in + "vehicle_command", qos);
 
     timer_ = this->create_wall_timer(10ms, bind(&RoverControl::timer_cb, this));
 }
@@ -110,17 +115,49 @@ void RoverControl::publish_trajectory_setpoint()
     }
 }
 
+void RoverControl::publish_vehicle_command(uint16_t command, float param1, float param2)
+{
+  VehicleCommand msg{};
+  msg.param1 = param1;
+  msg.param2 = param2;
+  msg.command = command;
+  msg.target_system = rover_id_;
+  msg.target_component = 1;
+  msg.source_system = 1;
+  msg.source_component = 1;
+  msg.from_external = true;
+  msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+  command_pub_->publish(msg);
+}
+
+void RoverControl::disarm()
+{
+  publish_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0);
+  RCLCPP_INFO(this->get_logger(), "Disarm command send");
+}
+
 void RoverControl::timer_cb()
 {
     publish_offboard_control_mode();
     publish_trajectory_setpoint();
 
-     if (have_target_) {
+    if (have_target_) {
         const double elapsed = (this->now() - last_target_update_time_).seconds();
         target_not_changing_ = (elapsed >= target_idle_timeout_sec_);
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10,
             "target_not_changing_: %s (elapsed=%.3f s, threshold=%.3f s)",
             target_not_changing_ ? "true" : "false", elapsed, target_idle_timeout_sec_);
+
+        if (target_not_changing_) {
+            double adjusted_tx = target_pos_.position.x - offset_x_pt_;
+            double adjusted_ty = target_pos_.position.y - offset_y_pt_;
+            double dist = std::hypot(curr_pos_.x - adjusted_tx, curr_pos_.y - adjusted_ty);
+            if (dist <= arrival_distance_threshold_) {
+                disarm();
+                have_target_ = false;
+                RCLCPP_INFO(this->get_logger(), "Arrived at target. Distance: %.2f m <= threshold %.2f m", dist, arrival_distance_threshold_);
+            }
+        }
     }
 }
 
