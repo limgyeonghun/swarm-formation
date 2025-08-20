@@ -71,7 +71,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     optimized_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>("planning/trajectory", sensor_qos);
     global_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>("planning/global", sensor_qos);
     broadcast_traj_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/broadcast_traj_send", sensor_qos);
-    odom_pub_ = node_->create_publisher<nav_msgs::msg::Odometry>(odom_topic, sensor_qos);
+    // odom_pub_ = node_->create_publisher<nav_msgs::msg::Odometry>(odom_topic, sensor_qos);
 
     if (rviz_simulation_)
     {
