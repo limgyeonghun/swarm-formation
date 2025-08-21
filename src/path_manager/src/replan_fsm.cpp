@@ -372,8 +372,7 @@ void ReplanFSM::polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
     msg.traj_id = data->traj_id;
     msg.order = 5;
 
-        const double s = data->start_time;
-
+    const double s = data->start_time;
     msg.start_time.sec     = static_cast<int32_t>(std::floor(s));
     msg.start_time.nanosec = static_cast<uint32_t>(std::llround((s - msg.start_time.sec) * 1e9));
 
@@ -437,7 +436,7 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
     Eigen::Vector3d desired_start_pt, desired_start_vel, desired_start_acc;
     double desired_start_time;
 
-    if (have_local_traj_ && use_formation) {
+    if (have_local_traj_) {
         desired_start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds() + replan_trajectory_time_;
         double t_adj = desired_start_time - path_manager_->traj_.local_traj.start_time;
         desired_start_pt = path_manager_->traj_.local_traj.traj.getPos(t_adj);
