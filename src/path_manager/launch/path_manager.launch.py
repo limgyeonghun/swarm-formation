@@ -137,7 +137,7 @@ def create_drone_nodes(context, *args, **kwargs):
     )
 
     delayed = TimerAction(
-        period = 5.0,
+        period = 0.0,
         actions = traj_nodes + replan_nodes + [visualization],
     )
 

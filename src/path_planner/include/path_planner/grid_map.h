@@ -23,9 +23,14 @@ struct MappingParameters {
   double esdf_slice_height_ = -0.1;
   bool show_esdf_time_ = false;
   double local_bound_inflate_ = 1.0;
+  
+  // ESDF 업데이트 최적화 파라미터
+  int esdf_update_skip_ = 1;  // ESDF 업데이트를 건너뛸 프레임 수
+  double esdf_update_threshold_ = 0.1;  // ESDF 업데이트 임계값
 };
 
 struct MappingData {
+  Eigen::Vector3d camera_pos_;
   std::vector<double> occupancy_buffer_;
   std::vector<char> occupancy_buffer_inflate_;
   std::vector<char> occupancy_buffer_neg_;
@@ -55,6 +60,7 @@ public:
 
   void updateESDF3d();
   void updateESDF3d(const Eigen::Vector3i& min_esdf, const Eigen::Vector3i& max_esdf);
+  void updateESDFLocal(const Eigen::Vector3d& center_pos);
   double getDistance(const Eigen::Vector3d& pos);
   double getDistance(const Eigen::Vector3i& id);
 
@@ -91,6 +97,8 @@ private:
   MappingParameters mp_;
   MappingData md_;
   std::shared_ptr<rclcpp::Node> node_;
+  std::vector<double> distance_buffer_local_;
+  Eigen::Vector3i local_esdf_min_, local_esdf_max_;
 
   template <typename F_get_val, typename F_set_val>
   void fillESDF(F_get_val f_get_val, F_set_val f_set_val, int start, int end, int dim);

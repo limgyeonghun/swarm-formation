@@ -111,10 +111,7 @@ namespace ego_planner
     double total_time_ms = (t2 - t0).seconds() * 1000;
 
     RCLCPP_INFO(node_->get_logger(), "\033[32m id: %d, iter=%d, use_formation=%d, time(ms)=%5.3f \033[0m", drone_id_, iter_num_, use_formation, time_ms);
-    if (drone_id_ == formation_size_ - 1)
-    {
-      RCLCPP_INFO(node_->get_logger(), "=================================================");
-    }
+    RCLCPP_INFO(node_->get_logger(), "=================================================");
     // std::string msg_iter = "iter=" + std::to_string(iter_num_) +
     //                        ", use_formation=" + std::to_string(use_formation) +
     //                        ", time(ms)=" + std::to_string(time_ms);
@@ -126,7 +123,7 @@ namespace ego_planner
     // RCLCPP_INFO(node_->get_logger(), "%s", msg_result.c_str());
     // logToFile(msg_result);
 
-    if (true) {
+    if (false) {
       // RCLCPP_INFO(node_->get_logger(), "similarity_error : %f", debug_similarity_);
 
       auto now = std::chrono::system_clock::now();

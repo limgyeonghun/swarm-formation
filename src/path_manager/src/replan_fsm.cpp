@@ -351,8 +351,8 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
     path_manager_->traj_.swarm_traj[recv_id].duration = trajectory.getTotalDuration();
     path_manager_->traj_.swarm_traj[recv_id].start_pos = trajectory.getPos(0.0);
 
-    // RCLCPP_INFO(node_->get_logger(), "Received trajectory from drone %zu, traj_id: %d, duration: %.2f",
-    //             recv_id, msg->traj_id, path_manager_->traj_.swarm_traj[recv_id].duration);
+    RCLCPP_INFO(node_->get_logger(), "Received trajectory from drone %zu, traj_id: %d, duration: %.2f",
+                recv_id, msg->traj_id, path_manager_->traj_.swarm_traj[recv_id].duration);
 
     if (!have_recv_pre_agent_ && static_cast<int>(path_manager_->traj_.swarm_traj.size()) >= drone_id_) {
         for (int i = 0; i < drone_id_; ++i) {
@@ -443,7 +443,6 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
         desired_start_vel = path_manager_->traj_.local_traj.traj.getVel(t_adj);
         desired_start_acc = path_manager_->traj_.local_traj.traj.getAcc(t_adj);
     } else {
-        RCLCPP_INFO(node_->get_logger(), "No local trajectory, using start point as desired start point.");
         desired_start_pt = start_pt_;
         desired_start_vel = Eigen::Vector3d(0.0, 0.0, 0.0);
         desired_start_acc = Eigen::Vector3d::Zero();

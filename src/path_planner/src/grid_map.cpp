@@ -68,8 +68,9 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   md_.tmp_buffer1_.resize(buffer_size, 0.0);
   md_.tmp_buffer2_.resize(buffer_size, 0.0);
 
-  RCLCPP_INFO(node_->get_logger(), "Map initialized with size: %d %d %d (%d voxels)",
-              mp_.map_voxel_num_(0), mp_.map_voxel_num_(1), mp_.map_voxel_num_(2), buffer_size);
+  distance_buffer_local_.clear();
+  local_esdf_min_ = Eigen::Vector3i(0, 0, 0);
+  local_esdf_max_ = Eigen::Vector3i(0, 0, 0);
 }
 
 void GridMap::setStaticMap(const std::vector<double>& static_occupancy) {
@@ -101,7 +102,8 @@ void GridMap::setStaticMap(const std::vector<double>& static_occupancy) {
       }
     }
   }
-
+  updateESDF3d(Eigen::Vector3i(0,0,0), mp_.map_voxel_num_ - Eigen::Vector3i(1,1,1));
+  RCLCPP_INFO(node_->get_logger(), "Full ESDF computed after setting static map.");
   md_.esdf_need_update_ = true;
 }
 
@@ -130,15 +132,16 @@ void GridMap::setOccupancy(const Eigen::Vector3i& id, double occ) {
 
 void GridMap::inflatePoint(const Eigen::Vector3i& pt, int step) {
     const int z_idx = std::max(pt.z() - step, 0);
+    const int x_min = std::max(pt.x() - step, 0);
+    const int x_max = std::min(pt.x() + step, mp_.map_voxel_num_(0) - 1);
+    const int y_min = std::max(pt.y() - step, 0);
+    const int y_max = std::min(pt.y() + step, mp_.map_voxel_num_(1) - 1);
 
-    for (int dx = -step; dx <= step; ++dx) {
-        for (int dy = -step; dy <= step; ++dy) {
-            Eigen::Vector3i inf_pt(pt.x() + dx,
-                                   pt.y() + dy,
-                                   z_idx);
-            if (isInMap(inf_pt)) {
-                md_.occupancy_buffer_inflate_[toAddress(inf_pt)] = 1;
-            }
+    // 메모리 접근 최적화: 연속된 메모리 영역에 접근
+    for (int x = x_min; x <= x_max; ++x) {
+        for (int y = y_min; y <= y_max; ++y) {
+            Eigen::Vector3i inf_pt(x, y, z_idx);
+            md_.occupancy_buffer_inflate_[toAddress(inf_pt)] = 1;
         }
     }
 }
@@ -188,39 +191,79 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
   Eigen::Vector3i esdf_voxel_size = max_esdf - min_esdf + Eigen::Vector3i(1, 1, 1);
   int esdf_voxel_count = esdf_voxel_size(0) * esdf_voxel_size(1) * esdf_voxel_size(2);
 
-  RCLCPP_INFO(node_->get_logger(), "ESDF processing voxel size: %d %d %d (%d voxels)",
-              esdf_voxel_size(0), esdf_voxel_size(1), esdf_voxel_size(2), esdf_voxel_count);
+  // 작은 데이터 크기에서는 병렬화 비활성화 (오버헤드 방지)
+  bool use_parallel = esdf_voxel_count > 10000; // 임계값 조정 가능
+
+  RCLCPP_INFO(node_->get_logger(), "ESDF processing voxel size: %d %d %d (%d voxels), parallel=%s",
+              esdf_voxel_size(0), esdf_voxel_size(1), esdf_voxel_size(2), esdf_voxel_count, 
+              use_parallel ? "true" : "false");
 
   /* ========== compute positive DT ========== */
   auto start_positive = rclcpp::Clock().now();
-
-  for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
-    for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
-      fillESDF(
+  
+  if (use_parallel) {
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+        fillESDF(
           [&](int z) {
             return md_.occupancy_buffer_inflate_[toAddress(x, y, z)] == 1 ?
                    0 : std::numeric_limits<double>::max();
           },
           [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
           min_esdf[2], max_esdf[2], 2);
+      }
     }
-  }
 
-  for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
-    for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
-      fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
-               [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
-               min_esdf[1], max_esdf[1], 1);
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
+                 [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
+                 min_esdf[1], max_esdf[1], 1);
+      }
     }
-  }
 
-  for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
-    for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
-      fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
-               [&](int x, double val) {
-                 md_.distance_buffer_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
-               },
-               min_esdf[0], max_esdf[0], 0);
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
+                 [&](int x, double val) {
+                   md_.distance_buffer_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
+                 },
+                 min_esdf[0], max_esdf[0], 0);
+      }
+    }
+  } else {
+    // 순차 처리 (작은 데이터용)
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+        fillESDF(
+          [&](int z) {
+            return md_.occupancy_buffer_inflate_[toAddress(x, y, z)] == 1 ?
+                   0 : std::numeric_limits<double>::max();
+          },
+          [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
+          min_esdf[2], max_esdf[2], 2);
+      }
+    }
+
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
+                 [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
+                 min_esdf[1], max_esdf[1], 1);
+      }
+    }
+
+    for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
+                 [&](int x, double val) {
+                   md_.distance_buffer_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
+                 },
+                 min_esdf[0], max_esdf[0], 0);
+      }
     }
   }
 
@@ -229,51 +272,96 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
   /* ========== compute negative DT ========== */
   auto start_negative = rclcpp::Clock().now();
 
-  for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
-    for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
-      for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
-        int idx = toAddress(x, y, z);
-        if (md_.occupancy_buffer_inflate_[idx] == 0) {
-          md_.occupancy_buffer_neg_[idx] = 1;
-        } else if (md_.occupancy_buffer_inflate_[idx] == 1) {
-          md_.occupancy_buffer_neg_[idx] = 0;
-        } else {
-          RCLCPP_ERROR(node_->get_logger(), "Invalid occupancy value at idx %d", idx);
+  if (use_parallel) {
+    #pragma omp parallel for collapse(3) schedule(static)
+    for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
+      for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
+        for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
+          int idx = toAddress(x, y, z);
+          md_.occupancy_buffer_neg_[idx] = (md_.occupancy_buffer_inflate_[idx] == 0) ? 1 : 0;
         }
       }
     }
-  }
 
-  md_.tmp_buffer1_.clear();
-  md_.tmp_buffer2_.clear();
+    #pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < md_.tmp_buffer1_.size(); ++i) md_.tmp_buffer1_[i] = 0.0;
+    #pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < md_.tmp_buffer2_.size(); ++i) md_.tmp_buffer2_[i] = 0.0;
 
-  for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+        fillESDF(
+            [&](int z) {
+              return md_.occupancy_buffer_neg_[toAddress(x, y, z)] == 1 ?
+                     0 : std::numeric_limits<double>::max();
+            },
+            [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
+            min_esdf[2], max_esdf[2], 2);
+      }
+    }
+
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
+                 [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
+                 min_esdf[1], max_esdf[1], 1);
+      }
+    }
+
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
-      fillESDF(
-          [&](int z) {
-            return md_.occupancy_buffer_neg_[toAddress(x, y, z)] == 1 ?
-                   0 : std::numeric_limits<double>::max();
-          },
-          [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
-          min_esdf[2], max_esdf[2], 2);
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
+                 [&](int x, double val) {
+                   md_.distance_buffer_neg_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
+                 },
+                 min_esdf[0], max_esdf[0], 0);
+      }
     }
-  }
-
-  for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
-    for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
-      fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
-               [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
-               min_esdf[1], max_esdf[1], 1);
+  } else {
+    // 순차 처리 (작은 데이터용)
+    for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
+      for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
+        for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
+          int idx = toAddress(x, y, z);
+          md_.occupancy_buffer_neg_[idx] = (md_.occupancy_buffer_inflate_[idx] == 0) ? 1 : 0;
+        }
+      }
     }
-  }
 
-  for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
-    for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
-      fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
-               [&](int x, double val) {
-                 md_.distance_buffer_neg_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
-               },
-               min_esdf[0], max_esdf[0], 0);
+    for (size_t i = 0; i < md_.tmp_buffer1_.size(); ++i) md_.tmp_buffer1_[i] = 0.0;
+    for (size_t i = 0; i < md_.tmp_buffer2_.size(); ++i) md_.tmp_buffer2_[i] = 0.0;
+
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+        fillESDF(
+            [&](int z) {
+              return md_.occupancy_buffer_neg_[toAddress(x, y, z)] == 1 ?
+                     0 : std::numeric_limits<double>::max();
+            },
+            [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
+            min_esdf[2], max_esdf[2], 2);
+      }
+    }
+
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
+                 [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
+                 min_esdf[1], max_esdf[1], 1);
+      }
+    }
+
+    for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
+                 [&](int x, double val) {
+                   md_.distance_buffer_neg_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
+                 },
+                 min_esdf[0], max_esdf[0], 0);
+      }
     }
   }
 
@@ -282,13 +370,26 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
   /* ========== combine pos and neg DT ========== */
   auto start_combine = rclcpp::Clock().now();
 
-  for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
-    for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
-      for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
-        int idx = toAddress(x, y, z);
-        md_.distance_buffer_all_[idx] = md_.distance_buffer_[idx];
-        if (md_.distance_buffer_neg_[idx] > 0.0) {
-          md_.distance_buffer_all_[idx] += (-md_.distance_buffer_neg_[idx] + mp_.resolution_);
+  if (use_parallel) {
+    #pragma omp parallel for collapse(3) schedule(static)
+    for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
+      for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
+        for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
+          int idx = toAddress(x, y, z);
+          double v = md_.distance_buffer_[idx];
+          double vn = md_.distance_buffer_neg_[idx];
+          md_.distance_buffer_all_[idx] = (vn > 0.0) ? (v - vn + mp_.resolution_ + v) : v;
+        }
+      }
+    }
+  } else {
+    for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
+      for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
+        for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
+          int idx = toAddress(x, y, z);
+          double v = md_.distance_buffer_[idx];
+          double vn = md_.distance_buffer_neg_[idx];
+          md_.distance_buffer_all_[idx] = (vn > 0.0) ? (v - vn + mp_.resolution_ + v) : v;
         }
       }
     }
@@ -376,11 +477,64 @@ void GridMap::interpolateTrilinearFirstGrad(double values[2][2][2], const Eigen:
   grad[0] *= mp_.resolution_inv_;
 }
 
+void GridMap::updateESDFLocal(const Eigen::Vector3d& center_pos) {
+  rclcpp::Time t1 = rclcpp::Clock().now();
+
+  Eigen::Vector3i center_idx;
+  posToIndex(center_pos, center_idx);
+  int inf = std::ceil(mp_.local_bound_inflate_ / mp_.resolution_);
+  local_esdf_min_ = center_idx - Eigen::Vector3i(inf, inf, inf);
+  local_esdf_max_ = center_idx + Eigen::Vector3i(inf, inf, inf);
+  boundIndex(local_esdf_min_);
+  boundIndex(local_esdf_max_);
+
+  // 로컬 ESDF 업데이트 최적화: 작은 영역만 업데이트
+  updateESDF3d(local_esdf_min_, local_esdf_max_);
+
+  Eigen::Vector3i local_size = local_esdf_max_ - local_esdf_min_ + Eigen::Vector3i(1, 1, 1);
+  int local_buffer_size = local_size(0) * local_size(1) * local_size(2);
+  distance_buffer_local_.resize(local_buffer_size);
+  
+  // 메모리 복사 최적화
+  int local_idx = 0;
+  for (int x = local_esdf_min_(0); x <= local_esdf_max_(0); ++x) {
+    for (int y = local_esdf_min_(1); y <= local_esdf_max_(1); ++y) {
+      for (int z = local_esdf_min_(2); z <= local_esdf_max_(2); ++z) {
+        int global_idx = toAddress(x, y, z);
+        distance_buffer_local_[local_idx++] = md_.distance_buffer_all_[global_idx];
+      }
+    }
+  }
+
+  rclcpp::Time t2 = rclcpp::Clock().now();
+  if (mp_.show_esdf_time_) {
+    RCLCPP_INFO(node_->get_logger(), "Local ESDF update: %.3f ms", (t2 - t1).seconds() * 1000.0);
+  }
+}
+
 void GridMap::evaluateEDT(const Eigen::Vector3d& pos, double& dist) {
   if (!isInMap(pos)) {
     dist = 10000.0;
     return;
   }
+
+  Eigen::Vector3i idx;
+  posToIndex(pos, idx);
+
+  if (idx(0) >= local_esdf_min_(0) && idx(0) <= local_esdf_max_(0) &&
+      idx(1) >= local_esdf_min_(1) && idx(1) <= local_esdf_max_(1) &&
+      idx(2) >= local_esdf_min_(2) && idx(2) <= local_esdf_max_(2)) {
+    
+    Eigen::Vector3i local_size = local_esdf_max_ - local_esdf_min_ + Eigen::Vector3i(1, 1, 1);
+    int local_idx = (idx(0) - local_esdf_min_(0)) * local_size(1) * local_size(2) +
+                    (idx(1) - local_esdf_min_(1)) * local_size(2) +
+                    (idx(2) - local_esdf_min_(2));
+    
+    dist = distance_buffer_local_[local_idx];
+    // std::cout << "Local ESDF distance: " << dist << std::endl;
+    return;
+  }
+
   Eigen::Vector3d diff;
   Eigen::Vector3d sur_pts[2][2][2];
   getSurroundPts(pos, sur_pts, diff);
