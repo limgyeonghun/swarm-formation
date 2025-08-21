@@ -68,8 +68,9 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   md_.tmp_buffer1_.resize(buffer_size, 0.0);
   md_.tmp_buffer2_.resize(buffer_size, 0.0);
 
-  RCLCPP_INFO(node_->get_logger(), "Map initialized with size: %d %d %d (%d voxels)",
-              mp_.map_voxel_num_(0), mp_.map_voxel_num_(1), mp_.map_voxel_num_(2), buffer_size);
+  distance_buffer_local_.clear();
+  local_esdf_min_ = Eigen::Vector3i(0, 0, 0);
+  local_esdf_max_ = Eigen::Vector3i(0, 0, 0);
 }
 
 void GridMap::setStaticMap(const std::vector<double>& static_occupancy) {
@@ -101,7 +102,8 @@ void GridMap::setStaticMap(const std::vector<double>& static_occupancy) {
       }
     }
   }
-
+  updateESDF3d(Eigen::Vector3i(0,0,0), mp_.map_voxel_num_ - Eigen::Vector3i(1,1,1));
+  RCLCPP_INFO(node_->get_logger(), "Full ESDF computed after setting static map.");
   md_.esdf_need_update_ = true;
 }
 
@@ -244,8 +246,8 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
     }
   }
 
-  md_.tmp_buffer1_.clear();
-  md_.tmp_buffer2_.clear();
+  std::fill(md_.tmp_buffer1_.begin(), md_.tmp_buffer1_.end(), 0.0);
+  std::fill(md_.tmp_buffer2_.begin(), md_.tmp_buffer2_.end(), 0.0);
 
   for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
     for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
@@ -376,11 +378,59 @@ void GridMap::interpolateTrilinearFirstGrad(double values[2][2][2], const Eigen:
   grad[0] *= mp_.resolution_inv_;
 }
 
+void GridMap::updateESDFLocal(const Eigen::Vector3d& center_pos) {
+  rclcpp::Time t1 = rclcpp::Clock().now();
+
+  Eigen::Vector3i center_idx;
+  posToIndex(center_pos, center_idx);
+  int inf = std::ceil(mp_.local_bound_inflate_ / mp_.resolution_);
+  local_esdf_min_ = center_idx - Eigen::Vector3i(inf, inf, inf);
+  local_esdf_max_ = center_idx + Eigen::Vector3i(inf, inf, inf);
+  boundIndex(local_esdf_min_);
+  boundIndex(local_esdf_max_);
+
+  Eigen::Vector3i local_size = local_esdf_max_ - local_esdf_min_ + Eigen::Vector3i(1, 1, 1);
+  int local_buffer_size = local_size(0) * local_size(1) * local_size(2);
+  distance_buffer_local_.resize(local_buffer_size);
+  int local_idx = 0;
+  for (int x = local_esdf_min_(0); x <= local_esdf_max_(0); ++x) {
+    for (int y = local_esdf_min_(1); y <= local_esdf_max_(1); ++y) {
+      for (int z = local_esdf_min_(2); z <= local_esdf_max_(2); ++z) {
+        int global_idx = toAddress(x, y, z);
+        distance_buffer_local_[local_idx++] = md_.distance_buffer_all_[global_idx];
+      }
+    }
+  }
+
+  rclcpp::Time t2 = rclcpp::Clock().now();
+  if (mp_.show_esdf_time_) {
+    RCLCPP_INFO(node_->get_logger(), "Local ESDF update: %.3f ms", (t2 - t1).seconds() * 1000.0);
+  }
+}
+
 void GridMap::evaluateEDT(const Eigen::Vector3d& pos, double& dist) {
   if (!isInMap(pos)) {
     dist = 10000.0;
     return;
   }
+
+  Eigen::Vector3i idx;
+  posToIndex(pos, idx);
+
+  if (idx(0) >= local_esdf_min_(0) && idx(0) <= local_esdf_max_(0) &&
+      idx(1) >= local_esdf_min_(1) && idx(1) <= local_esdf_max_(1) &&
+      idx(2) >= local_esdf_min_(2) && idx(2) <= local_esdf_max_(2)) {
+    
+    Eigen::Vector3i local_size = local_esdf_max_ - local_esdf_min_ + Eigen::Vector3i(1, 1, 1);
+    int local_idx = (idx(0) - local_esdf_min_(0)) * local_size(1) * local_size(2) +
+                    (idx(1) - local_esdf_min_(1)) * local_size(2) +
+                    (idx(2) - local_esdf_min_(2));
+    
+    dist = distance_buffer_local_[local_idx];
+    // std::cout << "Local ESDF distance: " << dist << std::endl;
+    return;
+  }
+
   Eigen::Vector3d diff;
   Eigen::Vector3d sur_pts[2][2][2];
   getSurroundPts(pos, sur_pts, diff);
