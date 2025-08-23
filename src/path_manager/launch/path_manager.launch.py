@@ -58,6 +58,9 @@ def create_drone_nodes(context, *args, **kwargs):
     
     print(f"JFI Baud Rate: {jfi_baud_rate}")
 
+    # Note: enable_obstacles parameter is now controlled via optimizer_params.yaml
+    # No need to pass it through launch arguments to avoid parameter conflicts
+
     pkg_share = FindPackageShare('path_manager')
     obstacles_file  = PathJoinSubstitution([pkg_share, 'config', 'obstacles.yaml'])
     optimizer_file  = PathJoinSubstitution([pkg_share, 'config', 'optimizer_params.yaml'])
@@ -244,5 +247,6 @@ def generate_launch_description():
             default_value='115200',
             description='JFI serial port baud rate'
         ),
+
         OpaqueFunction(function=create_drone_nodes),
     ])

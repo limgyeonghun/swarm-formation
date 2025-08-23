@@ -3,6 +3,9 @@
     # Optimization Algorithm Parameters
     optimization/constrain_points_perPiece: 3
     
+    # Obstacle Avoidance Control
+    enable_obstacles: true
+    
     # Cost Function Weights
     optimization/weight_obstacle: 50000.0
     optimization/weight_swarm: 50000.0

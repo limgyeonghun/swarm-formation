@@ -24,6 +24,13 @@ def generate_launch_description():
         'drones.yaml'
     ])
 
+    # Path to optimizer_params.yaml in path_manager
+    optimizer_param_file = PathJoinSubstitution([
+        pkg_path_manager,
+        'config',
+        'optimizer_params.yaml'
+    ])
+
     # RViz config (still from path_visualization)
     pkg_path_visualization = FindPackageShare('path_visualization')
     rviz_config_file = PathJoinSubstitution([
@@ -32,7 +39,7 @@ def generate_launch_description():
         'rviz_config.rviz'
     ])
 
-    # Path visualization node, passing both drones.yaml and obstacles.yaml
+    # Path visualization node, passing config files
     path_visualization = Node(
         package='path_visualization',
         executable='path_visualization_node',
@@ -41,7 +48,8 @@ def generate_launch_description():
         parameters=[
             {'use_sim_time': use_sim_time},
             obstacles_param_file,
-            drones_param_file
+            drones_param_file,
+            optimizer_param_file
         ]
     )
 

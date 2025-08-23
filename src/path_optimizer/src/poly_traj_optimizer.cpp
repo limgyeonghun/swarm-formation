@@ -102,7 +102,8 @@ namespace ego_planner
         this,
         &lbfgs_params);
 
-    bool occ = checkCollision();
+    // Collision check (only if obstacles are enabled)
+    bool occ = enable_obstacles_ ? checkCollision() : false;
 
     use_formation_ = use_formation_temp;
 
@@ -337,7 +338,8 @@ namespace ego_planner
 
         cps_.points.col(i_dp) = pos;
 
-        if (obstacleGradCostP(i_dp, pos, gradp, costp))
+        // Obstacle cost calculation (only if enabled)
+        if (enable_obstacles_ && obstacleGradCostP(i_dp, pos, gradp, costp))
         {
           gradViolaPc = beta0 * gradp.transpose();
           gradViolaPt = alpha * gradp.transpose() * vel;
@@ -794,6 +796,10 @@ namespace ego_planner
     node_ = node;
     node_->declare_parameter("optimization/constrain_points_perPiece", 3);
     node_->get_parameter("optimization/constrain_points_perPiece", cps_num_prePiece_);
+    
+    node_->declare_parameter("enable_obstacles", true);
+    node_->get_parameter("enable_obstacles", enable_obstacles_);
+    RCLCPP_INFO(node_->get_logger(), "Obstacle avoidance: %s", enable_obstacles_ ? "enabled" : "disabled");
     node_->declare_parameter("optimization/weight_obstacle", 1000.0);
     node_->get_parameter("optimization/weight_obstacle", wei_obs_);
     node_->declare_parameter("optimization/weight_swarm", 0.0);

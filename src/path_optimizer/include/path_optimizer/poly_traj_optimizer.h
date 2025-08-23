@@ -89,6 +89,7 @@ namespace ego_planner
     double debug_similarity_ = 0.0;
 
     double t_now_;
+    bool enable_obstacles_;
 
     rclcpp::Node::SharedPtr node_;
 
