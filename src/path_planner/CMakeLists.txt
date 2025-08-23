@@ -6,18 +6,18 @@ if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 14)
 endif()
 
-# 컴파일러 최적화 플래그 추가
+# Add compiler optimization flags
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
-  # 성능 최적화 플래그
+  # Performance optimization flags
   add_compile_options(-O3 -march=native -mtune=native)
-  # 벡터화 최적화
+  # Vectorization optimization
   add_compile_options(-ffast-math -funroll-loops)
-  # 링크 타임 최적화
+  # Link time optimization
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
-# OpenMP 지원 추가 (INTERFACE로 설정하여 의존성 전파)
+# Add OpenMP support (INTERFACE to propagate dependencies)
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
   message(STATUS "OpenMP found and enabled for parallel processing")
@@ -45,7 +45,7 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   Eigen3
 )
 
-# OpenMP 컴파일 및 링크 옵션 추가 (INTERFACE로 설정하여 의존성 전파)
+# Add OpenMP compile and link options (INTERFACE to propagate dependencies)
 if(OpenMP_CXX_FOUND)
   target_compile_options(${PROJECT_NAME}_lib INTERFACE ${OpenMP_CXX_FLAGS})
   target_link_options(${PROJECT_NAME}_lib INTERFACE ${OpenMP_CXX_FLAGS})

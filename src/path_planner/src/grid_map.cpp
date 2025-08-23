@@ -137,7 +137,7 @@ void GridMap::inflatePoint(const Eigen::Vector3i& pt, int step) {
     const int y_min = std::max(pt.y() - step, 0);
     const int y_max = std::min(pt.y() + step, mp_.map_voxel_num_(1) - 1);
 
-    // 메모리 접근 최적화: 연속된 메모리 영역에 접근
+    // Memory access optimization: access contiguous memory regions
     for (int x = x_min; x <= x_max; ++x) {
         for (int y = y_min; y <= y_max; ++y) {
             Eigen::Vector3i inf_pt(x, y, z_idx);
@@ -191,8 +191,8 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
   Eigen::Vector3i esdf_voxel_size = max_esdf - min_esdf + Eigen::Vector3i(1, 1, 1);
   int esdf_voxel_count = esdf_voxel_size(0) * esdf_voxel_size(1) * esdf_voxel_size(2);
 
-  // 작은 데이터 크기에서는 병렬화 비활성화 (오버헤드 방지)
-  bool use_parallel = esdf_voxel_count > 10000; // 임계값 조정 가능
+  // Disable parallelization for small data (prevent overhead)
+  bool use_parallel = esdf_voxel_count > 10000; // Adjustable threshold
 
   RCLCPP_INFO(node_->get_logger(), "ESDF processing voxel size: %d %d %d (%d voxels), parallel=%s",
               esdf_voxel_size(0), esdf_voxel_size(1), esdf_voxel_size(2), esdf_voxel_count, 
@@ -235,7 +235,7 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
       }
     }
   } else {
-    // 순차 처리 (작은 데이터용)
+    // Sequential processing (for small data)
     for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
       for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
         fillESDF(
@@ -321,7 +321,7 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
       }
     }
   } else {
-    // 순차 처리 (작은 데이터용)
+    // Sequential processing (for small data)
     for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
       for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
         for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
@@ -488,14 +488,14 @@ void GridMap::updateESDFLocal(const Eigen::Vector3d& center_pos) {
   boundIndex(local_esdf_min_);
   boundIndex(local_esdf_max_);
 
-  // 로컬 ESDF 업데이트 최적화: 작은 영역만 업데이트
+  // Local ESDF update optimization: update only small region
   updateESDF3d(local_esdf_min_, local_esdf_max_);
 
   Eigen::Vector3i local_size = local_esdf_max_ - local_esdf_min_ + Eigen::Vector3i(1, 1, 1);
   int local_buffer_size = local_size(0) * local_size(1) * local_size(2);
   distance_buffer_local_.resize(local_buffer_size);
   
-  // 메모리 복사 최적화
+  // Memory copy optimization
   int local_idx = 0;
   for (int x = local_esdf_min_(0); x <= local_esdf_max_(0); ++x) {
     for (int y = local_esdf_min_(1); y <= local_esdf_max_(1); ++y) {

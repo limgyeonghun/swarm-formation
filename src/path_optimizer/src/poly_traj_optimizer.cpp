@@ -510,9 +510,9 @@ namespace ego_planner
     gradp.setZero();
     costp = 0;
 
-    // 2D 위치로 변환 (z축 무시)
+    // Convert to 2D position (ignore z-axis)
     Eigen::Vector3d p_2d = p;
-    p_2d(2) = 0.0;  // z축을 0으로 설정
+    p_2d(2) = 0.0;  // Set z-axis to 0
 
     double dist;
     grid_map_->evaluateEDT(p_2d, dist);
@@ -525,8 +525,8 @@ namespace ego_planner
       Eigen::Vector3d dist_grad;
       grid_map_->evaluateFirstGrad(p_2d, dist_grad);
       
-      // 2D 그래디언트 (z축은 0으로 설정)
-      dist_grad(2) = 0.0;
+              // 2D gradient (z-axis set to 0)
+        dist_grad(2) = 0.0;
       
       costp = wei_obs_ * pow(dist_err, 3);
       gradp = -wei_obs_ * 3.0 * pow(dist_err, 2) * dist_grad;
@@ -578,11 +578,11 @@ namespace ego_planner
                   exceed_time * swarm_v;
       }
       
-      // 2D 거리 계산 (z축 무시)
-      Eigen::Vector3d dist_vec = p - swarm_p;
-      dist_vec(2) = 0.0;  // z축 거리를 0으로 설정
-      
-      // 2D 유클리드 거리 계산
+              // 2D distance calculation (ignore z-axis)
+        Eigen::Vector3d dist_vec = p - swarm_p;
+        dist_vec(2) = 0.0;  // Set z-axis distance to 0
+        
+        // 2D Euclidean distance calculation
       double dist2 = dist_vec(0) * dist_vec(0) + dist_vec(1) * dist_vec(1);
       double dist2_err = CLEARANCE2 - dist2;
       double dist2_err2 = dist2_err * dist2_err;
@@ -593,9 +593,9 @@ namespace ego_planner
         ret = true;
         costp += wei_swarm_ * dist2_err3;
         
-        // 2D 그래디언트 (z축은 0)
-        Eigen::Vector3d dJ_dP = wei_swarm_ * 3 * dist2_err2 * (-2) *
-                                Eigen::Vector3d(dist_vec(0), dist_vec(1), 0.0);
+                  // 2D gradient (z-axis is 0)
+          Eigen::Vector3d dJ_dP = wei_swarm_ * 3 * dist2_err2 * (-2) *
+                                  Eigen::Vector3d(dist_vec(0), dist_vec(1), 0.0);
         gradp += dJ_dP;
         gradt += dJ_dP.dot(v - swarm_v);
         grad_prev_t += dJ_dP.dot(-swarm_v);
@@ -613,14 +613,14 @@ namespace ego_planner
                                                Eigen::Vector3d &gradv,
                                                double &costv)
   {
-    // 2D 속도 계산 (z축 무시)
+    // 2D velocity calculation (ignore z-axis)
     Eigen::Vector3d v_2d = v;
     v_2d(2) = 0.0;
     
     double vpen = v_2d.squaredNorm() - max_vel_ * max_vel_;
     if (vpen > 0)
     {
-      gradv = wei_feas_ * 6 * vpen * vpen * v_2d;  // z축 그래디언트는 0
+      gradv = wei_feas_ * 6 * vpen * vpen * v_2d;  // z-axis gradient is 0
       costv = wei_feas_ * vpen * vpen * vpen;
       return true;
     }
@@ -631,14 +631,14 @@ namespace ego_planner
                                                Eigen::Vector3d &grada,
                                                double &costa)
   {
-    // 2D 가속도 계산 (z축 무시)
+    // 2D acceleration calculation (ignore z-axis)
     Eigen::Vector3d a_2d = a;
     a_2d(2) = 0.0;
     
     double apen = a_2d.squaredNorm() - max_acc_ * max_acc_;
     if (apen > 0)
     {
-      grada = wei_feas_ * 6 * apen * apen * a_2d;  // z축 그래디언트는 0
+      grada = wei_feas_ * 6 * apen * apen * a_2d;  // z-axis gradient is 0
       costa = wei_feas_ * apen * apen * apen;
       return true;
     }
