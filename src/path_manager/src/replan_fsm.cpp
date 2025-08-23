@@ -359,8 +359,8 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
     path_manager_->traj_.swarm_traj[recv_id].duration = trajectory.getTotalDuration();
     path_manager_->traj_.swarm_traj[recv_id].start_pos = trajectory.getPos(0.0);
 
-    RCLCPP_INFO(node_->get_logger(), "Received trajectory from drone %zu, traj_id: %d, duration: %.2f",
-                recv_id, msg->traj_id, path_manager_->traj_.swarm_traj[recv_id].duration);
+    // RCLCPP_INFO(node_->get_logger(), "Received trajectory from drone %zu, traj_id: %d, duration: %.2f",
+    //             recv_id, msg->traj_id, path_manager_->traj_.swarm_traj[recv_id].duration);
 
     if (!have_recv_pre_agent_ && static_cast<int>(path_manager_->traj_.swarm_traj.size()) >= drone_id_) {
         for (int i = 0; i < drone_id_; ++i) {
