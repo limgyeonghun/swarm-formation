@@ -510,19 +510,24 @@ namespace ego_planner
     gradp.setZero();
     costp = 0;
 
+    // 2D 위치로 변환 (z축 무시)
+    Eigen::Vector3d p_2d = p;
+    p_2d(2) = 0.0;  // z축을 0으로 설정
+
     double dist;
-    grid_map_->evaluateEDT(p, dist);
+    grid_map_->evaluateEDT(p_2d, dist);
 
     double dist_err = obs_clearance_ - dist;
-    // if (drone_id_== 2)
-    //   RCLCPP_INFO(node_->get_logger(), "pos (%f,%f,%f) | dist_err(%f) = obs_clearance: (%f) - dist(%f)", p(0), p(1), p(2), dist_err, obs_clearance_, dist);
 
     if (dist_err > 0)
     {
-
       ret = true;
       Eigen::Vector3d dist_grad;
-      grid_map_->evaluateFirstGrad(p, dist_grad);
+      grid_map_->evaluateFirstGrad(p_2d, dist_grad);
+      
+      // 2D 그래디언트 (z축은 0으로 설정)
+      dist_grad(2) = 0.0;
+      
       costp = wei_obs_ * pow(dist_err, 3);
       gradp = -wei_obs_ * 3.0 * pow(dist_err, 2) * dist_grad;
     }
@@ -549,7 +554,6 @@ namespace ego_planner
     costp = 0;
 
     const double CLEARANCE2 = (swarm_clearance_ * 1.5) * (swarm_clearance_ * 1.5);
-    constexpr double a = 2.0, b = 1.0, inv_a2 = 1 / a / a, inv_b2 = 1 / b / b;
     double pt_time = t_now_ + t;
 
     for (size_t id = 0; id < swarm_trajs_->size(); id++)
@@ -573,9 +577,14 @@ namespace ego_planner
         swarm_p = swarm_trajs_->at(id).traj.getPos(swarm_trajs_->at(id).duration) +
                   exceed_time * swarm_v;
       }
+      
+      // 2D 거리 계산 (z축 무시)
       Eigen::Vector3d dist_vec = p - swarm_p;
-      double ellip_dist2 = dist_vec(2) * dist_vec(2) * inv_a2 + (dist_vec(0) * dist_vec(0) + dist_vec(1) * dist_vec(1)) * inv_b2;
-      double dist2_err = CLEARANCE2 - ellip_dist2;
+      dist_vec(2) = 0.0;  // z축 거리를 0으로 설정
+      
+      // 2D 유클리드 거리 계산
+      double dist2 = dist_vec(0) * dist_vec(0) + dist_vec(1) * dist_vec(1);
+      double dist2_err = CLEARANCE2 - dist2;
       double dist2_err2 = dist2_err * dist2_err;
       double dist2_err3 = dist2_err2 * dist2_err;
 
@@ -583,16 +592,18 @@ namespace ego_planner
       {
         ret = true;
         costp += wei_swarm_ * dist2_err3;
+        
+        // 2D 그래디언트 (z축은 0)
         Eigen::Vector3d dJ_dP = wei_swarm_ * 3 * dist2_err2 * (-2) *
-                                Eigen::Vector3d(inv_b2 * dist_vec(0), inv_b2 * dist_vec(1), inv_a2 * dist_vec(2));
+                                Eigen::Vector3d(dist_vec(0), dist_vec(1), 0.0);
         gradp += dJ_dP;
         gradt += dJ_dP.dot(v - swarm_v);
         grad_prev_t += dJ_dP.dot(-swarm_v);
       }
 
-      if (min_ellip_dist2_ > ellip_dist2)
+      if (min_ellip_dist2_ > dist2)
       {
-        min_ellip_dist2_ = ellip_dist2;
+        min_ellip_dist2_ = dist2;
       }
     }
     return ret;
@@ -602,10 +613,14 @@ namespace ego_planner
                                                Eigen::Vector3d &gradv,
                                                double &costv)
   {
-    double vpen = v.squaredNorm() - max_vel_ * max_vel_;
+    // 2D 속도 계산 (z축 무시)
+    Eigen::Vector3d v_2d = v;
+    v_2d(2) = 0.0;
+    
+    double vpen = v_2d.squaredNorm() - max_vel_ * max_vel_;
     if (vpen > 0)
     {
-      gradv = wei_feas_ * 6 * vpen * vpen * v;
+      gradv = wei_feas_ * 6 * vpen * vpen * v_2d;  // z축 그래디언트는 0
       costv = wei_feas_ * vpen * vpen * vpen;
       return true;
     }
@@ -616,10 +631,14 @@ namespace ego_planner
                                                Eigen::Vector3d &grada,
                                                double &costa)
   {
-    double apen = a.squaredNorm() - max_acc_ * max_acc_;
+    // 2D 가속도 계산 (z축 무시)
+    Eigen::Vector3d a_2d = a;
+    a_2d(2) = 0.0;
+    
+    double apen = a_2d.squaredNorm() - max_acc_ * max_acc_;
     if (apen > 0)
     {
-      grada = wei_feas_ * 6 * apen * apen * a;
+      grada = wei_feas_ * 6 * apen * apen * a_2d;  // z축 그래디언트는 0
       costa = wei_feas_ * apen * apen * apen;
       return true;
     }
@@ -791,7 +810,7 @@ namespace ego_planner
   {
     grid_map_ = map;
     a_star_.reset(new AStar);
-    a_star_->initGridMap(grid_map_, Eigen::Vector3i(400, 200, 10));
+    a_star_->initGridMap(grid_map_, Eigen::Vector2i(400, 200));  // 2D for rover
   }
 
   void PolyTrajOptimizer::setControlPoints(const Eigen::MatrixXd &points)
