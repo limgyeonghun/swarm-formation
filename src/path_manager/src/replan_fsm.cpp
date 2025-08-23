@@ -54,6 +54,14 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     node_->get_parameter("end_point_y", end_y);
     node_->get_parameter("end_point_z", end_z);
 
+    std::cout << "ReplanFSM parameters: " << std::endl;
+    std::cout << "  start_point_x: " << start_x << std::endl;
+    std::cout << "  start_point_y: " << start_y << std::endl;
+    std::cout << "  start_point_z: " << start_z << std::endl;
+    std::cout << "  end_point_x: " << end_x << std::endl;
+    std::cout << "  end_point_y: " << end_y << std::endl;
+    std::cout << "  end_point_z: " << end_z << std::endl;
+
     offset_pt_ = Eigen::Vector3d(start_x, start_y, start_z);
     start_pt_ = offset_pt_;
     end_pt_ = Eigen::Vector3d(end_x, end_y, end_z);

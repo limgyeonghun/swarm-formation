@@ -219,7 +219,7 @@ namespace ego_planner
         // swarm_des.push_back(v6);
         formation_size_ = swarm_des.size();
         swarm_graph_->setDesiredForm(swarm_des);
-        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "Triangle formation set: size=%zu", swarm_des.size());
+        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "HEXAGON formation set: size=%zu", swarm_des.size());
         break;
       }
 
@@ -237,7 +237,7 @@ namespace ego_planner
 
         formation_size_ = swarm_des.size();
         swarm_graph_->setDesiredForm(swarm_des);
-        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "CUSTOM formation set: size=%zu", swarm_des.size());
+        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "SQUARE formation set: size=%zu", swarm_des.size());
         break;
       }
 
