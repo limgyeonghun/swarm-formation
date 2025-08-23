@@ -73,17 +73,17 @@ namespace ego_planner
 
     lbfgs::lbfgs_parameter_t lbfgs_params;
     lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
-    lbfgs_params.mem_size = 16;
-    lbfgs_params.g_epsilon = 0.1;
-    lbfgs_params.min_step = 1e-32;
+    lbfgs_params.mem_size = 8;  // Reduce memory usage
+    lbfgs_params.g_epsilon = 0.5;  // More lenient gradient tolerance
+    lbfgs_params.min_step = 1e-16;  // More lenient step tolerance
 
     if (use_formation)
     {
-      lbfgs_params.max_iterations = 20;
+      lbfgs_params.max_iterations = 15;  // Reduced from 20
     }
     else
     {
-      lbfgs_params.max_iterations = 60;
+      lbfgs_params.max_iterations = 30;  // Reduced from 60
       use_formation_ = false;
     }
 
@@ -220,7 +220,28 @@ namespace ego_planner
                                            const double xnorm, const double gnorm, const double step, int n, int k, int ls)
   {
     PolyTrajOptimizer *opt = reinterpret_cast<PolyTrajOptimizer *>(func_data);
-    return (opt->force_stop_type_ == STOP_FOR_ERROR || opt->force_stop_type_ == STOP_FOR_REBOUND);
+    
+    // Force stop conditions
+    if (opt->force_stop_type_ == STOP_FOR_ERROR || opt->force_stop_type_ == STOP_FOR_REBOUND) {
+      return 1;
+    }
+    
+    // Early exit for convergence
+    if (fx < 1e-3) {
+      return 1;
+    }
+    
+    // Early exit for gradient convergence
+    if (gnorm < 1e-2) {
+      return 1;
+    }
+    
+    // Early exit after reasonable iterations
+    if (k > 20) {
+      return 1;
+    }
+    
+    return 0;
   }
 
   template <typename EIGENVEC>
