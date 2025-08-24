@@ -1,0 +1,12 @@
+[Unit]
+Description=Jetson Orin Performance Optimizer
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'cd $HOME/git/swarm-formation && ./scripts/jetson_optimization/optimize_jetson.sh'
+User=%i
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

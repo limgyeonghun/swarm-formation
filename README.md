@@ -42,6 +42,45 @@ A ROS 2-based swarm formation control system for autonomous drones/rovers with r
 
 ## 🎯 Quick Start
 
+### Jetson Orin Performance Optimization
+
+For optimal performance on Jetson Orin platform, use the provided optimization scripts:
+
+#### Manual Optimization
+```bash
+# Run performance optimization script
+chmod +x scripts/jetson_optimization/optimize_jetson.sh
+./scripts/jetson_optimization/optimize_jetson.sh
+
+# Monitor performance in real-time
+chmod +x scripts/jetson_optimization/monitor_performance.sh
+./scripts/jetson_optimization/monitor_performance.sh
+```
+
+#### Automatic Optimization (Boot-time)
+```bash
+# Install systemd service for automatic optimization
+sudo cp scripts/jetson_optimization/jetson-optimizer.service /etc/systemd/system/
+sudo systemctl enable jetson-optimizer.service
+sudo systemctl start jetson-optimizer.service
+
+# Check service status
+sudo systemctl status jetson-optimizer.service
+```
+
+#### Performance Monitoring
+```bash
+# Real-time performance monitoring
+./scripts/jetson_optimization/monitor_performance.sh
+
+# Check current optimization status
+cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+sudo nvpmodel -q
+free -h
+```
+
+**📖 Detailed Guide**: See `scripts/jetson_optimization/JETSON_OPTIMIZATION.md` for complete documentation.
+
 ### Simulation Mode
 ```bash
 # Launch with drone ID 1 in simulation mode
@@ -77,6 +116,12 @@ swarm-formation/
 │   ├── j_fi/                 # JFI communication for hardware
 │   ├── rover_control/        # Rover control interface
 │   └── swarm_graph/          # Swarm formation graph
+├── scripts/
+│   └── jetson_optimization/  # Jetson Orin performance optimization
+│       ├── optimize_jetson.sh
+│       ├── monitor_performance.sh
+│       ├── jetson-optimizer.service
+│       └── JETSON_OPTIMIZATION.md
 ```
 
 ## ⚙️ Configuration
