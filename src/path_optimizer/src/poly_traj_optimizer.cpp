@@ -73,17 +73,14 @@ namespace ego_planner
 
     lbfgs::lbfgs_parameter_t lbfgs_params;
     lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
-    lbfgs_params.mem_size = 8;  // Reduce memory usage
-    lbfgs_params.g_epsilon = 0.5;  // More lenient gradient tolerance
-    lbfgs_params.min_step = 1e-16;  // More lenient step tolerance
 
     if (use_formation)
     {
-      lbfgs_params.max_iterations = 15;  // Reduced from 20
+      lbfgs_params.max_iterations = 15;
     }
     else
     {
-      lbfgs_params.max_iterations = 30;  // Reduced from 60
+      lbfgs_params.max_iterations = 30;
       use_formation_ = false;
     }
 

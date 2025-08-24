@@ -940,7 +940,7 @@ namespace lbfgs
      * Default L-BFGS parameters.
      */
     static const lbfgs_parameter_t _default_param = {
-        8,
+        64,
         1e-5,
         0,
         1e-5,
