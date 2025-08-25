@@ -71,6 +71,8 @@ namespace ego_planner
     Eigen::Map<Eigen::VectorXd> Vt(q.data() + initInnerPts.size(), initT.size());
     RealT2VirtualT(initT, Vt);
 
+    // 3. L-BFGS parameter setup
+    auto t3 = node_->get_clock()->now();
     lbfgs::lbfgs_parameter_t lbfgs_params;
     lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
 
@@ -84,20 +86,45 @@ namespace ego_planner
       use_formation_ = false;
     }
 
+    // Log L-BFGS parameters for debugging
+    if (enable_debug_logs_) {
+        RCLCPP_INFO(node_->get_logger(), "[DEBUG] L-BFGS params: mem_size=%d, max_iter=%d, g_epsilon=%.2e, delta=%.2e", 
+                    lbfgs_params.mem_size, lbfgs_params.max_iterations, lbfgs_params.g_epsilon, lbfgs_params.delta);
+    }
+
+    double param_setup_time = (node_->get_clock()->now() - t3).seconds() * 1000;
+    if (enable_debug_logs_) {
+        RCLCPP_INFO(node_->get_logger(), "[DEBUG] 3. L-BFGS parameter setup: %.3f ms", param_setup_time);
+    }
+
     iter_num_ = 0;
     force_stop_type_ = DONT_STOP;
 
     t1 = node_->get_clock()->now();
 
+    // 4. L-BFGS optimization (main computation)
+    auto t4 = node_->get_clock()->now();
     int result = lbfgs::lbfgs_optimize(
         variable_num_,
         q.data(),
         &final_cost,
         PolyTrajOptimizer::costFunctionCallback,
-        nullptr,
-        PolyTrajOptimizer::earlyExitCallback,
+        nullptr,  // proc_stepbound (not used)
+        PolyTrajOptimizer::earlyExitCallback,  // proc_progress
         this,
         &lbfgs_params);
+    double lbfgs_time = (node_->get_clock()->now() - t4).seconds() * 1000;
+    if (enable_debug_logs_) {
+        RCLCPP_INFO(node_->get_logger(), "[DEBUG] 4. L-BFGS optimization: %.3f ms (iter=%d)", lbfgs_time, iter_num_);
+    }
+
+    // Log L-BFGS result
+    if (enable_debug_logs_) {
+        const char* result_str = lbfgs::lbfgs_strerror(result);
+        RCLCPP_INFO(node_->get_logger(), "[DEBUG] L-BFGS Result: %d (%s)", result, result_str);
+        RCLCPP_INFO(node_->get_logger(), "[DEBUG] Iteration info: costFunction calls=%d, max_iterations=%d", 
+                    iter_num_, lbfgs_params.max_iterations);
+    }
 
     // Collision check (only if obstacles are enabled)
     bool occ = enable_obstacles_ ? checkCollision() : false;
@@ -797,6 +824,9 @@ namespace ego_planner
     node_->declare_parameter("enable_obstacles", true);
     node_->get_parameter("enable_obstacles", enable_obstacles_);
     RCLCPP_INFO(node_->get_logger(), "Obstacle avoidance: %s", enable_obstacles_ ? "enabled" : "disabled");
+    
+    node_->declare_parameter("enable_debug_logs", false);
+    node_->get_parameter("enable_debug_logs", enable_debug_logs_);
     node_->declare_parameter("optimization/weight_obstacle", 1000.0);
     node_->get_parameter("optimization/weight_obstacle", wei_obs_);
     node_->declare_parameter("optimization/weight_swarm", 0.0);

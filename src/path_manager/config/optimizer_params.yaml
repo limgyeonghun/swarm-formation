@@ -6,6 +6,9 @@
     # Obstacle Avoidance Control
     enable_obstacles: true
     
+    # Debug Logging Control
+    enable_debug_logs: true  # Set to true to enable detailed timing logs
+    
     # Cost Function Weights
     optimization/weight_obstacle: 50000.0
     optimization/weight_swarm: 50000.0
