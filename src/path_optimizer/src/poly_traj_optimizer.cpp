@@ -226,17 +226,47 @@ namespace ego_planner
     double smoo_cost = 0, time_cost = 0;
     Eigen::VectorXd obs_swarm_feas_qvar_costs(6);
 
+    // Timing variables for each cost function
+    auto t_start = opt->node_->get_clock()->now();
+    auto t1 = opt->node_->get_clock()->now();
+    auto t2 = opt->node_->get_clock()->now();
+    auto t3 = opt->node_->get_clock()->now();
+    auto t4 = opt->node_->get_clock()->now();
+    auto t5 = opt->node_->get_clock()->now();
+
+    // 1. Trajectory generation
+    t1 = opt->node_->get_clock()->now();
     opt->jerkOpt_.generate(P, T);
+    double traj_gen_time = (opt->node_->get_clock()->now() - t1).seconds() * 1000;
 
+    // 2. Smoothness cost
+    t2 = opt->node_->get_clock()->now();
     opt->initAndGetSmoothnessGradCost2PT(gradT, smoo_cost);
+    double smoothness_time = (opt->node_->get_clock()->now() - t2).seconds() * 1000;
 
+    // 3. Obstacle/Swarm/Feasibility cost (most complex part)
+    t3 = opt->node_->get_clock()->now();
     opt->addPVAGradCost2CT(gradT, obs_swarm_feas_qvar_costs, opt->cps_num_prePiece_);
+    double pva_cost_time = (opt->node_->get_clock()->now() - t3).seconds() * 1000;
 
+    // 4. Gradient calculation
+    t4 = opt->node_->get_clock()->now();
     opt->jerkOpt_.getGrad2TP(gradT, gradP);
+    double grad_time = (opt->node_->get_clock()->now() - t4).seconds() * 1000;
 
+    // 5. Time cost
+    t5 = opt->node_->get_clock()->now();
     opt->VirtualTGradCost(T, t, gradT, gradt, time_cost);
+    double time_cost_time = (opt->node_->get_clock()->now() - t5).seconds() * 1000;
 
     opt->iter_num_ += 1;
+
+    // Debug output (every 10th iteration)
+    if (opt->iter_num_ % 10 == 0 && opt->enable_debug_logs_) {
+        double total_callback_time = (opt->node_->get_clock()->now() - t_start).seconds() * 1000;
+        RCLCPP_INFO(opt->node_->get_logger(), "[DEBUG] CostFunction iter=%d: Traj=%.2fms, Smooth=%.2fms, PVA=%.2fms, Grad=%.2fms, Time=%.2fms, Total=%.2fms", 
+                    opt->iter_num_, traj_gen_time, smoothness_time, pva_cost_time, grad_time, time_cost_time, total_callback_time);
+    }
 
     return smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost;
   }
@@ -336,6 +366,10 @@ namespace ego_planner
     costs.setZero();
     double t = 0;
 
+    // Timing variables for individual cost components
+    double obstacle_time = 0, swarm_time = 0, formation_time = 0, feasibility_time = 0;
+    int obstacle_calls = 0, swarm_calls = 0, formation_calls = 0, feasibility_calls = 0;
+
     for (int i = 0; i < N; ++i)
     {
       const Eigen::Matrix<double, 6, 3> &c = jerkOpt_.get_b().block<6, 3>(i * 6, 0);
@@ -362,67 +396,76 @@ namespace ego_planner
 
         cps_.points.col(i_dp) = pos;
 
-        // Obstacle cost calculation (only if enabled)
-        if (enable_obstacles_ && obstacleGradCostP(i_dp, pos, gradp, costp))
-        {
-          gradViolaPc = beta0 * gradp.transpose();
-          gradViolaPt = alpha * gradp.transpose() * vel;
-          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
-          gdT(i) += omg * (costp / K + step * gradViolaPt);
-          costs(0) += omg * step * costp;
+        // Obstacle cost calculation
+        if (enable_obstacles_) {
+            auto t_start = node_->get_clock()->now();
+            if (obstacleGradCostP(i_dp, pos, gradp, costp)) {
+                gradViolaPc = beta0 * gradp.transpose();
+                gradViolaPt = alpha * gradp.transpose() * vel;
+                jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+                gdT(i) += omg * (costp / K + step * gradViolaPt);
+                costs(0) += omg * step * costp;
+            }
+            obstacle_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
+            obstacle_calls++;
         }
+
         double gradt, grad_prev_t;
 
-        if (swarmGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp))
-        {
-          gradViolaPc = beta0 * gradp.transpose();
-          gradViolaPt = alpha * gradt;
-          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
-          gdT(i) += omg * (costp / K + step * gradViolaPt);
-          if (i > 0)
-          {
-            gdT.head(i).array() += omg * step * grad_prev_t;
-          }
-          costs(1) += omg * step * costp;
-        }
-        if (use_formation_)
-        {
-          if (swarmGraphGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp))
-          {
+        // Swarm collision cost calculation
+        auto t_start = node_->get_clock()->now();
+        if (swarmGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp)) {
             gradViolaPc = beta0 * gradp.transpose();
             gradViolaPt = alpha * gradt;
             jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
             gdT(i) += omg * (costp / K + step * gradViolaPt);
-            if (i > 0)
-            {
-              gdT.head(i).array() += omg * step * grad_prev_t;
+            if (i > 0) {
+                gdT.head(i).array() += omg * step * grad_prev_t;
             }
-            costs(2) += omg * step * costp;
-          }
+            costs(1) += omg * step * costp;
         }
-        if (feasibilityGradCostV(vel, gradv, costv))
-        {
+        swarm_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
+        swarm_calls++;
 
-          gradViolaVc = beta1 * gradv.transpose();
-          gradViolaVt = alpha * gradv.transpose() * acc;
-          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaVc;
-          gdT(i) += omg * (costv / K + step * gradViolaVt);
-          costs(4) += omg * step * costv;
+        // Formation cost calculation
+        if (use_formation_) {
+            t_start = node_->get_clock()->now();
+            if (swarmGraphGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp)) {
+                gradViolaPc = beta0 * gradp.transpose();
+                gradViolaPt = alpha * gradt;
+                jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+                gdT(i) += omg * (costp / K + step * gradViolaPt);
+                if (i > 0) {
+                    gdT.head(i).array() += omg * step * grad_prev_t;
+                }
+                costs(2) += omg * step * costp;
+            }
+            formation_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
+            formation_calls++;
         }
-        if (feasibilityGradCostA(acc, grada, costa))
-        {
 
-          gradViolaAc = beta2 * grada.transpose();
-          gradViolaAt = alpha * grada.transpose() * jer;
-          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaAc;
-          gdT(i) += omg * (costa / K + step * gradViolaAt);
-          costs(4) += omg * step * costa;
+        // Feasibility cost calculation
+        t_start = node_->get_clock()->now();
+        if (feasibilityGradCostV(vel, gradv, costv)) {
+            gradViolaVc = beta1 * gradv.transpose();
+            gradViolaVt = alpha * gradv.transpose() * acc;
+            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaVc;
+            gdT(i) += omg * (costv / K + step * gradViolaVt);
+            costs(4) += omg * step * costv;
         }
+        if (feasibilityGradCostA(acc, grada, costa)) {
+            gradViolaAc = beta2 * grada.transpose();
+            gradViolaAt = alpha * grada.transpose() * jer;
+            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaAc;
+            gdT(i) += omg * (costa / K + step * gradViolaAt);
+            costs(4) += omg * step * costa;
+        }
+        feasibility_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
+        feasibility_calls++;
 
         s1 += step;
-        if (j != K || (j == K && i == N - 1))
-        {
-          ++i_dp;
+        if (j != K || (j == K && i == N - 1)) {
+            ++i_dp;
         }
       }
       t += jerkOpt_.get_T1()(i);
@@ -433,12 +476,10 @@ namespace ego_planner
     distanceSqrVarianceWithGradCost2p(cps_.points, gdp, var);
 
     i_dp = 0;
-    for (int i = 0; i < N; ++i)
-    {
+    for (int i = 0; i < N; ++i) {
       step = jerkOpt_.get_T1()(i) / K;
       s1 = 0.0;
-      for (int j = 0; j <= K; ++j)
-      {
+      for (int j = 0; j <= K; ++j) {
         s2 = s1 * s1;
         s3 = s2 * s1;
         s4 = s2 * s2;
@@ -453,13 +494,18 @@ namespace ego_planner
         jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * gradViolaPc;
         gdT(i) += omg * (gradViolaPt);
         s1 += step;
-        if (j != K || (j == K && i == N - 1))
-        {
-          ++i_dp;
+        if (j != K || (j == K && i == N - 1)) {
+            ++i_dp;
         }
       }
     }
     costs(5) += var;
+
+    // Debug output (every 10th iteration)
+    if (iter_num_ % 10 == 0 && enable_debug_logs_) {
+        RCLCPP_INFO(node_->get_logger(), "[DEBUG] PVA Costs: Obstacle=%.2fms(%d), Swarm=%.2fms(%d), Formation=%.2fms(%d), Feasibility=%.2fms(%d)", 
+                    obstacle_time, obstacle_calls, swarm_time, swarm_calls, formation_time, formation_calls, feasibility_time, feasibility_calls);
+    }
   }
 
   bool PolyTrajOptimizer::swarmGraphGradCostP(const int i_dp,
