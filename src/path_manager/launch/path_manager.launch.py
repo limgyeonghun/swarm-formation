@@ -82,121 +82,135 @@ def create_drone_nodes(context, *args, **kwargs):
     rover_nodes  = []
     jfi_nodes    = []
 
-    # Find the drone configuration for target_drone_id
-    target_cfg = None
-    target_index = 0
+    # Determine which drones to run
+    drones_to_run = []
     
-    for i in range(6):  # Check drone_0 to drone_5
-        drone_key = f'drone_{i}'
-        if drone_key in drone_cfg:
-            if drone_cfg[drone_key]['drone_id'] == target_drone_id:
-                target_cfg = drone_cfg[drone_key]
-                target_index = i
-                print(f"Found drone_{i} with drone_id={target_drone_id}")
-                break
+    if num_drones == 1:
+        # Single drone mode: run only the target drone
+        drones_to_run = [target_drone_id]
+        print(f"Single drone mode: running drone {target_drone_id}")
+    else:
+        # Multi-drone mode: run drones from 0 to num_drones-1
+        drones_to_run = list(range(num_drones))
+        print(f"Multi-drone mode: running drones {drones_to_run}")
     
-    if target_cfg is None:
-        print(f"Error: drone_id {target_drone_id} not found in drones.yaml")
-        return []
-    
-    cfg = target_cfg
-    did = target_drone_id
-    i = target_index
+    # Create nodes for each drone
+    for drone_id in drones_to_run:
+        # Find the drone configuration for this drone_id
+        target_cfg = None
+        target_index = 0
+        
+        for i in range(6):  # Check drone_0 to drone_5
+            drone_key = f'drone_{i}'
+            if drone_key in drone_cfg:
+                if drone_cfg[drone_key]['drone_id'] == drone_id:
+                    target_cfg = drone_cfg[drone_key]
+                    target_index = i
+                    print(f"Found drone_{i} with drone_id={drone_id}")
+                    break
+        
+        if target_cfg is None:
+            print(f"Error: drone_id {drone_id} not found in drones.yaml")
+            continue
+        
+        cfg = target_cfg
+        did = drone_id
+        i = target_index
 
-    params = {
-        'rviz_simulation': rviz_sim,    # bool
-        'drone_id':        did,
-        'start_point_x':   float(cfg['start_point_x']),
-        'start_point_y':   float(cfg['start_point_y']),
-        'start_point_z':   float(cfg['start_point_z']),
-        'end_point_x':     float(cfg['end_point_x']),
-        'end_point_y':     float(cfg['end_point_y']),
-        'end_point_z':     float(cfg['end_point_z']),
-    }
+        params = {
+            'rviz_simulation': rviz_sim,    # bool
+            'drone_id':        did,
+            'start_point_x':   float(cfg['start_point_x']),
+            'start_point_y':   float(cfg['start_point_y']),
+            'start_point_z':   float(cfg['start_point_z']),
+            'end_point_x':     float(cfg['end_point_x']),
+            'end_point_y':     float(cfg['end_point_y']),
+            'end_point_z':     float(cfg['end_point_z']),
+        }
 
-    remaps = []
-    if not real_mode:
-        id_str = str(did+1)
-        remaps = [
-            (
-                f'V{id_str}/planning/broadcast_traj_send',
-                '/planning/broadcast_traj_recv'
-            ),
-            (
-                f'V{id_str}/j_fi/broadcast_traj_recv',
-                '/planning/broadcast_traj_recv'
-            ),
-        ]
+        remaps = []
+        if not real_mode:
+            id_str = str(did+1)
+            remaps = [
+                (
+                    f'V{id_str}/planning/broadcast_traj_send',
+                    '/planning/broadcast_traj_recv'
+                ),
+                (
+                    f'V{id_str}/j_fi/broadcast_traj_recv',
+                    '/planning/broadcast_traj_recv'
+                ),
+            ]
 
-    replan_nodes.append(
-        Node(
-            package='path_manager',
-            executable='path_manager_node',
-            name=f'replan_fsm_drone_{i}',
-            output='screen',
-            parameters=[
-                params,
-                obstacles_file,
-                optimizer_file,
-                drones_file,
-                map_file,
-            ],
-            remappings=remaps,
-        )
-    )
-
-    traj_nodes.append(
-        Node(
-            package='path_manager',
-            executable='traj_server',
-            name=f'TrajServer_drone_{i}',
-            output='screen',
-            parameters=[{
-                'drone_id': did,
-                'rviz_simulation': rviz_sim,
-                'fsm/n_seconds_ahead': n_seconds_ahead,
-            }],
-        )
-    )
-
-    rover_nodes.append(
-        Node(
-            package='rover_control',
-            executable='rover_control_node',
-            name=f'RoverControl_drone_{i}',
-            output='screen',
-            parameters=[
-                {'rover_id':        did},
-                {'rviz_simulation': rviz_sim},  # bool
-                {'start_point_x':   cfg['start_point_x']},
-                {'start_point_y':   cfg['start_point_y']},
-                {'start_point_z':   cfg['start_point_z']},
-                {'target_idle_timeout_sec':   target_idle_timeout_sec},
-                {'arrival_distance_threshold':   arrival_distance_threshold},
-            ],
-        )
-    )
-
-    # Add JFI communication node (only in real mode)
-    if real_mode:
-        system_id = did + 1  # drone_id + 1 for system_id
-        jfi_nodes.append(
+        replan_nodes.append(
             Node(
-                package='jfi_comm',
-                executable='serial_comm_node',
-                name=f'jfi_comm_drone_{i}',
+                package='path_manager',
+                executable='path_manager_node',
+                name=f'replan_fsm_drone_{i}',
                 output='screen',
                 parameters=[
-                    {'port_name': jfi_port},
-                    {'baud_rate': jfi_baud_rate},
-                    {'system_id': system_id},
-                    {'component_id': 1},
-                ]
+                    params,
+                    obstacles_file,
+                    optimizer_file,
+                    drones_file,
+                    map_file,
+                ],
+                remappings=remaps,
             )
         )
-        print(f"JFI node added for drone {did} with system_id {system_id}")
-    else:
-        print("JFI node skipped (not in real mode)")
+
+        traj_nodes.append(
+            Node(
+                package='path_manager',
+                executable='traj_server',
+                name=f'TrajServer_drone_{i}',
+                output='screen',
+                parameters=[{
+                    'drone_id': did,
+                    'rviz_simulation': rviz_sim,
+                    'fsm/n_seconds_ahead': n_seconds_ahead,
+                }],
+            )
+        )
+
+        rover_nodes.append(
+            Node(
+                package='rover_control',
+                executable='rover_control_node',
+                name=f'RoverControl_drone_{i}',
+                output='screen',
+                parameters=[
+                    {'rover_id':        did},
+                    {'rviz_simulation': rviz_sim},  # bool
+                    {'start_point_x':   cfg['start_point_x']},
+                    {'start_point_y':   cfg['start_point_y']},
+                    {'start_point_z':   cfg['start_point_z']},
+                    {'target_idle_timeout_sec':   target_idle_timeout_sec},
+                    {'arrival_distance_threshold':   arrival_distance_threshold},
+                ],
+            )
+        )
+
+        # Add JFI communication node (only in real mode)
+        if real_mode:
+            system_id = did + 1  # drone_id + 1 for system_id
+            jfi_nodes.append(
+                Node(
+                    package='jfi_comm',
+                    executable='serial_comm_node',
+                    name=f'jfi_comm_drone_{i}',
+                    output='screen',
+                    parameters=[
+                        {'port_name': jfi_port},
+                        {'baud_rate': jfi_baud_rate},
+                        {'system_id': system_id},
+                        {'component_id': 1},
+                    ]
+                )
+            )
+            print(f"JFI node added for drone {did} with system_id {system_id}")
+        else:
+            print("JFI node skipped (not in real mode)")
 
     visualization = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -214,7 +228,7 @@ def create_drone_nodes(context, *args, **kwargs):
     
     # Delayed actions (traj_server, path_manager, visualization) - 5 second delay
     delayed = TimerAction(
-        period = 5.0,
+        period = 0.0,
         actions = traj_nodes + replan_nodes + [visualization],
     )
 
