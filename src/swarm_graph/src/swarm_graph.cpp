@@ -51,12 +51,23 @@ bool SwarmGraph::calcMatrices(const std::vector<Eigen::Vector3d> &swarm,
     Deg = Eigen::VectorXd::Zero(swarm.size());
     SNL = Eigen::MatrixXd::Zero(swarm.size(), swarm.size());
 
-
+    // Optimized distance calculation - only calculate upper triangle and mirror it
     for (int i = 0; i < swarm.size(); i++) {
-        for (int j = 0; j < swarm.size(); j++) {
-            Adj(i, j) = calcDist2(swarm[i], swarm[j]);
-            Deg(i) += Adj(i, j);
+        for (int j = i; j < swarm.size(); j++) {
+            double dist2 = calcDist2(swarm[i], swarm[j]);
+            Adj(i, j) = dist2;
+            Adj(j, i) = dist2;  // Mirror the matrix
+            Deg(i) += dist2;
+            if (i != j) {
+                Deg(j) += dist2;
+            }
         }
+    }
+
+    // Pre-calculate square roots to avoid repeated calculations
+    std::vector<double> sqrt_deg(swarm.size());
+    for (int i = 0; i < swarm.size(); i++) {
+        sqrt_deg[i] = std::sqrt(Deg(i));
     }
 
     for (int i = 0; i < swarm.size(); i++) {
@@ -64,7 +75,7 @@ bool SwarmGraph::calcMatrices(const std::vector<Eigen::Vector3d> &swarm,
             if (i == j) {
                 SNL(i, j) = 1;
             } else {
-                SNL(i, j) = -Adj(i, j) * std::pow(Deg(i), -0.5) * std::pow(Deg(j), -0.5);
+                SNL(i, j) = -Adj(i, j) / (sqrt_deg[i] * sqrt_deg[j]);
             }
         }
     }

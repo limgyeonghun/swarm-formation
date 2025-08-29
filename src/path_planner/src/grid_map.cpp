@@ -406,7 +406,8 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
   double avg_esdf_time = total_duration / static_cast<double>(esdf_voxel_count);
   double max_esdf_time = std::max({positive_duration, negative_duration, combine_duration});
 
-  if (mp_.show_esdf_time_) {
+  // Only log ESDF timing if explicitly enabled and significant time spent
+  if (mp_.show_esdf_time_ && total_duration > 10.0) {
     RCLCPP_INFO(node_->get_logger(),
                 "voxels=%d, total=%.2f ms, positive=%.2f ms, negative=%.2f ms, combine=%.2f ms, avg=%.2f ms, max=%.2f ms",
                 esdf_voxel_count, total_duration, positive_duration, negative_duration,
