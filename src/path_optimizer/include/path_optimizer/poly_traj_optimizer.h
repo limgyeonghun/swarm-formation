@@ -228,9 +228,9 @@ namespace ego_planner
       case FORMATION_TYPE::REGULAR_SQUARE:
       {
         Eigen::Vector3d v0(0, 0, 0);
-        Eigen::Vector3d v1(1.0, 0, 0);
-        Eigen::Vector3d v2(1.0, 1.0, 0);
-        Eigen::Vector3d v3(0.0, 1.0, 0);
+        Eigen::Vector3d v1(0, -1.5, 0);
+        Eigen::Vector3d v2(1.5, -1.5, 0);
+        Eigen::Vector3d v3(1.5, 0.0, 0);
 
         swarm_des.push_back(v0);
         swarm_des.push_back(v1);

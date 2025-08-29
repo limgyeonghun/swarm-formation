@@ -78,11 +78,11 @@ namespace ego_planner
 
     if (use_formation)
     {
-      lbfgs_params.max_iterations = 20;
+      lbfgs_params.max_iterations = 20;  // Increased from 20 to 30 for better convergence
     }
     else
     {
-      lbfgs_params.max_iterations = 60;
+      lbfgs_params.max_iterations = 60;  // Increased from 60 to 80 for better convergence
       use_formation_ = false;
     }
 
@@ -281,18 +281,18 @@ namespace ego_planner
       return 1;
     }
     
-    // Early exit for convergence - relaxed for faster convergence
-    if (fx < 5e-3) {
+    // Early exit for convergence - further relaxed for better formation
+    if (fx < 1e-2) {
       return 1;
     }
     
-    // Early exit for gradient convergence - relaxed for faster convergence
-    if (gnorm < 5e-2) {
+    // Early exit for gradient convergence - further relaxed for better formation
+    if (gnorm < 1e-1) {
       return 1;
     }
     
     // Early exit after reasonable iterations - reduced for faster convergence
-    if (k > 15) {
+    if (k > 10) {  // Further reduced from 15 to 10
       return 1;
     }
     
@@ -429,8 +429,8 @@ namespace ego_planner
             swarm_calls++;
         }
 
-        // Formation cost calculation - only every few iterations to reduce computational load
-        if (use_formation_ && (j % 3 == 0 || j == K)) {
+        // Formation cost calculation - balanced frequency for good formation control
+        if (use_formation_ && (j % 2 == 0 || j == K)) {  // Increased back to every 2nd for better formation
             auto t_start = node_->get_clock()->now();
             if (swarmGraphGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp)) {
                 gradViolaPc = beta0 * gradp.transpose();

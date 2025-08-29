@@ -10,7 +10,7 @@
       start_point_y: 0.0
       start_point_z: 0.0
       end_point_x: 0.0
-      end_point_y: 30.0
+      end_point_y: 29.0
       end_point_z: 0.0
     
     # Drone 1
@@ -19,8 +19,8 @@
       start_point_x: 1.5
       start_point_y: 0.0
       start_point_z: 0.0
-      end_point_x: 1.5
-      end_point_y: 30.0
+      end_point_x: 0.0
+      end_point_y: 32.0
       end_point_z: 0.0
     
     # Drone 2
@@ -30,7 +30,7 @@
       start_point_y: 0.0
       start_point_z: 0.0
       end_point_x: 3.0
-      end_point_y: 30.0
+      end_point_y: 32.0
       end_point_z: 0.0
     
     # Drone 3
@@ -39,26 +39,6 @@
       start_point_x: 4.5
       start_point_y: 0.0
       start_point_z: 0.0
-      end_point_x: 4.5
-      end_point_y: 30.0
-      end_point_z: 0.0
-    
-    # Drone 4
-    drone_4:
-      drone_id: 4
-      start_point_x: 1.0
-      start_point_y: 15.0
-      start_point_z: 0.0
-      end_point_x: 1.0
-      end_point_y: 0.0
-      end_point_z: 0.0
-    
-    # Drone 5
-    drone_5:
-      drone_id: 5
-      start_point_x: 2.0
-      start_point_y: 15.0
-      start_point_z: 0.0
-      end_point_x: 2.0
-      end_point_y: 0.0
+      end_point_x: 3.0
+      end_point_y: 29.0
       end_point_z: 0.0
