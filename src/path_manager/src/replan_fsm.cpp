@@ -317,10 +317,13 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
     }
     rclcpp::Time msg_time(msg->start_time);
     double time_diff = (rclcpp::Clock(RCL_ROS_TIME).now() - msg_time).seconds();
-    if (std::abs(time_diff) > 0.25) {
-        RCLCPP_WARN(node_->get_logger(), "Time stamp diff: Local - Remote Agent %d = %fs",
+    if (std::abs(time_diff) > 0.5) {  // Increased tolerance for embedded systems (0.25 -> 0.5)
+        RCLCPP_WARN(node_->get_logger(), "Time stamp diff: Local - Remote Agent %d = %fs (rejected)",
                     msg->drone_id, time_diff);
         return;
+    } else if (std::abs(time_diff) > 0.25) {
+        RCLCPP_WARN(node_->get_logger(), "Time stamp diff: Local - Remote Agent %d = %fs (accepted with warning)",
+                    msg->drone_id, time_diff);
     }
 
     const size_t recv_id = static_cast<size_t>(msg->drone_id);
@@ -328,12 +331,20 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
         return;
     }
 
+    // Ensure swarm_traj vector is large enough and properly initialized
     if (path_manager_->traj_.swarm_traj.size() <= recv_id) {
         for (size_t i = path_manager_->traj_.swarm_traj.size(); i <= recv_id; i++) {
             LocalTrajData blank;
             blank.drone_id = -1;
+            blank.traj_id = -1;
+            blank.duration = 0.0;
+            blank.start_time = 0.0;
+            blank.end_time = 0.0;
+            blank.start_pos = Eigen::Vector3d::Zero();
             path_manager_->traj_.swarm_traj.push_back(blank);
         }
+        RCLCPP_INFO(node_->get_logger(), "Expanded swarm_traj vector to size %zu for drone %d", 
+                    path_manager_->traj_.swarm_traj.size(), msg->drone_id);
     }
 
     path_manager_->traj_.swarm_traj[recv_id].drone_id = recv_id;
