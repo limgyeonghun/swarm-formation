@@ -89,13 +89,25 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(const Eigen::Vector3d start_pt
     if (checkOccupancy(Index2Coord(start_idx)))
     {
         std::cerr << "Start point is inside an obstacle. Adjusting..." << std::endl;
-        int max_attempts = 10;
+        int max_attempts = 20;  // Increased from 10 to 20
         int attempts = 0;
         do
         {
-            // Move start point away from obstacle
-            Eigen::Vector3d direction = (s_pt - e_pt).normalized();
-            s_pt = s_pt + direction * step_size_;
+            // Try multiple directions to escape obstacle
+            Eigen::Vector3d direction;
+            if (attempts < 5) {
+                // First try moving away from end point
+                direction = (s_pt - e_pt).normalized();
+            } else if (attempts < 10) {
+                // Try moving in perpendicular directions
+                Eigen::Vector3d perp = Eigen::Vector3d(-(s_pt - e_pt).y(), (s_pt - e_pt).x(), 0.0).normalized();
+                direction = (attempts % 2 == 0) ? perp : -perp;
+            } else {
+                // Try random directions
+                direction = Eigen::Vector3d((attempts % 3 - 1), ((attempts / 3) % 3 - 1), 0.0).normalized();
+            }
+            
+            s_pt = s_pt + direction * step_size_ * (1.0 + attempts * 0.1);  // Increase step size with attempts
             
             if (!Coord2Index(s_pt, start_idx))
             {
