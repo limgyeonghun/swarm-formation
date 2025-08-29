@@ -539,6 +539,13 @@ namespace ego_planner
     costp = 0;
     double pt_time = t_now_ + t;
     vector<Eigen::Vector3d> swarm_graph_pos(formation_size_), swarm_graph_vel(formation_size_);
+    
+    // Bounds check for drone_id_
+    if (drone_id_ < 0 || drone_id_ >= formation_size_) {
+        RCLCPP_ERROR(node_->get_logger(), "drone_id_ %d out of bounds (formation_size: %d)", drone_id_, formation_size_);
+        return false;
+    }
+    
     swarm_graph_pos[drone_id_] = p;
     swarm_graph_vel[drone_id_] = v;
 
@@ -546,6 +553,24 @@ namespace ego_planner
     {
       if (id == drone_id_)
         continue;
+      
+      // Bounds check to prevent segmentation fault
+      if (id >= swarm_trajs_->size()) {
+        RCLCPP_WARN(node_->get_logger(), "Swarm trajectory index %zu out of bounds (size: %zu)", id, swarm_trajs_->size());
+        continue;
+      }
+      
+      // Additional bounds check for formation arrays
+      if (id >= formation_size_) {
+        RCLCPP_WARN(node_->get_logger(), "Formation index %zu out of bounds (formation_size: %d)", id, formation_size_);
+        continue;
+      }
+      
+      // Check if trajectory is properly initialized (drone_id should be valid)
+      if (swarm_trajs_->at(id).drone_id < 0) {
+        RCLCPP_DEBUG(node_->get_logger(), "Skipping uninitialized trajectory at index %zu", id);
+        continue;
+      }
 
       double traj_i_satrt_time = swarm_trajs_->at(id).start_time;
 
@@ -566,6 +591,20 @@ namespace ego_planner
       swarm_graph_vel[id] = swarm_v;
     }
 
+    // Verify all positions are valid before updating graph
+    bool valid_positions = true;
+    for (size_t i = 0; i < swarm_graph_pos.size(); i++) {
+        if (!std::isfinite(swarm_graph_pos[i].norm())) {
+            RCLCPP_WARN(node_->get_logger(), "Invalid position at index %zu", i);
+            valid_positions = false;
+            break;
+        }
+    }
+    
+    if (!valid_positions) {
+        return false;
+    }
+    
     swarm_graph_->updateGraph(swarm_graph_pos);
 
     double similarity_error;
@@ -658,8 +697,21 @@ namespace ego_planner
     
     for (size_t id = 0; id < swarm_trajs_->size(); id++)
     {
+      // Additional bounds check for safety
+      if (id >= swarm_trajs_->size()) {
+        RCLCPP_WARN(node_->get_logger(), "Swarm trajectory index %zu out of bounds in swarmGradCostP", id);
+        break;
+      }
+      
+      // Check if trajectory is properly initialized and not our own drone
       if ((swarm_trajs_->at(id).drone_id < 0) || swarm_trajs_->at(id).drone_id == drone_id_)
       {
+        continue;
+      }
+      
+      // Additional safety check for trajectory validity
+      if (swarm_trajs_->at(id).duration <= 0.0) {
+        RCLCPP_DEBUG(node_->get_logger(), "Skipping invalid trajectory duration at index %zu", id);
         continue;
       }
 
