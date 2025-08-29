@@ -250,13 +250,15 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
                         neighborPtr->fScore = tentative_gScore + getHeu(neighborPtr, endPtr);
                     }
                 }
-        rclcpp::Time time_2 = rclcpp::Clock().now();
-        rclcpp::Duration elapsed = time_2 - time_1;
-        // std::cout << "A* iter:" << num_iter << ", time:" << elapsed.seconds() * 1000 << " ms" << std::endl;
-        if (elapsed.seconds() > 0.2)
-        {
-            std::cerr << "Failed in A* path searching !!! 0.2 seconds time limit exceeded." << std::endl;
-            return false;
+        // Time limit check - only every 100 iterations to reduce overhead
+        if (num_iter % 100 == 0) {
+            rclcpp::Time time_2 = rclcpp::Clock().now();
+            rclcpp::Duration elapsed = time_2 - time_1;
+            if (elapsed.seconds() > 0.2)
+            {
+                std::cerr << "Failed in A* path searching !!! 0.2 seconds time limit exceeded." << std::endl;
+                return false;
+            }
         }
     }
 

@@ -78,11 +78,11 @@ namespace ego_planner
 
     if (use_formation)
     {
-      lbfgs_params.max_iterations = 15;
+      lbfgs_params.max_iterations = 20;
     }
     else
     {
-      lbfgs_params.max_iterations = 30;
+      lbfgs_params.max_iterations = 60;
       use_formation_ = false;
     }
 
@@ -261,8 +261,8 @@ namespace ego_planner
 
     opt->iter_num_ += 1;
 
-    // Debug output (every 10th iteration)
-    if (opt->iter_num_ % 10 == 0 && opt->enable_debug_logs_) {
+    // Debug output (every 50th iteration to reduce logging overhead)
+    if (opt->iter_num_ % 50 == 0 && opt->enable_debug_logs_) {
         double total_callback_time = (opt->node_->get_clock()->now() - t_start).seconds() * 1000;
         RCLCPP_INFO(opt->node_->get_logger(), "[DEBUG] CostFunction iter=%d: Traj=%.2fms, Smooth=%.2fms, PVA=%.2fms, Grad=%.2fms, Time=%.2fms, Total=%.2fms", 
                     opt->iter_num_, traj_gen_time, smoothness_time, pva_cost_time, grad_time, time_cost_time, total_callback_time);
@@ -281,18 +281,18 @@ namespace ego_planner
       return 1;
     }
     
-    // Early exit for convergence
-    if (fx < 1e-3) {
+    // Early exit for convergence - relaxed for faster convergence
+    if (fx < 5e-3) {
       return 1;
     }
     
-    // Early exit for gradient convergence
-    if (gnorm < 1e-2) {
+    // Early exit for gradient convergence - relaxed for faster convergence
+    if (gnorm < 5e-2) {
       return 1;
     }
     
-    // Early exit after reasonable iterations
-    if (k > 20) {
+    // Early exit after reasonable iterations - reduced for faster convergence
+    if (k > 15) {
       return 1;
     }
     
@@ -412,24 +412,26 @@ namespace ego_planner
 
         double gradt, grad_prev_t;
 
-        // Swarm collision cost calculation
-        auto t_start = node_->get_clock()->now();
-        if (swarmGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp)) {
-            gradViolaPc = beta0 * gradp.transpose();
-            gradViolaPt = alpha * gradt;
-            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
-            gdT(i) += omg * (costp / K + step * gradViolaPt);
-            if (i > 0) {
-                gdT.head(i).array() += omg * step * grad_prev_t;
+        // Swarm collision cost calculation - only every few iterations to reduce computational load
+        if (j % 2 == 0 || j == K) {
+            auto t_start = node_->get_clock()->now();
+            if (swarmGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp)) {
+                gradViolaPc = beta0 * gradp.transpose();
+                gradViolaPt = alpha * gradt;
+                jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+                gdT(i) += omg * (costp / K + step * gradViolaPt);
+                if (i > 0) {
+                    gdT.head(i).array() += omg * step * grad_prev_t;
+                }
+                costs(1) += omg * step * costp;
             }
-            costs(1) += omg * step * costp;
+            swarm_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
+            swarm_calls++;
         }
-        swarm_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
-        swarm_calls++;
 
-        // Formation cost calculation
-        if (use_formation_) {
-            t_start = node_->get_clock()->now();
+        // Formation cost calculation - only every few iterations to reduce computational load
+        if (use_formation_ && (j % 3 == 0 || j == K)) {
+            auto t_start = node_->get_clock()->now();
             if (swarmGraphGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp)) {
                 gradViolaPc = beta0 * gradp.transpose();
                 gradViolaPt = alpha * gradt;
@@ -445,7 +447,7 @@ namespace ego_planner
         }
 
         // Feasibility cost calculation
-        t_start = node_->get_clock()->now();
+        auto t_start = node_->get_clock()->now();
         if (feasibilityGradCostV(vel, gradv, costv)) {
             gradViolaVc = beta1 * gradv.transpose();
             gradViolaVt = alpha * gradv.transpose() * acc;
@@ -501,8 +503,8 @@ namespace ego_planner
     }
     costs(5) += var;
 
-    // Debug output (every 10th iteration)
-    if (iter_num_ % 10 == 0 && enable_debug_logs_) {
+    // Debug output (every 50th iteration to reduce logging overhead)
+    if (iter_num_ % 50 == 0 && enable_debug_logs_) {
         RCLCPP_INFO(node_->get_logger(), "[DEBUG] PVA Costs: Obstacle=%.2fms(%d), Swarm=%.2fms(%d), Formation=%.2fms(%d), Feasibility=%.2fms(%d)", 
                     obstacle_time, obstacle_calls, swarm_time, swarm_calls, formation_time, formation_calls, feasibility_time, feasibility_calls);
     }
@@ -649,6 +651,11 @@ namespace ego_planner
     const double CLEARANCE2 = (swarm_clearance_ * 1.5) * (swarm_clearance_ * 1.5);
     double pt_time = t_now_ + t;
 
+    // Early exit if no swarm trajectories
+    if (swarm_trajs_->empty()) {
+        return false;
+    }
+    
     for (size_t id = 0; id < swarm_trajs_->size(); id++)
     {
       if ((swarm_trajs_->at(id).drone_id < 0) || swarm_trajs_->at(id).drone_id == drone_id_)
@@ -658,14 +665,18 @@ namespace ego_planner
 
       double traj_i_satrt_time = swarm_trajs_->at(id).start_time;
       Eigen::Vector3d swarm_p, swarm_v;
-      if (pt_time < traj_i_satrt_time + swarm_trajs_->at(id).duration)
+      
+      // Pre-calculate time difference to avoid repeated calculation
+      double time_diff = pt_time - traj_i_satrt_time;
+      
+      if (time_diff < swarm_trajs_->at(id).duration)
       {
-        swarm_p = swarm_trajs_->at(id).traj.getPos(pt_time - traj_i_satrt_time);
-        swarm_v = swarm_trajs_->at(id).traj.getVel(pt_time - traj_i_satrt_time);
+        swarm_p = swarm_trajs_->at(id).traj.getPos(time_diff);
+        swarm_v = swarm_trajs_->at(id).traj.getVel(time_diff);
       }
       else
       {
-        double exceed_time = pt_time - (traj_i_satrt_time + swarm_trajs_->at(id).duration);
+        double exceed_time = time_diff - swarm_trajs_->at(id).duration;
         swarm_v = swarm_trajs_->at(id).traj.getVel(swarm_trajs_->at(id).duration);
         swarm_p = swarm_trajs_->at(id).traj.getPos(swarm_trajs_->at(id).duration) +
                   exceed_time * swarm_v;
