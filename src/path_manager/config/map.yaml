@@ -1,13 +1,24 @@
 /**:
   ros__parameters:
+    # Grid Map Basic Settings (2D for Rover)
     grid_map/resolution: 0.1
     grid_map/map_size_x: 30.0
     grid_map/map_size_y: 70.0
-    grid_map/map_size_z: 0.05
-    grid_map/obstacles_inflation: 0.1
-    grid_map/virtual_ceil_height: -1.0
-    grid_map/local_map_margin: 10
+    grid_map/map_size_z: 0.3  # Minimal height for 2D operation
     grid_map/frame_id: "world"
-    grid_map/esdf_slice_height: 0.3
+    
+    # Obstacle and Collision Settings
+    grid_map/obstacles_inflation: 0.1
+    grid_map/local_bound_inflate: 2.0
+    
+    # Map Boundary Settings (2D)
+    grid_map/virtual_ceil_height: -0.1  # Ground level
+    grid_map/local_map_margin: 3
+    
+    # ESDF Settings (2D slice)
+    grid_map/esdf_slice_height: 0.0  # Ground level slice
     grid_map/show_esdf_time: false
-    grid_map/local_bound_inflate: 0.1
+    
+    # ESDF Update Optimization
+    grid_map/esdf_update_skip: 2
+    grid_map/esdf_update_threshold: 0.05

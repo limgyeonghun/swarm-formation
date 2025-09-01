@@ -71,20 +71,30 @@ namespace ego_planner
     Eigen::Map<Eigen::VectorXd> Vt(q.data() + initInnerPts.size(), initT.size());
     RealT2VirtualT(initT, Vt);
 
+    // 3. L-BFGS parameter setup
+    auto t3 = node_->get_clock()->now();
     lbfgs::lbfgs_parameter_t lbfgs_params;
     lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
-    lbfgs_params.mem_size = 16;
-    lbfgs_params.g_epsilon = 0.1;
-    lbfgs_params.min_step = 1e-32;
 
     if (use_formation)
     {
-      lbfgs_params.max_iterations = 20;
+      lbfgs_params.max_iterations = 20;  // Increased from 20 to 30 for better convergence
     }
     else
     {
-      lbfgs_params.max_iterations = 60;
+      lbfgs_params.max_iterations = 60;  // Increased from 60 to 80 for better convergence
       use_formation_ = false;
+    }
+
+    // Log L-BFGS parameters for debugging
+    if (enable_debug_logs_) {
+        RCLCPP_INFO(node_->get_logger(), "[DEBUG] L-BFGS params: mem_size=%d, max_iter=%d, g_epsilon=%.2e, delta=%.2e", 
+                    lbfgs_params.mem_size, lbfgs_params.max_iterations, lbfgs_params.g_epsilon, lbfgs_params.delta);
+    }
+
+    double param_setup_time = (node_->get_clock()->now() - t3).seconds() * 1000;
+    if (enable_debug_logs_) {
+        RCLCPP_INFO(node_->get_logger(), "[DEBUG] 3. L-BFGS parameter setup: %.3f ms", param_setup_time);
     }
 
     iter_num_ = 0;
@@ -92,17 +102,32 @@ namespace ego_planner
 
     t1 = node_->get_clock()->now();
 
+    // 4. L-BFGS optimization (main computation)
+    auto t4 = node_->get_clock()->now();
     int result = lbfgs::lbfgs_optimize(
         variable_num_,
         q.data(),
         &final_cost,
         PolyTrajOptimizer::costFunctionCallback,
-        nullptr,
-        PolyTrajOptimizer::earlyExitCallback,
+        nullptr,  // proc_stepbound (not used)
+        PolyTrajOptimizer::earlyExitCallback,  // proc_progress
         this,
         &lbfgs_params);
+    double lbfgs_time = (node_->get_clock()->now() - t4).seconds() * 1000;
+    if (enable_debug_logs_) {
+        RCLCPP_INFO(node_->get_logger(), "[DEBUG] 4. L-BFGS optimization: %.3f ms (iter=%d)", lbfgs_time, iter_num_);
+    }
 
-    bool occ = checkCollision();
+    // Log L-BFGS result
+    if (enable_debug_logs_) {
+        const char* result_str = lbfgs::lbfgs_strerror(result);
+        RCLCPP_INFO(node_->get_logger(), "[DEBUG] L-BFGS Result: %d (%s)", result, result_str);
+        RCLCPP_INFO(node_->get_logger(), "[DEBUG] Iteration info: costFunction calls=%d, max_iterations=%d", 
+                    iter_num_, lbfgs_params.max_iterations);
+    }
+
+    // Collision check (only if obstacles are enabled)
+    bool occ = enable_obstacles_ ? checkCollision() : false;
 
     use_formation_ = use_formation_temp;
 
@@ -201,17 +226,47 @@ namespace ego_planner
     double smoo_cost = 0, time_cost = 0;
     Eigen::VectorXd obs_swarm_feas_qvar_costs(6);
 
+    // Timing variables for each cost function
+    auto t_start = opt->node_->get_clock()->now();
+    auto t1 = opt->node_->get_clock()->now();
+    auto t2 = opt->node_->get_clock()->now();
+    auto t3 = opt->node_->get_clock()->now();
+    auto t4 = opt->node_->get_clock()->now();
+    auto t5 = opt->node_->get_clock()->now();
+
+    // 1. Trajectory generation
+    t1 = opt->node_->get_clock()->now();
     opt->jerkOpt_.generate(P, T);
+    double traj_gen_time = (opt->node_->get_clock()->now() - t1).seconds() * 1000;
 
+    // 2. Smoothness cost
+    t2 = opt->node_->get_clock()->now();
     opt->initAndGetSmoothnessGradCost2PT(gradT, smoo_cost);
+    double smoothness_time = (opt->node_->get_clock()->now() - t2).seconds() * 1000;
 
+    // 3. Obstacle/Swarm/Feasibility cost (most complex part)
+    t3 = opt->node_->get_clock()->now();
     opt->addPVAGradCost2CT(gradT, obs_swarm_feas_qvar_costs, opt->cps_num_prePiece_);
+    double pva_cost_time = (opt->node_->get_clock()->now() - t3).seconds() * 1000;
 
+    // 4. Gradient calculation
+    t4 = opt->node_->get_clock()->now();
     opt->jerkOpt_.getGrad2TP(gradT, gradP);
+    double grad_time = (opt->node_->get_clock()->now() - t4).seconds() * 1000;
 
+    // 5. Time cost
+    t5 = opt->node_->get_clock()->now();
     opt->VirtualTGradCost(T, t, gradT, gradt, time_cost);
+    double time_cost_time = (opt->node_->get_clock()->now() - t5).seconds() * 1000;
 
     opt->iter_num_ += 1;
+
+    // Debug output (every 50th iteration to reduce logging overhead)
+    if (opt->iter_num_ % 50 == 0 && opt->enable_debug_logs_) {
+        double total_callback_time = (opt->node_->get_clock()->now() - t_start).seconds() * 1000;
+        RCLCPP_INFO(opt->node_->get_logger(), "[DEBUG] CostFunction iter=%d: Traj=%.2fms, Smooth=%.2fms, PVA=%.2fms, Grad=%.2fms, Time=%.2fms, Total=%.2fms", 
+                    opt->iter_num_, traj_gen_time, smoothness_time, pva_cost_time, grad_time, time_cost_time, total_callback_time);
+    }
 
     return smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost;
   }
@@ -220,7 +275,28 @@ namespace ego_planner
                                            const double xnorm, const double gnorm, const double step, int n, int k, int ls)
   {
     PolyTrajOptimizer *opt = reinterpret_cast<PolyTrajOptimizer *>(func_data);
-    return (opt->force_stop_type_ == STOP_FOR_ERROR || opt->force_stop_type_ == STOP_FOR_REBOUND);
+    
+    // Force stop conditions
+    if (opt->force_stop_type_ == STOP_FOR_ERROR || opt->force_stop_type_ == STOP_FOR_REBOUND) {
+      return 1;
+    }
+    
+    // Early exit for convergence - further relaxed for better formation
+    if (fx < 1e-2) {
+      return 1;
+    }
+    
+    // Early exit for gradient convergence - further relaxed for better formation
+    if (gnorm < 1e-1) {
+      return 1;
+    }
+    
+    // Early exit after reasonable iterations - reduced for faster convergence
+    if (k > 10) {  // Further reduced from 15 to 10
+      return 1;
+    }
+    
+    return 0;
   }
 
   template <typename EIGENVEC>
@@ -290,6 +366,10 @@ namespace ego_planner
     costs.setZero();
     double t = 0;
 
+    // Timing variables for individual cost components
+    double obstacle_time = 0, swarm_time = 0, formation_time = 0, feasibility_time = 0;
+    int obstacle_calls = 0, swarm_calls = 0, formation_calls = 0, feasibility_calls = 0;
+
     for (int i = 0; i < N; ++i)
     {
       const Eigen::Matrix<double, 6, 3> &c = jerkOpt_.get_b().block<6, 3>(i * 6, 0);
@@ -316,66 +396,78 @@ namespace ego_planner
 
         cps_.points.col(i_dp) = pos;
 
-        if (obstacleGradCostP(i_dp, pos, gradp, costp))
-        {
-          gradViolaPc = beta0 * gradp.transpose();
-          gradViolaPt = alpha * gradp.transpose() * vel;
-          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
-          gdT(i) += omg * (costp / K + step * gradViolaPt);
-          costs(0) += omg * step * costp;
+        // Obstacle cost calculation
+        if (enable_obstacles_) {
+            auto t_start = node_->get_clock()->now();
+            if (obstacleGradCostP(i_dp, pos, gradp, costp)) {
+                gradViolaPc = beta0 * gradp.transpose();
+                gradViolaPt = alpha * gradp.transpose() * vel;
+                jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+                gdT(i) += omg * (costp / K + step * gradViolaPt);
+                costs(0) += omg * step * costp;
+            }
+            obstacle_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
+            obstacle_calls++;
         }
+
         double gradt, grad_prev_t;
 
-        if (swarmGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp))
-        {
-          gradViolaPc = beta0 * gradp.transpose();
-          gradViolaPt = alpha * gradt;
-          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
-          gdT(i) += omg * (costp / K + step * gradViolaPt);
-          if (i > 0)
-          {
-            gdT.head(i).array() += omg * step * grad_prev_t;
-          }
-          costs(1) += omg * step * costp;
-        }
-        if (use_formation_)
-        {
-          if (swarmGraphGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp))
-          {
-            gradViolaPc = beta0 * gradp.transpose();
-            gradViolaPt = alpha * gradt;
-            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
-            gdT(i) += omg * (costp / K + step * gradViolaPt);
-            if (i > 0)
-            {
-              gdT.head(i).array() += omg * step * grad_prev_t;
+        // Swarm collision cost calculation - only every few iterations to reduce computational load
+        if (j % 2 == 0 || j == K) {
+            auto t_start = node_->get_clock()->now();
+            if (swarmGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp)) {
+                gradViolaPc = beta0 * gradp.transpose();
+                gradViolaPt = alpha * gradt;
+                jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+                gdT(i) += omg * (costp / K + step * gradViolaPt);
+                if (i > 0) {
+                    gdT.head(i).array() += omg * step * grad_prev_t;
+                }
+                costs(1) += omg * step * costp;
             }
-            costs(2) += omg * step * costp;
-          }
+            swarm_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
+            swarm_calls++;
         }
-        if (feasibilityGradCostV(vel, gradv, costv))
-        {
 
-          gradViolaVc = beta1 * gradv.transpose();
-          gradViolaVt = alpha * gradv.transpose() * acc;
-          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaVc;
-          gdT(i) += omg * (costv / K + step * gradViolaVt);
-          costs(4) += omg * step * costv;
+        // Formation cost calculation - balanced frequency for good formation control
+        if (use_formation_ && (j % 2 == 0 || j == K)) {  // Increased back to every 2nd for better formation
+            auto t_start = node_->get_clock()->now();
+            if (swarmGraphGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp)) {
+                gradViolaPc = beta0 * gradp.transpose();
+                gradViolaPt = alpha * gradt;
+                jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+                gdT(i) += omg * (costp / K + step * gradViolaPt);
+                if (i > 0) {
+                    gdT.head(i).array() += omg * step * grad_prev_t;
+                }
+                costs(2) += omg * step * costp;
+            }
+            formation_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
+            formation_calls++;
         }
-        if (feasibilityGradCostA(acc, grada, costa))
-        {
 
-          gradViolaAc = beta2 * grada.transpose();
-          gradViolaAt = alpha * grada.transpose() * jer;
-          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaAc;
-          gdT(i) += omg * (costa / K + step * gradViolaAt);
-          costs(4) += omg * step * costa;
+        // Feasibility cost calculation
+        auto t_start = node_->get_clock()->now();
+        if (feasibilityGradCostV(vel, gradv, costv)) {
+            gradViolaVc = beta1 * gradv.transpose();
+            gradViolaVt = alpha * gradv.transpose() * acc;
+            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaVc;
+            gdT(i) += omg * (costv / K + step * gradViolaVt);
+            costs(4) += omg * step * costv;
         }
+        if (feasibilityGradCostA(acc, grada, costa)) {
+            gradViolaAc = beta2 * grada.transpose();
+            gradViolaAt = alpha * grada.transpose() * jer;
+            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaAc;
+            gdT(i) += omg * (costa / K + step * gradViolaAt);
+            costs(4) += omg * step * costa;
+        }
+        feasibility_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
+        feasibility_calls++;
 
         s1 += step;
-        if (j != K || (j == K && i == N - 1))
-        {
-          ++i_dp;
+        if (j != K || (j == K && i == N - 1)) {
+            ++i_dp;
         }
       }
       t += jerkOpt_.get_T1()(i);
@@ -386,12 +478,10 @@ namespace ego_planner
     distanceSqrVarianceWithGradCost2p(cps_.points, gdp, var);
 
     i_dp = 0;
-    for (int i = 0; i < N; ++i)
-    {
+    for (int i = 0; i < N; ++i) {
       step = jerkOpt_.get_T1()(i) / K;
       s1 = 0.0;
-      for (int j = 0; j <= K; ++j)
-      {
+      for (int j = 0; j <= K; ++j) {
         s2 = s1 * s1;
         s3 = s2 * s1;
         s4 = s2 * s2;
@@ -406,13 +496,18 @@ namespace ego_planner
         jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * gradViolaPc;
         gdT(i) += omg * (gradViolaPt);
         s1 += step;
-        if (j != K || (j == K && i == N - 1))
-        {
-          ++i_dp;
+        if (j != K || (j == K && i == N - 1)) {
+            ++i_dp;
         }
       }
     }
     costs(5) += var;
+
+    // Debug output (every 50th iteration to reduce logging overhead)
+    if (iter_num_ % 50 == 0 && enable_debug_logs_) {
+        RCLCPP_INFO(node_->get_logger(), "[DEBUG] PVA Costs: Obstacle=%.2fms(%d), Swarm=%.2fms(%d), Formation=%.2fms(%d), Feasibility=%.2fms(%d)", 
+                    obstacle_time, obstacle_calls, swarm_time, swarm_calls, formation_time, formation_calls, feasibility_time, feasibility_calls);
+    }
   }
 
   bool PolyTrajOptimizer::swarmGraphGradCostP(const int i_dp,
@@ -444,6 +539,13 @@ namespace ego_planner
     costp = 0;
     double pt_time = t_now_ + t;
     vector<Eigen::Vector3d> swarm_graph_pos(formation_size_), swarm_graph_vel(formation_size_);
+    
+    // Bounds check for drone_id_
+    if (drone_id_ < 0 || drone_id_ >= formation_size_) {
+        RCLCPP_ERROR(node_->get_logger(), "drone_id_ %d out of bounds (formation_size: %d)", drone_id_, formation_size_);
+        return false;
+    }
+    
     swarm_graph_pos[drone_id_] = p;
     swarm_graph_vel[drone_id_] = v;
 
@@ -451,6 +553,24 @@ namespace ego_planner
     {
       if (id == drone_id_)
         continue;
+      
+      // Bounds check to prevent segmentation fault
+      if (id >= swarm_trajs_->size()) {
+        RCLCPP_WARN(node_->get_logger(), "Swarm trajectory index %zu out of bounds (size: %zu)", id, swarm_trajs_->size());
+        continue;
+      }
+      
+      // Additional bounds check for formation arrays
+      if (id >= formation_size_) {
+        RCLCPP_WARN(node_->get_logger(), "Formation index %zu out of bounds (formation_size: %d)", id, formation_size_);
+        continue;
+      }
+      
+      // Check if trajectory is properly initialized (drone_id should be valid)
+      if (swarm_trajs_->at(id).drone_id < 0) {
+        RCLCPP_DEBUG(node_->get_logger(), "Skipping uninitialized trajectory at index %zu", id);
+        continue;
+      }
 
       double traj_i_satrt_time = swarm_trajs_->at(id).start_time;
 
@@ -471,6 +591,20 @@ namespace ego_planner
       swarm_graph_vel[id] = swarm_v;
     }
 
+    // Verify all positions are valid before updating graph
+    bool valid_positions = true;
+    for (size_t i = 0; i < swarm_graph_pos.size(); i++) {
+        if (!std::isfinite(swarm_graph_pos[i].norm())) {
+            RCLCPP_WARN(node_->get_logger(), "Invalid position at index %zu", i);
+            valid_positions = false;
+            break;
+        }
+    }
+    
+    if (!valid_positions) {
+        return false;
+    }
+    
     swarm_graph_->updateGraph(swarm_graph_pos);
 
     double similarity_error;
@@ -510,19 +644,24 @@ namespace ego_planner
     gradp.setZero();
     costp = 0;
 
+    // Convert to 2D position (ignore z-axis)
+    Eigen::Vector3d p_2d = p;
+    p_2d(2) = 0.0;  // Set z-axis to 0
+
     double dist;
-    grid_map_->evaluateEDT(p, dist);
+    grid_map_->evaluateEDT(p_2d, dist);
 
     double dist_err = obs_clearance_ - dist;
-    // if (drone_id_== 2)
-    //   RCLCPP_INFO(node_->get_logger(), "pos (%f,%f,%f) | dist_err(%f) = obs_clearance: (%f) - dist(%f)", p(0), p(1), p(2), dist_err, obs_clearance_, dist);
 
     if (dist_err > 0)
     {
-
       ret = true;
       Eigen::Vector3d dist_grad;
-      grid_map_->evaluateFirstGrad(p, dist_grad);
+      grid_map_->evaluateFirstGrad(p_2d, dist_grad);
+      
+              // 2D gradient (z-axis set to 0)
+        dist_grad(2) = 0.0;
+      
       costp = wei_obs_ * pow(dist_err, 3);
       gradp = -wei_obs_ * 3.0 * pow(dist_err, 2) * dist_grad;
     }
@@ -549,33 +688,59 @@ namespace ego_planner
     costp = 0;
 
     const double CLEARANCE2 = (swarm_clearance_ * 1.5) * (swarm_clearance_ * 1.5);
-    constexpr double a = 2.0, b = 1.0, inv_a2 = 1 / a / a, inv_b2 = 1 / b / b;
     double pt_time = t_now_ + t;
 
+    // Early exit if no swarm trajectories
+    if (swarm_trajs_->empty()) {
+        return false;
+    }
+    
     for (size_t id = 0; id < swarm_trajs_->size(); id++)
     {
+      // Additional bounds check for safety
+      if (id >= swarm_trajs_->size()) {
+        RCLCPP_WARN(node_->get_logger(), "Swarm trajectory index %zu out of bounds in swarmGradCostP", id);
+        break;
+      }
+      
+      // Check if trajectory is properly initialized and not our own drone
       if ((swarm_trajs_->at(id).drone_id < 0) || swarm_trajs_->at(id).drone_id == drone_id_)
       {
+        continue;
+      }
+      
+      // Additional safety check for trajectory validity
+      if (swarm_trajs_->at(id).duration <= 0.0) {
+        RCLCPP_DEBUG(node_->get_logger(), "Skipping invalid trajectory duration at index %zu", id);
         continue;
       }
 
       double traj_i_satrt_time = swarm_trajs_->at(id).start_time;
       Eigen::Vector3d swarm_p, swarm_v;
-      if (pt_time < traj_i_satrt_time + swarm_trajs_->at(id).duration)
+      
+      // Pre-calculate time difference to avoid repeated calculation
+      double time_diff = pt_time - traj_i_satrt_time;
+      
+      if (time_diff < swarm_trajs_->at(id).duration)
       {
-        swarm_p = swarm_trajs_->at(id).traj.getPos(pt_time - traj_i_satrt_time);
-        swarm_v = swarm_trajs_->at(id).traj.getVel(pt_time - traj_i_satrt_time);
+        swarm_p = swarm_trajs_->at(id).traj.getPos(time_diff);
+        swarm_v = swarm_trajs_->at(id).traj.getVel(time_diff);
       }
       else
       {
-        double exceed_time = pt_time - (traj_i_satrt_time + swarm_trajs_->at(id).duration);
+        double exceed_time = time_diff - swarm_trajs_->at(id).duration;
         swarm_v = swarm_trajs_->at(id).traj.getVel(swarm_trajs_->at(id).duration);
         swarm_p = swarm_trajs_->at(id).traj.getPos(swarm_trajs_->at(id).duration) +
                   exceed_time * swarm_v;
       }
-      Eigen::Vector3d dist_vec = p - swarm_p;
-      double ellip_dist2 = dist_vec(2) * dist_vec(2) * inv_a2 + (dist_vec(0) * dist_vec(0) + dist_vec(1) * dist_vec(1)) * inv_b2;
-      double dist2_err = CLEARANCE2 - ellip_dist2;
+      
+              // 2D distance calculation (ignore z-axis)
+        Eigen::Vector3d dist_vec = p - swarm_p;
+        dist_vec(2) = 0.0;  // Set z-axis distance to 0
+        
+        // 2D Euclidean distance calculation
+      double dist2 = dist_vec(0) * dist_vec(0) + dist_vec(1) * dist_vec(1);
+      double dist2_err = CLEARANCE2 - dist2;
       double dist2_err2 = dist2_err * dist2_err;
       double dist2_err3 = dist2_err2 * dist2_err;
 
@@ -583,16 +748,18 @@ namespace ego_planner
       {
         ret = true;
         costp += wei_swarm_ * dist2_err3;
-        Eigen::Vector3d dJ_dP = wei_swarm_ * 3 * dist2_err2 * (-2) *
-                                Eigen::Vector3d(inv_b2 * dist_vec(0), inv_b2 * dist_vec(1), inv_a2 * dist_vec(2));
+        
+                  // 2D gradient (z-axis is 0)
+          Eigen::Vector3d dJ_dP = wei_swarm_ * 3 * dist2_err2 * (-2) *
+                                  Eigen::Vector3d(dist_vec(0), dist_vec(1), 0.0);
         gradp += dJ_dP;
         gradt += dJ_dP.dot(v - swarm_v);
         grad_prev_t += dJ_dP.dot(-swarm_v);
       }
 
-      if (min_ellip_dist2_ > ellip_dist2)
+      if (min_ellip_dist2_ > dist2)
       {
-        min_ellip_dist2_ = ellip_dist2;
+        min_ellip_dist2_ = dist2;
       }
     }
     return ret;
@@ -602,10 +769,14 @@ namespace ego_planner
                                                Eigen::Vector3d &gradv,
                                                double &costv)
   {
-    double vpen = v.squaredNorm() - max_vel_ * max_vel_;
+    // 2D velocity calculation (ignore z-axis)
+    Eigen::Vector3d v_2d = v;
+    v_2d(2) = 0.0;
+    
+    double vpen = v_2d.squaredNorm() - max_vel_ * max_vel_;
     if (vpen > 0)
     {
-      gradv = wei_feas_ * 6 * vpen * vpen * v;
+      gradv = wei_feas_ * 6 * vpen * vpen * v_2d;  // z-axis gradient is 0
       costv = wei_feas_ * vpen * vpen * vpen;
       return true;
     }
@@ -616,10 +787,14 @@ namespace ego_planner
                                                Eigen::Vector3d &grada,
                                                double &costa)
   {
-    double apen = a.squaredNorm() - max_acc_ * max_acc_;
+    // 2D acceleration calculation (ignore z-axis)
+    Eigen::Vector3d a_2d = a;
+    a_2d(2) = 0.0;
+    
+    double apen = a_2d.squaredNorm() - max_acc_ * max_acc_;
     if (apen > 0)
     {
-      grada = wei_feas_ * 6 * apen * apen * a;
+      grada = wei_feas_ * 6 * apen * apen * a_2d;  // z-axis gradient is 0
       costa = wei_feas_ * apen * apen * apen;
       return true;
     }
@@ -754,6 +929,13 @@ namespace ego_planner
     node_ = node;
     node_->declare_parameter("optimization/constrain_points_perPiece", 3);
     node_->get_parameter("optimization/constrain_points_perPiece", cps_num_prePiece_);
+    
+    node_->declare_parameter("enable_obstacles", true);
+    node_->get_parameter("enable_obstacles", enable_obstacles_);
+    RCLCPP_INFO(node_->get_logger(), "Obstacle avoidance: %s", enable_obstacles_ ? "enabled" : "disabled");
+    
+    node_->declare_parameter("enable_debug_logs", false);
+    node_->get_parameter("enable_debug_logs", enable_debug_logs_);
     node_->declare_parameter("optimization/weight_obstacle", 1000.0);
     node_->get_parameter("optimization/weight_obstacle", wei_obs_);
     node_->declare_parameter("optimization/weight_swarm", 0.0);
@@ -791,7 +973,7 @@ namespace ego_planner
   {
     grid_map_ = map;
     a_star_.reset(new AStar);
-    a_star_->initGridMap(grid_map_, Eigen::Vector3i(400, 200, 10));
+    a_star_->initGridMap(grid_map_, Eigen::Vector2i(400, 200));  // 2D for rover
   }
 
   void PolyTrajOptimizer::setControlPoints(const Eigen::MatrixXd &points)

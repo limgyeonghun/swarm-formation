@@ -23,6 +23,10 @@ struct MappingParameters {
   double esdf_slice_height_ = -0.1;
   bool show_esdf_time_ = false;
   double local_bound_inflate_ = 1.0;
+  
+  // ESDF update optimization parameters
+  int esdf_update_skip_ = 1;  // Number of frames to skip ESDF update
+  double esdf_update_threshold_ = 0.1;  // ESDF update threshold
 };
 
 struct MappingData {

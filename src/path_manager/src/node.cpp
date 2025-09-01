@@ -7,7 +7,7 @@ int main(int argc, char **argv) {
     // auto node = std::make_shared<path_manager::ReplanFSM>();
     auto node = std::make_shared<rclcpp::Node>("path_manager");
 
-    rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions{}, 6);
+    rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions{}, 12);
     path_manager::ReplanFSM ego_replan(node);
     ego_replan.init();
     executor.add_node(node);

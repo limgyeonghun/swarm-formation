@@ -6,8 +6,23 @@ if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 14)
 endif()
 
+# Add compiler optimization flags
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
+  # Performance optimization flags
+  add_compile_options(-O3 -march=native -mtune=native)
+  # Vectorization optimization
+  add_compile_options(-ffast-math -funroll-loops)
+  # Link time optimization
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif()
+
+# Add OpenMP support (INTERFACE to propagate dependencies)
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+  message(STATUS "OpenMP found and enabled for parallel processing")
+else()
+  message(WARNING "OpenMP not found. Parallel processing will be disabled.")
 endif()
 
 find_package(ament_cmake REQUIRED)
@@ -29,6 +44,12 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   rclcpp
   Eigen3
 )
+
+# Add OpenMP compile and link options (INTERFACE to propagate dependencies)
+if(OpenMP_CXX_FOUND)
+  target_compile_options(${PROJECT_NAME}_lib INTERFACE ${OpenMP_CXX_FLAGS})
+  target_link_options(${PROJECT_NAME}_lib INTERFACE ${OpenMP_CXX_FLAGS})
+endif()
 
 install(TARGETS ${PROJECT_NAME}_lib
   EXPORT export_${PROJECT_NAME}

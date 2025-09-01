@@ -6,36 +6,27 @@ using namespace Eigen;
 
 AStar::~AStar()
 {
-    for (int i = 0; i < POOL_SIZE_(0); i++)
-        for (int j = 0; j < POOL_SIZE_(1); j++)
-            for (int k = 0; k < POOL_SIZE_(2); k++)
-                delete GridNodeMap_[i][j][k];
-
     for (int i = 0; i < POOL_SIZE_(0); i++) {
         for (int j = 0; j < POOL_SIZE_(1); j++) {
-            delete[] GridNodeMap_[i][j];
+            delete GridNodeMap_[i][j];
         }
         delete[] GridNodeMap_[i];
     }
     delete[] GridNodeMap_;
 }
 
-void AStar::initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size)
+void AStar::initGridMap(GridMap::Ptr occ_map, const Eigen::Vector2i pool_size)
 {
     POOL_SIZE_ = pool_size;
     CENTER_IDX_ = pool_size / 2;
 
-    GridNodeMap_ = new GridNodePtr **[POOL_SIZE_(0)];
+    GridNodeMap_ = new GridNodePtr *[POOL_SIZE_(0)];
     for (int i = 0; i < POOL_SIZE_(0); i++)
     {
-        GridNodeMap_[i] = new GridNodePtr *[POOL_SIZE_(1)];
+        GridNodeMap_[i] = new GridNodePtr[POOL_SIZE_(1)];
         for (int j = 0; j < POOL_SIZE_(1); j++)
         {
-            GridNodeMap_[i][j] = new GridNodePtr[POOL_SIZE_(2)];
-            for (int k = 0; k < POOL_SIZE_(2); k++)
-            {
-                GridNodeMap_[i][j][k] = new GridNode;
-            }
+            GridNodeMap_[i][j] = new GridNode;
         }
     }
     grid_map_ = occ_map;
@@ -45,29 +36,14 @@ double AStar::getDiagHeu(GridNodePtr node1, GridNodePtr node2)
 {
     double dx = std::abs(node1->index(0) - node2->index(0));
     double dy = std::abs(node1->index(1) - node2->index(1));
-    double dz = std::abs(node1->index(2) - node2->index(2));
 
+    // 2D diagonal heuristic
     double h = 0.0;
-    int diag = std::min({static_cast<int>(dx), static_cast<int>(dy), static_cast<int>(dz)});
+    int diag = std::min(static_cast<int>(dx), static_cast<int>(dy));
     dx -= diag;
     dy -= diag;
-    dz -= diag;
 
-    if (dx == 0)
-    {
-        h = 1.0 * std::sqrt(3.0) * diag + std::sqrt(2.0) * std::min(dy, dz) + 1.0 * std::abs(dy - dz);
-    }
-    else if (dy == 0)
-    {
-        h = 1.0 * std::sqrt(3.0) * diag + std::sqrt(2.0) * std::min(dx, dz) + 1.0 * std::abs(dx - dz);
-    }
-    else if (dz == 0)
-    {
-        h = 1.0 * std::sqrt(3.0) * diag + std::sqrt(2.0) * std::min(dx, dy) + 1.0 * std::abs(dx - dy);
-    }
-    else {
-        h = std::sqrt(3.0) * diag + std::sqrt(2.0) * (std::max({dx, dy, dz}) - diag);
-    }
+    h = std::sqrt(2.0) * diag + dx + dy;
     return h;
 }
 
@@ -75,8 +51,7 @@ double AStar::getManhHeu(GridNodePtr node1, GridNodePtr node2)
 {
     double dx = std::abs(node1->index(0) - node2->index(0));
     double dy = std::abs(node1->index(1) - node2->index(1));
-    double dz = std::abs(node1->index(2) - node2->index(2));
-    return dx + dy + dz;
+    return dx + dy;
 }
 
 double AStar::getEuclHeu(GridNodePtr node1, GridNodePtr node2)
@@ -97,33 +72,83 @@ std::vector<GridNodePtr> AStar::retrievePath(GridNodePtr current)
 }
 
 bool AStar::ConvertToIndexAndAdjustStartEndPoints(const Eigen::Vector3d start_pt, const Eigen::Vector3d end_pt,
-                                                   Eigen::Vector3i &start_idx, Eigen::Vector3i &end_idx)
+                                                   Eigen::Vector2i &start_idx, Eigen::Vector2i &end_idx)
 {
     Eigen::Vector3d s_pt = start_pt;
     Eigen::Vector3d e_pt = end_pt;
+    
+    // First try to convert to index
     if (!Coord2Index(s_pt, start_idx) || !Coord2Index(e_pt, end_idx))
-        return false;
-
-    if (checkOccupancy(Index2Coord(start_idx)))
     {
-        std::cerr << "Start point is inside an obstacle." << std::endl;
-        do
-        {
-            s_pt = (s_pt - e_pt).normalized() * step_size_ + s_pt;
-            if (!Coord2Index(s_pt, start_idx))
-                return false;
-        } while (checkOccupancy(Index2Coord(start_idx)));
+        std::cerr << "Failed to convert points to indices. Start: " << s_pt.transpose() 
+                  << ", End: " << e_pt.transpose() << std::endl;
+        return false;
     }
 
-    if (checkOccupancy(Index2Coord(end_idx)))
+    // Check if start point is in obstacle and adjust
+    if (checkOccupancy(Index2Coord(start_idx)))
     {
-        std::cerr << "End point is inside an obstacle." << std::endl;
+        std::cerr << "Start point is inside an obstacle. Adjusting..." << std::endl;
+        int max_attempts = 20;  // Increased from 10 to 20
+        int attempts = 0;
         do
         {
-            e_pt = (e_pt - s_pt).normalized() * step_size_ + e_pt;
-            if (!Coord2Index(e_pt, end_idx))
+            // Try multiple directions to escape obstacle
+            Eigen::Vector3d direction;
+            if (attempts < 5) {
+                // First try moving away from end point
+                direction = (s_pt - e_pt).normalized();
+            } else if (attempts < 10) {
+                // Try moving in perpendicular directions
+                Eigen::Vector3d perp = Eigen::Vector3d(-(s_pt - e_pt).y(), (s_pt - e_pt).x(), 0.0).normalized();
+                direction = (attempts % 2 == 0) ? perp : -perp;
+            } else {
+                // Try random directions
+                direction = Eigen::Vector3d((attempts % 3 - 1), ((attempts / 3) % 3 - 1), 0.0).normalized();
+            }
+            
+            s_pt = s_pt + direction * step_size_ * (1.0 + attempts * 0.1);  // Increase step size with attempts
+            
+            if (!Coord2Index(s_pt, start_idx))
+            {
+                std::cerr << "Failed to adjust start point after " << attempts << " attempts" << std::endl;
                 return false;
-        } while (checkOccupancy(Index2Coord(end_idx)));
+            }
+            attempts++;
+        } while (checkOccupancy(Index2Coord(start_idx)) && attempts < max_attempts);
+        
+        if (attempts >= max_attempts)
+        {
+            std::cerr << "Failed to find valid start point after " << max_attempts << " attempts" << std::endl;
+            return false;
+        }
+    }
+
+    // Check if end point is in obstacle and adjust
+    if (checkOccupancy(Index2Coord(end_idx)))
+    {
+        std::cerr << "End point is inside an obstacle. Adjusting..." << std::endl;
+        int max_attempts = 10;
+        int attempts = 0;
+        do
+        {
+            // Move end point away from obstacle
+            Eigen::Vector3d direction = (e_pt - s_pt).normalized();
+            e_pt = e_pt + direction * step_size_;
+            
+            if (!Coord2Index(e_pt, end_idx))
+            {
+                std::cerr << "Failed to adjust end point after " << attempts << " attempts" << std::endl;
+                return false;
+            }
+            attempts++;
+        } while (checkOccupancy(Index2Coord(end_idx)) && attempts < max_attempts);
+        
+        if (attempts >= max_attempts)
+        {
+            std::cerr << "Failed to find valid end point after " << max_attempts << " attempts" << std::endl;
+            return false;
+        }
     }
 
     return true;
@@ -138,7 +163,7 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
     inv_step_size_ = 1 / step_size;
     center_ = (start_pt + end_pt) / 2;
 
-    Eigen::Vector3i start_idx, end_idx;
+    Eigen::Vector2i start_idx, end_idx;
     if (!ConvertToIndexAndAdjustStartEndPoints(start_pt, end_pt, start_idx, end_idx))
     {
         std::cerr << "Unable to handle the initial or end point, force return!" << std::endl;
@@ -148,8 +173,8 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
     // std::cerr << "POOL_SIZE: " << POOL_SIZE_.transpose() << std::endl;
     // std::cerr << "Start idx: " << start_idx.transpose() << " End idx: " << end_idx.transpose() << std::endl;
 
-    GridNodePtr startPtr = GridNodeMap_[start_idx(0)][start_idx(1)][start_idx(2)];
-    GridNodePtr endPtr = GridNodeMap_[end_idx(0)][end_idx(1)][end_idx(2)];
+    GridNodePtr startPtr = GridNodeMap_[start_idx(0)][start_idx(1)];
+    GridNodePtr endPtr = GridNodeMap_[end_idx(0)][end_idx(1)];
 
     // while (!openSet_.empty()) openSet_.pop();
     openSet_ = decltype(openSet_)();
@@ -187,24 +212,21 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
 
         for (int dx = -1; dx <= 1; dx++)
             for (int dy = -1; dy <= 1; dy++)
-                for (int dz = -1; dz <= 1; dz++)
                 {
-                    if (dx == 0 && dy == 0 && dz == 0)
+                    if (dx == 0 && dy == 0)
                         continue;
 
-                    Eigen::Vector3i neighborIdx;
+                    Eigen::Vector2i neighborIdx;
                     neighborIdx(0) = current->index(0) + dx;
                     neighborIdx(1) = current->index(1) + dy;
-                    neighborIdx(2) = current->index(2) + dz;
 
                     if (neighborIdx(0) < 1 || neighborIdx(0) >= POOL_SIZE_(0) - 1 ||
-                        neighborIdx(1) < 1 || neighborIdx(1) >= POOL_SIZE_(1) - 1 ||
-                        neighborIdx(2) < 1 || neighborIdx(2) >= POOL_SIZE_(2) - 1)
+                        neighborIdx(1) < 1 || neighborIdx(1) >= POOL_SIZE_(1) - 1)
                     {
                         continue;
                     }
 
-                    neighborPtr = GridNodeMap_[neighborIdx(0)][neighborIdx(1)][neighborIdx(2)];
+                    neighborPtr = GridNodeMap_[neighborIdx(0)][neighborIdx(1)];
                     neighborPtr->index = neighborIdx;
 
                     bool flag_explored = (neighborPtr->rounds == rounds_);
@@ -222,7 +244,7 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
                             continue;
                     }
                     
-                    double static_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
+                    double static_cost = std::sqrt(dx * dx + dy * dy);
                     tentative_gScore = current->gScore + static_cost;
 
                     if (!flag_explored)
@@ -240,13 +262,15 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
                         neighborPtr->fScore = tentative_gScore + getHeu(neighborPtr, endPtr);
                     }
                 }
-        rclcpp::Time time_2 = rclcpp::Clock().now();
-        rclcpp::Duration elapsed = time_2 - time_1;
-        // std::cout << "A* iter:" << num_iter << ", time:" << elapsed.seconds() * 1000 << " ms" << std::endl;
-        if (elapsed.seconds() > 0.2)
-        {
-            std::cerr << "Failed in A* path searching !!! 0.2 seconds time limit exceeded." << std::endl;
-            return false;
+        // Time limit check - only every 100 iterations to reduce overhead
+        if (num_iter % 100 == 0) {
+            rclcpp::Time time_2 = rclcpp::Clock().now();
+            rclcpp::Duration elapsed = time_2 - time_1;
+            if (elapsed.seconds() > 0.2)
+            {
+                std::cerr << "Failed in A* path searching !!! 0.2 seconds time limit exceeded." << std::endl;
+                return false;
+            }
         }
     }
 

@@ -89,6 +89,8 @@ namespace ego_planner
     double debug_similarity_ = 0.0;
 
     double t_now_;
+    bool enable_obstacles_;
+    bool enable_debug_logs_;  // Debug logging control
 
     rclcpp::Node::SharedPtr node_;
 
@@ -219,16 +221,16 @@ namespace ego_planner
         // swarm_des.push_back(v6);
         formation_size_ = swarm_des.size();
         swarm_graph_->setDesiredForm(swarm_des);
-        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "Triangle formation set: size=%zu", swarm_des.size());
+        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "HEXAGON formation set: size=%zu", swarm_des.size());
         break;
       }
 
       case FORMATION_TYPE::REGULAR_SQUARE:
       {
         Eigen::Vector3d v0(0, 0, 0);
-        Eigen::Vector3d v1(1.0, 0, 0);
-        Eigen::Vector3d v2(1.0, 1.0, 0);
-        Eigen::Vector3d v3(0.0, 1.0, 0);
+        Eigen::Vector3d v1(0, -1.5, 0);
+        Eigen::Vector3d v2(1.5, -1.5, 0);
+        Eigen::Vector3d v3(1.5, 0.0, 0);
 
         swarm_des.push_back(v0);
         swarm_des.push_back(v1);
@@ -237,7 +239,7 @@ namespace ego_planner
 
         formation_size_ = swarm_des.size();
         swarm_graph_->setDesiredForm(swarm_des);
-        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "CUSTOM formation set: size=%zu", swarm_des.size());
+        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "SQUARE formation set: size=%zu", swarm_des.size());
         break;
       }
 

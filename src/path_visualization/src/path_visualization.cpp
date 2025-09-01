@@ -31,6 +31,11 @@ std::tuple<float, float, float> getDroneColor(int drone_id)
 
 PathVisualization::PathVisualization() : Node("path_visualization")
 {
+  // Load obstacle avoidance parameter
+  this->declare_parameter("enable_obstacles", true);
+  this->get_parameter("enable_obstacles", enable_obstacles_);
+  RCLCPP_INFO(this->get_logger(), "Obstacle visualization: %s", enable_obstacles_ ? "enabled" : "disabled");
+
   // Load drone parameters from drones.yaml
   loadDroneParameters();
 
@@ -84,7 +89,11 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   timer_ = this->create_wall_timer(10ms, std::bind(&PathVisualization::updatePosition, this));
   log_timer_ = this->create_wall_timer(150ms, std::bind(&PathVisualization::logPositions, this));
 
-  publishObstacles();
+  // Only publish obstacles if obstacle avoidance is enabled
+  if (enable_obstacles_)
+  {
+    publishObstacles();
+  }
 }
 
 void PathVisualization::simplePathCallback(const nav_msgs::msg::Path::SharedPtr msg, int drone_id)
@@ -261,7 +270,12 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
 
   auto [r, g, b] = getDroneColor(drone_id);
   publishPath(optimized_path, drone_id, r, g, b, 1.0, optimized_traj_pub_);
-  publishObstacles();
+  
+  // Only publish obstacles if obstacle avoidance is enabled
+  if (enable_obstacles_)
+  {
+    publishObstacles();
+  }
 
   Eigen::Vector3d current_pos = data.start_pt;
   double best_t = 0.0;
@@ -428,6 +442,12 @@ void PathVisualization::publishPath(const std::vector<Eigen::Vector3d> &path, in
 
 void PathVisualization::publishObstacles()
 {
+  // Only publish obstacles if obstacle avoidance is enabled
+  if (!enable_obstacles_)
+  {
+    return;
+  }
+  
   for (size_t i = 0; i < obstacle_centers_.size(); ++i)
   {
     auto marker = createMarker("obstacle", i, visualization_msgs::msg::Marker::SPHERE, 0.8, 0.0, 1.0, 0.0, 0.5);

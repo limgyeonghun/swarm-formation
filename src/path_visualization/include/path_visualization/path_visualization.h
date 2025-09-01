@@ -40,6 +40,7 @@ private:
   void simplePathCallback(const nav_msgs::msg::Path::SharedPtr msg, int drone_id);
 
   int num_drones_;
+  bool enable_obstacles_;
   std::vector<Eigen::Vector3d> obstacle_centers_;
   std::vector<DroneParams> drone_params_;
   std::vector<DroneData> drone_data_;

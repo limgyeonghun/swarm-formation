@@ -132,15 +132,16 @@ void GridMap::setOccupancy(const Eigen::Vector3i& id, double occ) {
 
 void GridMap::inflatePoint(const Eigen::Vector3i& pt, int step) {
     const int z_idx = std::max(pt.z() - step, 0);
+    const int x_min = std::max(pt.x() - step, 0);
+    const int x_max = std::min(pt.x() + step, mp_.map_voxel_num_(0) - 1);
+    const int y_min = std::max(pt.y() - step, 0);
+    const int y_max = std::min(pt.y() + step, mp_.map_voxel_num_(1) - 1);
 
-    for (int dx = -step; dx <= step; ++dx) {
-        for (int dy = -step; dy <= step; ++dy) {
-            Eigen::Vector3i inf_pt(pt.x() + dx,
-                                   pt.y() + dy,
-                                   z_idx);
-            if (isInMap(inf_pt)) {
-                md_.occupancy_buffer_inflate_[toAddress(inf_pt)] = 1;
-            }
+    // Memory access optimization: access contiguous memory regions
+    for (int x = x_min; x <= x_max; ++x) {
+        for (int y = y_min; y <= y_max; ++y) {
+            Eigen::Vector3i inf_pt(x, y, z_idx);
+            md_.occupancy_buffer_inflate_[toAddress(inf_pt)] = 1;
         }
     }
 }
@@ -190,39 +191,79 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
   Eigen::Vector3i esdf_voxel_size = max_esdf - min_esdf + Eigen::Vector3i(1, 1, 1);
   int esdf_voxel_count = esdf_voxel_size(0) * esdf_voxel_size(1) * esdf_voxel_size(2);
 
-  RCLCPP_INFO(node_->get_logger(), "ESDF processing voxel size: %d %d %d (%d voxels)",
-              esdf_voxel_size(0), esdf_voxel_size(1), esdf_voxel_size(2), esdf_voxel_count);
+  // Disable parallelization for small data (prevent overhead)
+  bool use_parallel = esdf_voxel_count > 10000; // Adjustable threshold
+
+  RCLCPP_INFO(node_->get_logger(), "ESDF processing voxel size: %d %d %d (%d voxels), parallel=%s",
+              esdf_voxel_size(0), esdf_voxel_size(1), esdf_voxel_size(2), esdf_voxel_count, 
+              use_parallel ? "true" : "false");
 
   /* ========== compute positive DT ========== */
   auto start_positive = rclcpp::Clock().now();
-
-  for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
-    for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
-      fillESDF(
+  
+  if (use_parallel) {
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+        fillESDF(
           [&](int z) {
             return md_.occupancy_buffer_inflate_[toAddress(x, y, z)] == 1 ?
                    0 : std::numeric_limits<double>::max();
           },
           [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
           min_esdf[2], max_esdf[2], 2);
+      }
     }
-  }
 
-  for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
-    for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
-      fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
-               [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
-               min_esdf[1], max_esdf[1], 1);
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
+                 [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
+                 min_esdf[1], max_esdf[1], 1);
+      }
     }
-  }
 
-  for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
-    for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
-      fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
-               [&](int x, double val) {
-                 md_.distance_buffer_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
-               },
-               min_esdf[0], max_esdf[0], 0);
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
+                 [&](int x, double val) {
+                   md_.distance_buffer_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
+                 },
+                 min_esdf[0], max_esdf[0], 0);
+      }
+    }
+  } else {
+    // Sequential processing (for small data)
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+        fillESDF(
+          [&](int z) {
+            return md_.occupancy_buffer_inflate_[toAddress(x, y, z)] == 1 ?
+                   0 : std::numeric_limits<double>::max();
+          },
+          [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
+          min_esdf[2], max_esdf[2], 2);
+      }
+    }
+
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
+                 [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
+                 min_esdf[1], max_esdf[1], 1);
+      }
+    }
+
+    for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
+                 [&](int x, double val) {
+                   md_.distance_buffer_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
+                 },
+                 min_esdf[0], max_esdf[0], 0);
+      }
     }
   }
 
@@ -231,51 +272,96 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
   /* ========== compute negative DT ========== */
   auto start_negative = rclcpp::Clock().now();
 
-  for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
-    for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
-      for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
-        int idx = toAddress(x, y, z);
-        if (md_.occupancy_buffer_inflate_[idx] == 0) {
-          md_.occupancy_buffer_neg_[idx] = 1;
-        } else if (md_.occupancy_buffer_inflate_[idx] == 1) {
-          md_.occupancy_buffer_neg_[idx] = 0;
-        } else {
-          RCLCPP_ERROR(node_->get_logger(), "Invalid occupancy value at idx %d", idx);
+  if (use_parallel) {
+    #pragma omp parallel for collapse(3) schedule(static)
+    for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
+      for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
+        for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
+          int idx = toAddress(x, y, z);
+          md_.occupancy_buffer_neg_[idx] = (md_.occupancy_buffer_inflate_[idx] == 0) ? 1 : 0;
         }
       }
     }
-  }
 
-  std::fill(md_.tmp_buffer1_.begin(), md_.tmp_buffer1_.end(), 0.0);
-  std::fill(md_.tmp_buffer2_.begin(), md_.tmp_buffer2_.end(), 0.0);
+    #pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < md_.tmp_buffer1_.size(); ++i) md_.tmp_buffer1_[i] = 0.0;
+    #pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < md_.tmp_buffer2_.size(); ++i) md_.tmp_buffer2_[i] = 0.0;
 
-  for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+        fillESDF(
+            [&](int z) {
+              return md_.occupancy_buffer_neg_[toAddress(x, y, z)] == 1 ?
+                     0 : std::numeric_limits<double>::max();
+            },
+            [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
+            min_esdf[2], max_esdf[2], 2);
+      }
+    }
+
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
+                 [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
+                 min_esdf[1], max_esdf[1], 1);
+      }
+    }
+
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
-      fillESDF(
-          [&](int z) {
-            return md_.occupancy_buffer_neg_[toAddress(x, y, z)] == 1 ?
-                   0 : std::numeric_limits<double>::max();
-          },
-          [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
-          min_esdf[2], max_esdf[2], 2);
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
+                 [&](int x, double val) {
+                   md_.distance_buffer_neg_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
+                 },
+                 min_esdf[0], max_esdf[0], 0);
+      }
     }
-  }
-
-  for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
-    for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
-      fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
-               [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
-               min_esdf[1], max_esdf[1], 1);
+  } else {
+    // Sequential processing (for small data)
+    for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
+      for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
+        for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
+          int idx = toAddress(x, y, z);
+          md_.occupancy_buffer_neg_[idx] = (md_.occupancy_buffer_inflate_[idx] == 0) ? 1 : 0;
+        }
+      }
     }
-  }
 
-  for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
-    for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
-      fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
-               [&](int x, double val) {
-                 md_.distance_buffer_neg_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
-               },
-               min_esdf[0], max_esdf[0], 0);
+    for (size_t i = 0; i < md_.tmp_buffer1_.size(); ++i) md_.tmp_buffer1_[i] = 0.0;
+    for (size_t i = 0; i < md_.tmp_buffer2_.size(); ++i) md_.tmp_buffer2_[i] = 0.0;
+
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+        fillESDF(
+            [&](int z) {
+              return md_.occupancy_buffer_neg_[toAddress(x, y, z)] == 1 ?
+                     0 : std::numeric_limits<double>::max();
+            },
+            [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
+            min_esdf[2], max_esdf[2], 2);
+      }
+    }
+
+    for (int x = min_esdf[0]; x <= max_esdf[0]; x++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int y) { return md_.tmp_buffer1_[toAddress(x, y, z)]; },
+                 [&](int y, double val) { md_.tmp_buffer2_[toAddress(x, y, z)] = val; },
+                 min_esdf[1], max_esdf[1], 1);
+      }
+    }
+
+    for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
+      for (int z = min_esdf[2]; z <= max_esdf[2]; z++) {
+        fillESDF([&](int x) { return md_.tmp_buffer2_[toAddress(x, y, z)]; },
+                 [&](int x, double val) {
+                   md_.distance_buffer_neg_[toAddress(x, y, z)] = mp_.resolution_ * std::sqrt(val);
+                 },
+                 min_esdf[0], max_esdf[0], 0);
+      }
     }
   }
 
@@ -284,13 +370,26 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
   /* ========== combine pos and neg DT ========== */
   auto start_combine = rclcpp::Clock().now();
 
-  for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
-    for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
-      for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
-        int idx = toAddress(x, y, z);
-        md_.distance_buffer_all_[idx] = md_.distance_buffer_[idx];
-        if (md_.distance_buffer_neg_[idx] > 0.0) {
-          md_.distance_buffer_all_[idx] += (-md_.distance_buffer_neg_[idx] + mp_.resolution_);
+  if (use_parallel) {
+    #pragma omp parallel for collapse(3) schedule(static)
+    for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
+      for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
+        for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
+          int idx = toAddress(x, y, z);
+          double v = md_.distance_buffer_[idx];
+          double vn = md_.distance_buffer_neg_[idx];
+          md_.distance_buffer_all_[idx] = (vn > 0.0) ? (v - vn + mp_.resolution_ + v) : v;
+        }
+      }
+    }
+  } else {
+    for (int x = min_esdf(0); x <= max_esdf(0); ++x) {
+      for (int y = min_esdf(1); y <= max_esdf(1); ++y) {
+        for (int z = min_esdf(2); z <= max_esdf(2); ++z) {
+          int idx = toAddress(x, y, z);
+          double v = md_.distance_buffer_[idx];
+          double vn = md_.distance_buffer_neg_[idx];
+          md_.distance_buffer_all_[idx] = (vn > 0.0) ? (v - vn + mp_.resolution_ + v) : v;
         }
       }
     }
@@ -307,7 +406,8 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
   double avg_esdf_time = total_duration / static_cast<double>(esdf_voxel_count);
   double max_esdf_time = std::max({positive_duration, negative_duration, combine_duration});
 
-  if (mp_.show_esdf_time_) {
+  // Only log ESDF timing if explicitly enabled and significant time spent
+  if (mp_.show_esdf_time_ && total_duration > 10.0) {
     RCLCPP_INFO(node_->get_logger(),
                 "voxels=%d, total=%.2f ms, positive=%.2f ms, negative=%.2f ms, combine=%.2f ms, avg=%.2f ms, max=%.2f ms",
                 esdf_voxel_count, total_duration, positive_duration, negative_duration,
@@ -389,9 +489,14 @@ void GridMap::updateESDFLocal(const Eigen::Vector3d& center_pos) {
   boundIndex(local_esdf_min_);
   boundIndex(local_esdf_max_);
 
+  // Local ESDF update optimization: update only small region
+  updateESDF3d(local_esdf_min_, local_esdf_max_);
+
   Eigen::Vector3i local_size = local_esdf_max_ - local_esdf_min_ + Eigen::Vector3i(1, 1, 1);
   int local_buffer_size = local_size(0) * local_size(1) * local_size(2);
   distance_buffer_local_.resize(local_buffer_size);
+  
+  // Memory copy optimization
   int local_idx = 0;
   for (int x = local_esdf_min_(0); x <= local_esdf_max_(0); ++x) {
     for (int y = local_esdf_min_(1); y <= local_esdf_max_(1); ++y) {
