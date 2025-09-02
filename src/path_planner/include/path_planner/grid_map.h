@@ -10,6 +10,14 @@
 
 using namespace std;
 
+struct RoadSegment {
+  double start_x;
+  double start_y;
+  double end_x;
+  double end_y;
+  double width;
+};
+
 struct MappingParameters {
   /* map properties */
   Eigen::Vector3d map_origin_, map_size_;
@@ -27,6 +35,12 @@ struct MappingParameters {
   // ESDF update optimization parameters
   int esdf_update_skip_ = 1;  // Number of frames to skip ESDF update
   double esdf_update_threshold_ = 0.1;  // ESDF update threshold
+  
+  // Road boundary parameters for rover operation
+  bool use_road_boundary_ = false;
+  std::vector<RoadSegment> road_segments_;
+  double road_width_ = 8.0;
+  double road_margin_ = 0.5;
 };
 
 struct MappingData {
@@ -74,6 +88,7 @@ public:
   inline bool isInMap(const Eigen::Vector3d& pos);
   inline bool isInMap(const Eigen::Vector3i& idx);
   inline bool isOccupied(const Eigen::Vector3i& id);
+  inline bool isInRoadBoundary(const Eigen::Vector3d& pos);
   inline void boundIndex(Eigen::Vector3i& id);
   inline int getOccupancy(const Eigen::Vector3d& pos);
   inline int getOccupancy(const Eigen::Vector3i& id);
@@ -147,6 +162,10 @@ inline void GridMap::indexToPos(const Eigen::Vector3i& id, Eigen::Vector3d& pos)
 
 inline int GridMap::getOccupancy(const Eigen::Vector3d& pos) {
   if (!isInMap(pos)) return -1;
+  
+  // 도로 경계 체크: 도로 밖이면 장애물로 처리
+  if (!isInRoadBoundary(pos)) return 1;
+  
   Eigen::Vector3i id;
   posToIndex(pos, id);
   return md_.occupancy_buffer_[toAddress(id)] > 0.5 ? 1 : 0;
@@ -154,11 +173,21 @@ inline int GridMap::getOccupancy(const Eigen::Vector3d& pos) {
 
 inline int GridMap::getOccupancy(const Eigen::Vector3i& id) {
   if (!isInMap(id)) return -1;
+  
+  // 인덱스를 위치로 변환해서 도로 경계 체크
+  Eigen::Vector3d pos;
+  indexToPos(id, pos);
+  if (!isInRoadBoundary(pos)) return 1;
+  
   return md_.occupancy_buffer_[toAddress(id)] > 0.5 ? 1 : 0;
 }
 
 inline int GridMap::getInflateOccupancy(const Eigen::Vector3d& pos) {
   if (!isInMap(pos)) return -1;
+  
+  // 도로 경계 체크: 도로 밖이면 장애물로 처리
+  if (!isInRoadBoundary(pos)) return 1;
+  
   Eigen::Vector3i id;
   posToIndex(pos, id);
   return int(md_.occupancy_buffer_inflate_[toAddress(id)]);
@@ -177,6 +206,38 @@ inline double GridMap::getDistance(const Eigen::Vector3i& id) {
   Eigen::Vector3i id1 = id;
   boundIndex(id1);
   return md_.distance_buffer_all_[toAddress(id1)];
+}
+
+inline bool GridMap::isInRoadBoundary(const Eigen::Vector3d& pos) {
+  if (!mp_.use_road_boundary_) return true;
+  if (mp_.road_segments_.empty()) return false;
+
+  for (const auto& segment : mp_.road_segments_) {
+
+    Eigen::Vector2d road_dir(segment.end_x - segment.start_x, 
+                            segment.end_y - segment.start_y);
+    double road_length = road_dir.norm();
+    if (road_length < 1e-6) continue;
+    
+    road_dir /= road_length;
+
+    Eigen::Vector2d road_normal(-road_dir.y(), road_dir.x());
+
+    Eigen::Vector2d pos_vec(pos(0) - segment.start_x, 
+                           pos(1) - segment.start_y);
+
+    double along_road = pos_vec.dot(road_dir);
+
+    double from_center = std::abs(pos_vec.dot(road_normal));
+    
+    if (along_road >= -mp_.road_margin_ && 
+        along_road <= road_length + mp_.road_margin_ &&
+        from_center <= (segment.width / 2.0 - mp_.road_margin_)) {
+      return true;
+    }
+  }
+  
+  return false;
 }
 
 #endif

@@ -1,10 +1,10 @@
 /**:
   ros__parameters:
-    # Grid Map Basic Settings (2D for Rover)
+    # Grid Map Basic Settings (2D for Rover) - Extended for long path
     grid_map/resolution: 0.1
     grid_map/map_size_x: 30.0
-    grid_map/map_size_y: 70.0
-    grid_map/map_size_z: 0.3  # Minimal height for 2D operation
+    grid_map/map_size_y: 120.0  # Extended to 120m for (0,0) -> (-1,100) path
+    grid_map/map_size_z: 0.3   # Minimal height for 2D operation
     grid_map/frame_id: "world"
     
     # Obstacle and Collision Settings
@@ -22,3 +22,11 @@
     # ESDF Update Optimization
     grid_map/esdf_update_skip: 2
     grid_map/esdf_update_threshold: 0.05
+    
+    # Road Boundary Settings (for road following)
+    grid_map/use_road_boundary: true
+    # [start_x, start_y, end_x, end_y, width, ...]
+    grid_map/road_segments: [
+      1.5,  -8.0,  1.5,  50.0,  4.0,
+    ]
+    grid_map/road_margin: 0.1

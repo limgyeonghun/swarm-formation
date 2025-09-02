@@ -16,6 +16,12 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   node_->declare_parameter("grid_map/esdf_slice_height", -0.1);
   node_->declare_parameter("grid_map/show_esdf_time", false);
   node_->declare_parameter("grid_map/local_bound_inflate", 1.0);
+  
+  // Road boundary parameters
+  node_->declare_parameter("grid_map/use_road_boundary", false);
+  node_->declare_parameter("grid_map/road_segments", std::vector<double>());
+  node_->declare_parameter("grid_map/road_width", 8.0);
+  node_->declare_parameter("grid_map/road_margin", 0.5);
 
   mp_.resolution_ = node_->get_parameter("grid_map/resolution").as_double();
   double x_size = node_->get_parameter("grid_map/map_size_x").as_double();
@@ -28,6 +34,25 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   mp_.esdf_slice_height_ = node_->get_parameter("grid_map/esdf_slice_height").as_double();
   mp_.show_esdf_time_ = node_->get_parameter("grid_map/show_esdf_time").as_bool();
   mp_.local_bound_inflate_ = node_->get_parameter("grid_map/local_bound_inflate").as_double();
+  
+  // Road boundary parameters
+  mp_.use_road_boundary_ = node_->get_parameter("grid_map/use_road_boundary").as_bool();
+  mp_.road_width_ = node_->get_parameter("grid_map/road_width").as_double();
+  mp_.road_margin_ = node_->get_parameter("grid_map/road_margin").as_double();
+
+  auto road_segments = node_->get_parameter("grid_map/road_segments").as_double_array();
+  if (road_segments.size() % 5 == 0) {
+    for (size_t i = 0; i < road_segments.size(); i += 5) {
+      RoadSegment segment;
+      segment.start_x = road_segments[i];
+      segment.start_y = road_segments[i + 1];
+      segment.end_x = road_segments[i + 2];
+      segment.end_y = road_segments[i + 3];
+      segment.width = road_segments[i + 4];
+      mp_.road_segments_.push_back(segment);
+    }
+  } else
+    RCLCPP_WARN(node_->get_logger(), "Invalid road segments data. Each segment should have 5 values (including width).");
 
   std::cout << "GridMap parameters: " << std::endl;
   std::cout << "  resolution: " << mp_.resolution_ << std::endl;
@@ -41,6 +66,15 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   std::cout << "  esdf_slice_height: " << mp_.esdf_slice_height_ << std::endl;
   std::cout << "  show_esdf_time: " << mp_.show_esdf_time_ << std::endl;
   std::cout << "  local_bound_inflate: " << mp_.local_bound_inflate_ << std::endl;
+  std::cout << "  use_road_boundary: " << mp_.use_road_boundary_ << std::endl;
+  std::cout << "  road_width: " << mp_.road_width_ << std::endl;
+  std::cout << "  road_segments: " << mp_.road_segments_.size() << " segments" << std::endl;
+  for (size_t i = 0; i < mp_.road_segments_.size(); ++i) {
+    const auto& seg = mp_.road_segments_[i];
+    std::cout << "    segment " << i << ": (" << seg.start_x << "," << seg.start_y 
+              << ") -> (" << seg.end_x << "," << seg.end_y << "), width: " << seg.width << "m" << std::endl;
+  }
+  std::cout << "  road_margin: " << mp_.road_margin_ << std::endl;
 
   mp_.local_bound_inflate_ = std::max(mp_.resolution_, mp_.local_bound_inflate_);
   mp_.resolution_inv_ = 1.0 / mp_.resolution_;
@@ -141,6 +175,17 @@ void GridMap::inflatePoint(const Eigen::Vector3i& pt, int step) {
     for (int x = x_min; x <= x_max; ++x) {
         for (int y = y_min; y <= y_max; ++y) {
             Eigen::Vector3i inf_pt(x, y, z_idx);
+            
+            // Check if point is within road boundary before inflating
+            if (mp_.use_road_boundary_) {
+                Eigen::Vector3d pos;
+                indexToPos(inf_pt, pos);
+                if (!isInRoadBoundary(pos)) {
+                    md_.occupancy_buffer_inflate_[toAddress(inf_pt)] = 1;
+                    continue;
+                }
+            }
+            
             md_.occupancy_buffer_inflate_[toAddress(inf_pt)] = 1;
         }
     }
@@ -207,7 +252,15 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
       for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
         fillESDF(
           [&](int z) {
-            return md_.occupancy_buffer_inflate_[toAddress(x, y, z)] == 1 ?
+            int idx = toAddress(x, y, z);
+            if (mp_.use_road_boundary_) {
+              Eigen::Vector3d pos;
+              indexToPos(Eigen::Vector3i(x, y, z), pos);
+              if (!isInRoadBoundary(pos)) {
+                return 0.0;  // Road boundary is treated as obstacle
+              }
+            }
+            return md_.occupancy_buffer_inflate_[idx] == 1 ?
                    0 : std::numeric_limits<double>::max();
           },
           [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },
@@ -240,7 +293,15 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
       for (int y = min_esdf[1]; y <= max_esdf[1]; y++) {
         fillESDF(
           [&](int z) {
-            return md_.occupancy_buffer_inflate_[toAddress(x, y, z)] == 1 ?
+            int idx = toAddress(x, y, z);
+            if (mp_.use_road_boundary_) {
+              Eigen::Vector3d pos;
+              indexToPos(Eigen::Vector3i(x, y, z), pos);
+              if (!isInRoadBoundary(pos)) {
+                return 0.0;  // Road boundary is treated as obstacle
+              }
+            }
+            return md_.occupancy_buffer_inflate_[idx] == 1 ?
                    0 : std::numeric_limits<double>::max();
           },
           [&](int z, double val) { md_.tmp_buffer1_[toAddress(x, y, z)] = val; },

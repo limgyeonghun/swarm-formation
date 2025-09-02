@@ -7,7 +7,7 @@
     enable_obstacles: true
     
     # Debug Logging Control
-    enable_debug_logs: true  # Set to true to enable detailed timing logs
+    enable_debug_logs: false  # Set to true to enable detailed timing logs
     
     # Cost Function Weights
     optimization/weight_obstacle: 50000.0
@@ -18,7 +18,7 @@
     optimization/weight_formation: 15000.0
     
     # Safety Distance Settings
-    optimization/obstacle_clearance: 1.0
+    optimization/obstacle_clearance: 0.5  # Increased safety distance from obstacles
     optimization/swarm_clearance: 0.5
     
     # Formation and Dynamics Constraints
