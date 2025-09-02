@@ -41,6 +41,9 @@ PathVisualization::PathVisualization() : Node("path_visualization")
 
   // Load obstacle parameters from obstacles.yaml
   loadObstacleParameters();
+  
+  // Load road boundary parameters from map.yaml
+  loadRoadParameters();
 
   rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
   auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
@@ -49,6 +52,7 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   optimized_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("opt_trajectory", sensor_qos);
   global_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("global_trajectory", sensor_qos);
   simple_path_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("simple_path_trajectory", sensor_qos);
+  road_boundary_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("road_boundary", sensor_qos);
 
   position_pubs_.resize(num_drones_);
   position_marker_pubs_.resize(num_drones_);
@@ -93,6 +97,12 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   if (enable_obstacles_)
   {
     publishObstacles();
+  }
+  
+  // Publish road boundaries if enabled
+  if (true)
+  {
+    publishRoadBoundaries();
   }
 }
 
@@ -277,6 +287,8 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
     publishObstacles();
   }
 
+  publishRoadBoundaries();
+
   Eigen::Vector3d current_pos = data.start_pt;
   double best_t = 0.0;
   double min_dist = std::numeric_limits<double>::max();
@@ -456,4 +468,169 @@ void PathVisualization::publishObstacles()
     marker.pose.position.z = obstacle_centers_[i].z();
     marker_pub_->publish(marker);
   }
+}
+
+void PathVisualization::loadRoadParameters()
+{
+  // Load road boundary parameters from map.yaml
+  this->declare_parameter("grid_map/use_road_boundary", false);
+  this->declare_parameter("grid_map/road_width", 8.0);
+  this->declare_parameter("grid_map/road_center_x", 0.0);
+  this->declare_parameter("grid_map/road_margin", 0.5);
+  this->declare_parameter("grid_map/map_size_y", 120.0);
+  this->declare_parameter("grid_map/road_segments", std::vector<double>{});
+  
+  this->get_parameter("grid_map/use_road_boundary", use_road_boundary_);
+  this->get_parameter("grid_map/road_width", road_width_);
+  this->get_parameter("grid_map/road_center_x", road_center_x_);
+  this->get_parameter("grid_map/road_margin", road_margin_);
+  this->get_parameter("grid_map/map_size_y", map_size_y_);
+
+  std::vector<double> road_segments_flat;
+  if (this->get_parameter("grid_map/road_segments", road_segments_flat)) {
+    if (road_segments_flat.size() % 5 != 0) {
+      RCLCPP_ERROR(this->get_logger(), "Invalid road_segments format: size must be multiple of 5");
+      return;
+    }
+
+    for (size_t i = 0; i < road_segments_flat.size(); i += 5) {
+      std::vector<double> segment;
+      segment.push_back(road_segments_flat[i]);     // start_x
+      segment.push_back(road_segments_flat[i + 1]); // start_y
+      segment.push_back(road_segments_flat[i + 2]); // end_x
+      segment.push_back(road_segments_flat[i + 3]); // end_y
+      segment.push_back(road_segments_flat[i + 4]); // width
+      road_segments_.push_back(segment);
+    }
+  }
+  
+  RCLCPP_INFO(this->get_logger(), "Road boundary visualization: %s", use_road_boundary_ ? "enabled" : "disabled");
+  if (use_road_boundary_) {
+    RCLCPP_INFO(this->get_logger(), "Road center_x: %.1f m", road_center_x_);
+    RCLCPP_INFO(this->get_logger(), "Loaded %zu road segments:", road_segments_.size());
+    for (size_t i = 0; i < road_segments_.size(); ++i) {
+      const auto& seg = road_segments_[i];
+      RCLCPP_INFO(this->get_logger(), "  Segment %zu: (%.1f, %.1f) -> (%.1f, %.1f), width: %.1f m",
+                  i, seg[0], seg[1], seg[2], seg[3], seg[4]);
+    }
+  }
+}
+
+void PathVisualization::publishRoadBoundaries()
+{
+  if (!use_road_boundary_) {
+    return;
+  }
+
+  if (!road_segments_.empty()) {
+    int marker_id = 0;
+
+    for (const auto& segment : road_segments_) {
+      double start_x = segment[0];
+      double start_y = segment[1];
+      double end_x = segment[2];
+      double end_y = segment[3];
+
+      double dx = end_x - start_x;
+      double dy = end_y - start_y;
+      double length = std::sqrt(dx*dx + dy*dy);
+      if (length < 1e-6) continue;
+
+      double nx = -dy / length;
+      double ny = dx / length;
+      
+      double half_width = segment[4] / 2.0;
+
+      auto left_marker = createMarker("road_boundary", marker_id++, 
+        visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 1.0, 0.0, 0.0, 1.0);
+      geometry_msgs::msg::Point p1, p2;
+
+      p1.x = start_x + nx * half_width - dx * 0.5; 
+      p1.y = start_y + ny * half_width - dy * 0.5;
+      p1.z = 0.5;
+      left_marker.points.push_back(p1);
+
+      p1.x = start_x + nx * half_width; 
+      p1.y = start_y + ny * half_width; 
+      p1.z = 0.5;
+      p2.x = end_x + nx * half_width; 
+      p2.y = end_y + ny * half_width; 
+      p2.z = 0.5;
+      left_marker.points.push_back(p1);
+      left_marker.points.push_back(p2);
+
+      p2.x = end_x + nx * half_width + dx * 0.5;
+      p2.y = end_y + ny * half_width + dy * 0.5;
+      p2.z = 0.5;
+      left_marker.points.push_back(p2);
+      
+      road_boundary_pub_->publish(left_marker);
+
+      auto right_marker = createMarker("road_boundary", marker_id++,
+        visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 1.0, 0.0, 0.0, 1.0);
+
+      p1.x = start_x - nx * half_width - dx * 0.5;
+      p1.y = start_y - ny * half_width - dy * 0.5;
+      p1.z = 0.5;
+      right_marker.points.push_back(p1);
+
+      p1.x = start_x - nx * half_width;
+      p1.y = start_y - ny * half_width;
+      p1.z = 0.5;
+      p2.x = end_x - nx * half_width;
+      p2.y = end_y - ny * half_width;
+      p2.z = 0.5;
+      right_marker.points.push_back(p1);
+      right_marker.points.push_back(p2);
+
+      p2.x = end_x - nx * half_width + dx * 0.5;
+      p2.y = end_y - ny * half_width + dy * 0.5;
+      p2.z = 0.5;
+      right_marker.points.push_back(p2);
+      
+      road_boundary_pub_->publish(right_marker);
+
+      auto center_marker = createMarker("road_boundary", marker_id++,
+        visualization_msgs::msg::Marker::LINE_STRIP, 0.1, 1.0, 1.0, 1.0, 0.7);
+      p1.x = start_x; p1.y = start_y; p1.z = 0.2;
+      p2.x = end_x; p2.y = end_y; p2.z = 0.2;
+      center_marker.points.push_back(p1);
+      center_marker.points.push_back(p2);
+      road_boundary_pub_->publish(center_marker);
+    }
+  }
+
+  else {
+    double road_half_width = road_width_ / 2.0;
+    double road_left = road_center_x_ - road_half_width;
+    double road_right = road_center_x_ + road_half_width;
+
+    auto left_marker = createMarker("road_boundary", 0, 
+      visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 1.0, 0.0, 0.0, 1.0);
+    geometry_msgs::msg::Point p1, p2;
+    p1.x = road_left; p1.y = -map_size_y_/2.0; p1.z = 0.5;
+    p2.x = road_left; p2.y = map_size_y_/2.0; p2.z = 0.5;
+    left_marker.points.push_back(p1);
+    left_marker.points.push_back(p2);
+    road_boundary_pub_->publish(left_marker);
+
+    auto right_marker = createMarker("road_boundary", 1,
+      visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 1.0, 0.0, 0.0, 1.0);
+    p1.x = road_right; p1.y = -map_size_y_/2.0; p1.z = 0.5;
+    p2.x = road_right; p2.y = map_size_y_/2.0; p2.z = 0.5;
+    right_marker.points.push_back(p1);
+    right_marker.points.push_back(p2);
+    road_boundary_pub_->publish(right_marker);
+
+    auto center_marker = createMarker("road_boundary", 2,
+      visualization_msgs::msg::Marker::LINE_STRIP, 0.1, 1.0, 1.0, 1.0, 0.7);
+    p1.x = road_center_x_; p1.y = -map_size_y_/2.0; p1.z = 0.2;
+    p2.x = road_center_x_; p2.y = map_size_y_/2.0; p2.z = 0.2;
+    center_marker.points.push_back(p1);
+    center_marker.points.push_back(p2);
+    road_boundary_pub_->publish(center_marker);
+  }
+
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+    "Publishing road boundaries with %zu segments", road_segments_.size());
 }

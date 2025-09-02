@@ -31,6 +31,13 @@ def generate_launch_description():
         'optimizer_params.yaml'
     ])
 
+    # Path to map.yaml in path_manager (for road boundary parameters)
+    map_param_file = PathJoinSubstitution([
+        pkg_path_manager,
+        'config',
+        'map.yaml'
+    ])
+
     # RViz config (still from path_visualization)
     pkg_path_visualization = FindPackageShare('path_visualization')
     rviz_config_file = PathJoinSubstitution([
@@ -49,7 +56,8 @@ def generate_launch_description():
             {'use_sim_time': use_sim_time},
             obstacles_param_file,
             drones_param_file,
-            optimizer_param_file
+            optimizer_param_file,
+            map_param_file
         ]
     )
 

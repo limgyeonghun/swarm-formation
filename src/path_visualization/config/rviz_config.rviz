@@ -177,6 +177,22 @@ Visualization Manager:
         opt_path_drone_2: 0;0;255    # drone_2: 파랑
         opt_path_drone_3: 50;50;50   # drone_3: 회색
       History Length: 1000
+    - Class: rviz_default_plugins/Marker  # (/road_boundary)
+      Enabled: true
+      Name: Road Boundary
+      Topic:
+        Value: /road_boundary
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Namespaces:
+        road_boundary: true
+      Alpha: 1.0
+      Scale X: 0.3
+      Scale Y: 0.3
+      Scale Z: 0.3
     - Class: rviz_default_plugins/Grid
       Enabled: true
       Name: Grid
