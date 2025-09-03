@@ -123,7 +123,7 @@ void PathVisualization::simplePathCallback(const nav_msgs::msg::Path::SharedPtr 
 
   publishPath(simple_path, drone_id, r, g, b, 0.0, simple_path_marker_pub_);
 
-  RCLCPP_INFO(this->get_logger(), "Drone %d: Published simple path with %zu points", drone_id, simple_path.size());
+  // RCLCPP_INFO(this->get_logger(), "Drone %d: Published simple path with %zu points", drone_id, simple_path.size());
 }
 
 void PathVisualization::loadDroneParameters()
