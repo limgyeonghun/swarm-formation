@@ -90,6 +90,7 @@ namespace ego_planner
     if (enable_debug_logs_) {
         printf("[ INFO] [DEBUG] L-BFGS params: mem_size=%d, max_iter=%d, g_epsilon=%.2e, min_step=%.2e, use_formation=%d\n", 
                lbfgs_params.mem_size, lbfgs_params.max_iterations, lbfgs_params.g_epsilon, lbfgs_params.min_step, use_formation);
+        fflush(stdout);  // Immediate output for debug info
     }
 
     iter_num_ = 0;
@@ -114,6 +115,7 @@ namespace ego_planner
         printf("[ INFO] [DEBUG] L-BFGS Result: %d (%s)\n", result, result_str);
         printf("[ INFO] [DEBUG] Iteration info: costFunction calls=%d, max_iterations=%d\n", 
                iter_num_, lbfgs_params.max_iterations);
+        fflush(stdout);  // Immediate output for debug info
     }
 
     // Collision check (only if obstacles are enabled)
@@ -127,46 +129,16 @@ namespace ego_planner
 
     // Final result logging similar to con code
     printf("\033[32miter=%d, use_formation=%d, time(ms)=%5.3f\033[0m\n", iter_num_, use_formation, time_ms);
+    fflush(stdout);  // Immediate output to sync with RCLCPP logs
     
     // Additional debugging info (similar to con code)
     if (enable_debug_logs_) {
         printf("[ INFO] [DEBUG] L-BFGS Result: %d (%s)\n", result, lbfgs::lbfgs_strerror(result));
         printf("[ INFO] [DEBUG] Iteration info: costFunction calls=%d, max_iterations=%d, Final cost: %.6f\n", 
                iter_num_, lbfgs_params.max_iterations, final_cost);
+        fflush(stdout);  // Immediate output for debug info
     }
-    
-    RCLCPP_INFO(node_->get_logger(), "=================================================");
-    // std::string msg_iter = "iter=" + std::to_string(iter_num_) +
-    //                        ", use_formation=" + std::to_string(use_formation) +
-    //                        ", time(ms)=" + std::to_string(time_ms);
-    // RCLCPP_INFO(node_->get_logger(), "\033[32m%s\n\033[0m", msg_iter.c_str());
-    // logToFile(msg_iter);
-
-    // std::string msg_result = "RESULT: " + std::to_string(result) +
-    //                          ", Final cost: " + std::to_string(final_cost);
-    // RCLCPP_INFO(node_->get_logger(), "%s", msg_result.c_str());
-    // logToFile(msg_result);
-
-    if (false) {
-      // RCLCPP_INFO(node_->get_logger(), "similarity_error : %f", debug_similarity_);
-
-      auto now = std::chrono::system_clock::now();
-      std::time_t now_time = std::chrono::system_clock::to_time_t(now);
-      std::tm now_tm = *std::localtime(&now_time);
-    
-      std::stringstream ss;
-      ss << std::fixed << std::setprecision(6);
-
-      ss << "[seq=" << seq_ << "] "
-         << "[" << std::put_time(&now_tm, "%Y-%m-%d %H:%M:%S") << "] "
-         << "[drone_id=" << drone_id_ << "] "
-         << "SwarmGraphGradCostP similarity_error=" << debug_similarity_;
-
-         seq_++;
-
-      logToFile(ss.str(), "INFO");
-    }
-
+    printf("=================================================\n");
     optimal_points = cps_.points;
 
     showFormationInformation(false, start_pos);
@@ -267,6 +239,7 @@ namespace ego_planner
             std::chrono::high_resolution_clock::now() - t_start).count();
         printf("[ INFO] [DEBUG] CostFunction iter=%d: Traj=%.2fms, Smooth=%.2fms, PVA=%.2fms, Grad=%.2fms, Time=%.2fms, Total=%.2fms\n",
                opt->iter_num_, traj_gen_time, smoothness_time, pva_cost_time, grad_time, time_cost_time, total_callback_time);
+        fflush(stdout);  // Immediate output for debug info
     }
 
     return smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost;
@@ -276,28 +249,7 @@ namespace ego_planner
                                            const double xnorm, const double gnorm, const double step, int n, int k, int ls)
   {
     PolyTrajOptimizer *opt = reinterpret_cast<PolyTrajOptimizer *>(func_data);
-    
-    // Force stop conditions
-    if (opt->force_stop_type_ == STOP_FOR_ERROR || opt->force_stop_type_ == STOP_FOR_REBOUND) {
-      return 1;
-    }
-    
-    // Early exit for convergence - further relaxed for better formation
-    if (fx < 1e-2) {
-      return 1;
-    }
-    
-    // Early exit for gradient convergence - further relaxed for better formation
-    if (gnorm < 1e-1) {
-      return 1;
-    }
-    
-    // Early exit after reasonable iterations - reduced for faster convergence
-    if (k > 10) {  // Further reduced from 15 to 10
-      return 1;
-    }
-    
-    return 0;
+    return (opt->force_stop_type_ == STOP_FOR_ERROR || opt->force_stop_type_ == STOP_FOR_REBOUND);
   }
 
   template <typename EIGENVEC>
@@ -367,10 +319,6 @@ namespace ego_planner
     costs.setZero();
     double t = 0;
 
-    // Timing variables for individual cost components
-    double obstacle_time = 0, swarm_time = 0, formation_time = 0, feasibility_time = 0;
-    int obstacle_calls = 0, swarm_calls = 0, formation_calls = 0, feasibility_calls = 0;
-
     for (int i = 0; i < N; ++i)
     {
       const Eigen::Matrix<double, 6, 3> &c = jerkOpt_.get_b().block<6, 3>(i * 6, 0);
@@ -399,7 +347,6 @@ namespace ego_planner
 
         // Obstacle cost calculation
         if (enable_obstacles_) {
-            auto t_start = node_->get_clock()->now();
             if (obstacleGradCostP(i_dp, pos, gradp, costp)) {
                 gradViolaPc = beta0 * gradp.transpose();
                 gradViolaPt = alpha * gradp.transpose() * vel;
@@ -407,32 +354,24 @@ namespace ego_planner
                 gdT(i) += omg * (costp / K + step * gradViolaPt);
                 costs(0) += omg * step * costp;
             }
-            obstacle_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
-            obstacle_calls++;
         }
 
         double gradt, grad_prev_t;
 
-        // Swarm collision cost calculation - only every few iterations to reduce computational load
-        if (j % 2 == 0 || j == K) {
-            auto t_start = node_->get_clock()->now();
-            if (swarmGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp)) {
-                gradViolaPc = beta0 * gradp.transpose();
-                gradViolaPt = alpha * gradt;
-                jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
-                gdT(i) += omg * (costp / K + step * gradViolaPt);
-                if (i > 0) {
-                    gdT.head(i).array() += omg * step * grad_prev_t;
-                }
-                costs(1) += omg * step * costp;
+        // Swarm collision cost calculation - now computed for every point for maximum accuracy
+        if (swarmGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp)) {
+            gradViolaPc = beta0 * gradp.transpose();
+            gradViolaPt = alpha * gradt;
+            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+            gdT(i) += omg * (costp / K + step * gradViolaPt);
+            if (i > 0) {
+                gdT.head(i).array() += omg * step * grad_prev_t;
             }
-            swarm_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
-            swarm_calls++;
+            costs(1) += omg * step * costp;
         }
 
-        // Formation cost calculation - balanced frequency for good formation control
-        if (use_formation_ && (j % 2 == 0 || j == K)) {  // Increased back to every 2nd for better formation
-            auto t_start = node_->get_clock()->now();
+        // Formation cost calculation - now computed for every point for maximum accuracy
+        if (use_formation_) {
             if (swarmGraphGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp)) {
                 gradViolaPc = beta0 * gradp.transpose();
                 gradViolaPt = alpha * gradt;
@@ -443,12 +382,9 @@ namespace ego_planner
                 }
                 costs(2) += omg * step * costp;
             }
-            formation_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
-            formation_calls++;
         }
 
         // Feasibility cost calculation
-        auto t_start = node_->get_clock()->now();
         if (feasibilityGradCostV(vel, gradv, costv)) {
             gradViolaVc = beta1 * gradv.transpose();
             gradViolaVt = alpha * gradv.transpose() * acc;
@@ -463,8 +399,6 @@ namespace ego_planner
             gdT(i) += omg * (costa / K + step * gradViolaAt);
             costs(4) += omg * step * costa;
         }
-        feasibility_time += (node_->get_clock()->now() - t_start).seconds() * 1000;
-        feasibility_calls++;
 
         s1 += step;
         if (j != K || (j == K && i == N - 1)) {
@@ -504,11 +438,6 @@ namespace ego_planner
     }
     costs(5) += var;
 
-    // Debug output (every 50th iteration to reduce logging overhead)
-    if (iter_num_ % 50 == 0 && enable_debug_logs_) {
-        RCLCPP_INFO(node_->get_logger(), "[DEBUG] PVA Costs: Obstacle=%.2fms(%d), Swarm=%.2fms(%d), Formation=%.2fms(%d), Feasibility=%.2fms(%d)", 
-                    obstacle_time, obstacle_calls, swarm_time, swarm_calls, formation_time, formation_calls, feasibility_time, feasibility_calls);
-    }
   }
 
   bool PolyTrajOptimizer::swarmGraphGradCostP(const int i_dp,

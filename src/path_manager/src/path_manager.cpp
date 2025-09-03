@@ -124,7 +124,7 @@ namespace path_manager
             double delta_replan_time = trajectory_start_time - rclcpp::Clock(RCL_ROS_TIME).now().seconds();
             if (delta_replan_time > 0)
             {
-                RCLCPP_INFO(node_->get_logger(), "Waiting for %.2f seconds to sync start time", delta_replan_time);
+                // RCLCPP_INFO(node_->get_logger(), "Waiting for %.2f seconds to sync start time", delta_replan_time);
                 rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::duration<double>(delta_replan_time)));
             }
@@ -156,7 +156,6 @@ namespace path_manager
 
         auto t2 = rclcpp::Clock(RCL_ROS_TIME).now();
         double duration_ms = (t2 - t1).nanoseconds() / 1e6;
-        RCLCPP_INFO(node_->get_logger(), "[AStar::astarWithMinTraj] Execution time: %.3f ms", duration_ms);
 
         nav_msgs::msg::Path path_msg;
         path_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
