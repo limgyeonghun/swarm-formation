@@ -128,7 +128,7 @@ namespace ego_planner
     double total_time_ms = (t2 - t0).seconds() * 1000;
 
     // Final result logging similar to con code
-    printf("\033[32miter=%d, use_formation=%d, time(ms)=%5.3f\033[0m\n", iter_num_, use_formation, time_ms);
+    printf("\033[32mid = %d, iter=%d, use_formation=%d, time(ms)=%5.3f\033[0m\n", drone_id_, iter_num_, use_formation, time_ms);
     fflush(stdout);  // Immediate output to sync with RCLCPP logs
     
     // Additional debugging info (similar to con code)
