@@ -86,15 +86,10 @@ namespace ego_planner
       use_formation_ = false;
     }
 
-    // Log L-BFGS parameters for debugging
+    // Debug: Print L-BFGS parameters (similar to con code)
     if (enable_debug_logs_) {
-        RCLCPP_INFO(node_->get_logger(), "[DEBUG] L-BFGS params: mem_size=%d, max_iter=%d, g_epsilon=%.2e, delta=%.2e", 
-                    lbfgs_params.mem_size, lbfgs_params.max_iterations, lbfgs_params.g_epsilon, lbfgs_params.delta);
-    }
-
-    double param_setup_time = (node_->get_clock()->now() - t3).seconds() * 1000;
-    if (enable_debug_logs_) {
-        RCLCPP_INFO(node_->get_logger(), "[DEBUG] 3. L-BFGS parameter setup: %.3f ms", param_setup_time);
+        printf("[ INFO] [DEBUG] L-BFGS params: mem_size=%d, max_iter=%d, g_epsilon=%.2e, min_step=%.2e, use_formation=%d\n", 
+               lbfgs_params.mem_size, lbfgs_params.max_iterations, lbfgs_params.g_epsilon, lbfgs_params.min_step, use_formation);
     }
 
     iter_num_ = 0;
@@ -113,17 +108,12 @@ namespace ego_planner
         PolyTrajOptimizer::earlyExitCallback,  // proc_progress
         this,
         &lbfgs_params);
-    double lbfgs_time = (node_->get_clock()->now() - t4).seconds() * 1000;
-    if (enable_debug_logs_) {
-        RCLCPP_INFO(node_->get_logger(), "[DEBUG] 4. L-BFGS optimization: %.3f ms (iter=%d)", lbfgs_time, iter_num_);
-    }
-
-    // Log L-BFGS result
+    // Log L-BFGS result (only for debugging)
     if (enable_debug_logs_) {
         const char* result_str = lbfgs::lbfgs_strerror(result);
-        RCLCPP_INFO(node_->get_logger(), "[DEBUG] L-BFGS Result: %d (%s)", result, result_str);
-        RCLCPP_INFO(node_->get_logger(), "[DEBUG] Iteration info: costFunction calls=%d, max_iterations=%d", 
-                    iter_num_, lbfgs_params.max_iterations);
+        printf("[ INFO] [DEBUG] L-BFGS Result: %d (%s)\n", result, result_str);
+        printf("[ INFO] [DEBUG] Iteration info: costFunction calls=%d, max_iterations=%d\n", 
+               iter_num_, lbfgs_params.max_iterations);
     }
 
     // Collision check (only if obstacles are enabled)
@@ -135,7 +125,16 @@ namespace ego_planner
     double time_ms = (t2 - t1).seconds() * 1000;
     double total_time_ms = (t2 - t0).seconds() * 1000;
 
-    RCLCPP_INFO(node_->get_logger(), "\033[32m id: %d, iter=%d, use_formation=%d, time(ms)=%5.3f \033[0m", drone_id_, iter_num_, use_formation, time_ms);
+    // Final result logging similar to con code
+    printf("\033[32miter=%d, use_formation=%d, time(ms)=%5.3f\033[0m\n", iter_num_, use_formation, time_ms);
+    
+    // Additional debugging info (similar to con code)
+    if (enable_debug_logs_) {
+        printf("[ INFO] [DEBUG] L-BFGS Result: %d (%s)\n", result, lbfgs::lbfgs_strerror(result));
+        printf("[ INFO] [DEBUG] Iteration info: costFunction calls=%d, max_iterations=%d, Final cost: %.6f\n", 
+               iter_num_, lbfgs_params.max_iterations, final_cost);
+    }
+    
     RCLCPP_INFO(node_->get_logger(), "=================================================");
     // std::string msg_iter = "iter=" + std::to_string(iter_num_) +
     //                        ", use_formation=" + std::to_string(use_formation) +
@@ -226,46 +225,48 @@ namespace ego_planner
     double smoo_cost = 0, time_cost = 0;
     Eigen::VectorXd obs_swarm_feas_qvar_costs(6);
 
-    // Timing variables for each cost function
-    auto t_start = opt->node_->get_clock()->now();
-    auto t1 = opt->node_->get_clock()->now();
-    auto t2 = opt->node_->get_clock()->now();
-    auto t3 = opt->node_->get_clock()->now();
-    auto t4 = opt->node_->get_clock()->now();
-    auto t5 = opt->node_->get_clock()->now();
+    // High-performance timing for debugging (similar to con code)
+    auto t_start = std::chrono::high_resolution_clock::now();
+    auto t1 = t_start, t2 = t_start, t3 = t_start, t4 = t_start, t5 = t_start;
 
     // 1. Trajectory generation
-    t1 = opt->node_->get_clock()->now();
+    t1 = std::chrono::high_resolution_clock::now();
     opt->jerkOpt_.generate(P, T);
-    double traj_gen_time = (opt->node_->get_clock()->now() - t1).seconds() * 1000;
+    double traj_gen_time = std::chrono::duration<double, std::milli>(
+        std::chrono::high_resolution_clock::now() - t1).count();
 
     // 2. Smoothness cost
-    t2 = opt->node_->get_clock()->now();
-    opt->initAndGetSmoothnessGradCost2PT(gradT, smoo_cost);
-    double smoothness_time = (opt->node_->get_clock()->now() - t2).seconds() * 1000;
+    t2 = std::chrono::high_resolution_clock::now();
+    opt->initAndGetSmoothnessGradCost2PT(gradT, smoo_cost); // Smoothness cost
+    double smoothness_time = std::chrono::duration<double, std::milli>(
+        std::chrono::high_resolution_clock::now() - t2).count();
 
     // 3. Obstacle/Swarm/Feasibility cost (most complex part)
-    t3 = opt->node_->get_clock()->now();
-    opt->addPVAGradCost2CT(gradT, obs_swarm_feas_qvar_costs, opt->cps_num_prePiece_);
-    double pva_cost_time = (opt->node_->get_clock()->now() - t3).seconds() * 1000;
+    t3 = std::chrono::high_resolution_clock::now();
+    opt->addPVAGradCost2CT(gradT, obs_swarm_feas_qvar_costs, opt->cps_num_prePiece_); // Time int cost
+    double pva_cost_time = std::chrono::duration<double, std::milli>(
+        std::chrono::high_resolution_clock::now() - t3).count();
 
     // 4. Gradient calculation
-    t4 = opt->node_->get_clock()->now();
+    t4 = std::chrono::high_resolution_clock::now();
     opt->jerkOpt_.getGrad2TP(gradT, gradP);
-    double grad_time = (opt->node_->get_clock()->now() - t4).seconds() * 1000;
+    double grad_time = std::chrono::duration<double, std::milli>(
+        std::chrono::high_resolution_clock::now() - t4).count();
 
     // 5. Time cost
-    t5 = opt->node_->get_clock()->now();
+    t5 = std::chrono::high_resolution_clock::now();
     opt->VirtualTGradCost(T, t, gradT, gradt, time_cost);
-    double time_cost_time = (opt->node_->get_clock()->now() - t5).seconds() * 1000;
+    double time_cost_time = std::chrono::duration<double, std::milli>(
+        std::chrono::high_resolution_clock::now() - t5).count();
 
     opt->iter_num_ += 1;
 
-    // Debug output (every 50th iteration to reduce logging overhead)
+    // Debug output similar to con code (using printf for speed)
     if (opt->iter_num_ % 50 == 0 && opt->enable_debug_logs_) {
-        double total_callback_time = (opt->node_->get_clock()->now() - t_start).seconds() * 1000;
-        RCLCPP_INFO(opt->node_->get_logger(), "[DEBUG] CostFunction iter=%d: Traj=%.2fms, Smooth=%.2fms, PVA=%.2fms, Grad=%.2fms, Time=%.2fms, Total=%.2fms", 
-                    opt->iter_num_, traj_gen_time, smoothness_time, pva_cost_time, grad_time, time_cost_time, total_callback_time);
+        double total_callback_time = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - t_start).count();
+        printf("[ INFO] [DEBUG] CostFunction iter=%d: Traj=%.2fms, Smooth=%.2fms, PVA=%.2fms, Grad=%.2fms, Time=%.2fms, Total=%.2fms\n",
+               opt->iter_num_, traj_gen_time, smoothness_time, pva_cost_time, grad_time, time_cost_time, total_callback_time);
     }
 
     return smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost;
