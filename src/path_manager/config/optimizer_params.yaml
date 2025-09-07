@@ -12,8 +12,8 @@
     # Cost Function Weights
     optimization/weight_obstacle: 50000.0
     optimization/weight_swarm: 50000.0
-    optimization/weight_feasibility: 10000.0
-    optimization/weight_sqrvariance: 10000.0
+    optimization/weight_feasibility: 8000.0
+    optimization/weight_sqrvariance: 25000.0
     optimization/weight_time: 80.0
     optimization/weight_formation: 15000.0
     
@@ -33,7 +33,7 @@
     manager/planning_horizon: 7.5
     
     # FSM Parameters
-    fsm/thresh_replan_time: 0.5
+    fsm/thresh_replan_time: 1.0
     fsm/thresh_no_replan_meter: 1.0
-    fsm/replan_trajectory_time: 0.1
+    fsm/replan_trajectory_time: 0.2
     fsm/n_seconds_ahead: 0.0

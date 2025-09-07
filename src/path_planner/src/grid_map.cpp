@@ -239,9 +239,9 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
   // Disable parallelization for small data (prevent overhead)
   bool use_parallel = esdf_voxel_count > 10000; // Adjustable threshold
 
-  RCLCPP_INFO(node_->get_logger(), "ESDF processing voxel size: %d %d %d (%d voxels), parallel=%s",
-              esdf_voxel_size(0), esdf_voxel_size(1), esdf_voxel_size(2), esdf_voxel_count, 
-              use_parallel ? "true" : "false");
+  // RCLCPP_INFO(node_->get_logger(), "ESDF processing voxel size: %d %d %d (%d voxels), parallel=%s",
+  //             esdf_voxel_size(0), esdf_voxel_size(1), esdf_voxel_size(2), esdf_voxel_count, 
+  //             use_parallel ? "true" : "false");
 
   /* ========== compute positive DT ========== */
   auto start_positive = rclcpp::Clock().now();

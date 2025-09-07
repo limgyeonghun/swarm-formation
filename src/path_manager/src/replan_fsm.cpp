@@ -455,7 +455,7 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
     Eigen::Vector3d desired_start_pt, desired_start_vel, desired_start_acc;
     double desired_start_time;
 
-    if (have_local_traj_) {
+    if (have_local_traj_ && use_formation) {
         desired_start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds() + replan_trajectory_time_;
         double t_adj = desired_start_time - path_manager_->traj_.local_traj.start_time;
         desired_start_pt = path_manager_->traj_.local_traj.traj.getPos(t_adj);
@@ -463,8 +463,8 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
         desired_start_acc = path_manager_->traj_.local_traj.traj.getAcc(t_adj);
     } else {
         desired_start_pt = start_pt_;
-        desired_start_vel = Eigen::Vector3d(0.0, 0.0, 0.0);
-        desired_start_acc = Eigen::Vector3d::Zero();
+        desired_start_vel = start_vel_;
+        desired_start_acc = start_acc_;
     }
 
     // if (have_local_traj_) {
