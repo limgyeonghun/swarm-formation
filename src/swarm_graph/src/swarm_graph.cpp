@@ -8,10 +8,36 @@ bool SwarmGraph::updateGraph(const std::vector<Eigen::Vector3d> &swarm) {
 
     nodes = swarm;
     
+    // If desired formation is not set yet, just return false without error
+    if (!have_desired) {
+        RCLCPP_DEBUG(rclcpp::get_logger("SwarmGraph"), "Desired formation not set yet, skipping update");
+        return false;
+    }
+    
     if (nodes.size() != nodes_des.size()) {
         std::cout << "swarm size : " << nodes.size() << std::endl;
-        RCLCPP_WARN(rclcpp::get_logger("SwarmGraph"), "Size of swarm formation vector is incorrect.");
-        return false;
+        RCLCPP_WARN(rclcpp::get_logger("SwarmGraph"), 
+                    "Size of swarm formation vector is incorrect. Current: %zu, Desired: %zu", 
+                    nodes.size(), nodes_des.size());
+        
+        // If sizes don't match, resize nodes_des to match current swarm size
+        if (nodes.size() > 0) {
+            RCLCPP_WARN(rclcpp::get_logger("SwarmGraph"), 
+                        "Resizing desired formation from %zu to %zu to match current swarm", 
+                        nodes_des.size(), nodes.size());
+            
+            // Keep existing desired positions and pad with zeros or repeat last position
+            std::vector<Eigen::Vector3d> new_nodes_des = nodes_des;
+            new_nodes_des.resize(nodes.size(), Eigen::Vector3d::Zero());
+            nodes_des = new_nodes_des;
+            
+            // Also resize initial desired formation
+            if (!nodes_des_init.empty()) {
+                nodes_des_init.resize(nodes.size(), Eigen::Vector3d::Zero());
+            }
+        } else {
+            return false;
+        }
     }
 
     calcMatrices(nodes, A, D, Lhat);

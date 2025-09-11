@@ -29,16 +29,20 @@ find_package(path_optimizer REQUIRED)
 find_package(path_planner REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(swarm_graph REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PolyTraj.msg"
   "msg/PositionCommand.msg"
+  "msg/FormationTarget.msg"
+  "msg/FormationCommand.msg"
   DEPENDENCIES std_msgs builtin_interfaces nav_msgs geometry_msgs
 )
 
 add_library(${PROJECT_NAME}_lib
   src/path_manager.cpp
   src/replan_fsm.cpp
+  src/formation_manager.cpp
 )
 
 ament_target_dependencies(${PROJECT_NAME}_lib
@@ -50,6 +54,7 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   path_optimizer
   path_planner
   geometry_msgs
+  swarm_graph
   rosidl_default_runtime
 )
 
@@ -94,6 +99,34 @@ ament_target_dependencies(traj_server
   rosidl_default_runtime
 )
 
+add_executable(formation_manager
+  src/formation_manager_node.cpp
+)
+target_link_libraries(formation_manager
+  ${PROJECT_NAME}_lib
+)
+ament_target_dependencies(formation_manager
+  rclcpp
+  std_msgs
+  px4_msgs
+  nav_msgs
+  path_optimizer
+  path_planner
+  geometry_msgs
+  swarm_graph
+  rosidl_default_runtime
+)
+
+add_executable(formation_commander
+  src/formation_commander.cpp
+)
+ament_target_dependencies(formation_commander
+  rclcpp
+  std_msgs
+  geometry_msgs
+  rosidl_default_runtime
+)
+
 rosidl_target_interfaces(${PROJECT_NAME}_lib
   ${PROJECT_NAME} "rosidl_typesupport_cpp"
 )
@@ -102,6 +135,14 @@ rosidl_target_interfaces(${PROJECT_NAME}_node
 )
 
 rosidl_target_interfaces(traj_server
+  ${PROJECT_NAME} "rosidl_typesupport_cpp"
+)
+
+rosidl_target_interfaces(formation_manager
+  ${PROJECT_NAME} "rosidl_typesupport_cpp"
+)
+
+rosidl_target_interfaces(formation_commander
   ${PROJECT_NAME} "rosidl_typesupport_cpp"
 )
 
@@ -120,6 +161,14 @@ install(TARGETS traj_server
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(TARGETS formation_manager
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(TARGETS formation_commander
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(DIRECTORY include/
   DESTINATION include
 )
@@ -129,6 +178,6 @@ install(DIRECTORY config launch
 )
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp std_msgs px4_msgs nav_msgs Eigen3 path_optimizer geometry_msgs path_planner rosidl_default_generators)
+ament_export_dependencies(rclcpp std_msgs px4_msgs nav_msgs Eigen3 path_optimizer geometry_msgs path_planner swarm_graph rosidl_default_generators)
 
 ament_package()

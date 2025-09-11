@@ -3,38 +3,36 @@
     # Number of Drones
     num_drones: 4
     
+    # Initial formation settings (directly defined, not from formation_commander)
+    use_initial_formation: true  # Enable direct initial formation definition
+    formation_center_x: 0.0
+    formation_center_y: 80.0
+    formation_center_z: 0.0
+    
+    # Formation type (square, triangle, line, circle, etc.)
+    formation_type: "square"
+    formation_scale: 2.0  # Formation size scaling factor
+    
     drone_0:
       drone_id: 0
       start_point_x: 0.0
       start_point_y: 0.0
       start_point_z: 0.0
-      end_point_x: 0.0
-      end_point_y: 50.0
-      end_point_z: 0.0
 
     drone_1:
       drone_id: 1
       start_point_x: 1.0
       start_point_y: 0.0
       start_point_z: 0.0
-      end_point_x: 0.0
-      end_point_y: 40.0
-      end_point_z: 0.0
 
     drone_2:
       drone_id: 2
       start_point_x: 2.0
       start_point_y: 0.0
       start_point_z: 0.0
-      end_point_x: 0.0
-      end_point_y: 40.0
-      end_point_z: 0.0
 
     drone_3:
       drone_id: 3
       start_point_x: 3.0
       start_point_y: 0.0
       start_point_z: 0.0
-      end_point_x: 0.0 
-      end_point_y: 40.0
-      end_point_z: 0.0

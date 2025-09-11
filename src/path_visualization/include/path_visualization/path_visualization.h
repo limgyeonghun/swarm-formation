@@ -23,7 +23,6 @@ private:
   struct DroneData {
     Eigen::Vector3d start_pt;
     path_manager::msg::PolyTraj current_traj;
-    double current_time;
   };
 
   void loadDroneParameters();

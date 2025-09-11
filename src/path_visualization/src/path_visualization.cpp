@@ -76,7 +76,6 @@ PathVisualization::PathVisualization() : Node("path_visualization")
         drone_params_[drone_id].start_x,
         drone_params_[drone_id].start_y,
         drone_params_[drone_id].start_z);
-    drone_data_[drone_id].current_time = 0.0;
 
     RCLCPP_INFO(this->get_logger(), "Drone %d: Initial position set to (%.2f, %.2f, %.2f)",
                 drone_id, drone_data_[drone_id].start_pt.x(), drone_data_[drone_id].start_pt.y(), drone_data_[drone_id].start_pt.z());
@@ -248,7 +247,60 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
     RCLCPP_ERROR(this->get_logger(), "Invalid trajectory coefficients for drone %d", drone_id);
     return;
   }
+  
+  // Check if this is a formation transition by comparing trajectory end points
   auto &data = drone_data_[drone_id];
+  bool is_formation_transition = false;
+  
+  if (!data.current_traj.duration.empty()) {
+    // Get end point of previous trajectory
+    double prev_total_duration = 0.0;
+    for (const auto &dur : data.current_traj.duration)
+      prev_total_duration += dur;
+    
+    int last_piece = data.current_traj.duration.size() - 1;
+    double last_duration = data.current_traj.duration[last_piece];
+    int offset = last_piece * (data.current_traj.order + 1);
+    
+    double prev_end_x = 0.0, prev_end_y = 0.0, prev_end_z = 0.0;
+    for (int j = 0; j <= data.current_traj.order; ++j) {
+      double t_pow = std::pow(last_duration, data.current_traj.order - j);
+      prev_end_x += data.current_traj.coef_x[offset + j] * t_pow;
+      prev_end_y += data.current_traj.coef_y[offset + j] * t_pow;
+      prev_end_z += data.current_traj.coef_z[offset + j] * t_pow;
+    }
+    
+    // Get end point of new trajectory
+    double new_total_duration = 0.0;
+    for (const auto &dur : msg->duration)
+      new_total_duration += dur;
+    
+    int new_last_piece = msg->duration.size() - 1;
+    double new_last_duration = msg->duration[new_last_piece];
+    int new_offset = new_last_piece * (msg->order + 1);
+    
+    double new_end_x = 0.0, new_end_y = 0.0, new_end_z = 0.0;
+    for (int j = 0; j <= msg->order; ++j) {
+      double t_pow = std::pow(new_last_duration, msg->order - j);
+      new_end_x += msg->coef_x[new_offset + j] * t_pow;
+      new_end_y += msg->coef_y[new_offset + j] * t_pow;
+      new_end_z += msg->coef_z[new_offset + j] * t_pow;
+    }
+    
+    // Check if end points differ significantly (indicating formation transition)
+    double end_point_diff = std::sqrt(
+      (new_end_x - prev_end_x) * (new_end_x - prev_end_x) +
+      (new_end_y - prev_end_y) * (new_end_y - prev_end_y) +
+      (new_end_z - prev_end_z) * (new_end_z - prev_end_z)
+    );
+    
+    if (end_point_diff > 1.5) {
+      is_formation_transition = true;
+      RCLCPP_INFO(this->get_logger(), "Drone %d: Formation transition detected (end point diff: %.2f m)", 
+                  drone_id, end_point_diff);
+    }
+  }
+  
   std::vector<Eigen::Vector3d> optimized_path;
   double dt = 0.1;
   int piece_num = msg->duration.size();
@@ -292,43 +344,71 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
   Eigen::Vector3d current_pos = data.start_pt;
   double best_t = 0.0;
   double min_dist = std::numeric_limits<double>::max();
-  for (double t = 0.0; t <= total_duration; t += 0.01)
-  {
-    double x = 0.0, y = 0.0, z = 0.0;
-    double t_remaining = t;
-    for (int i = 0; i < piece_num; ++i)
+  
+  // If it's a formation transition, start from beginning of trajectory
+  if (is_formation_transition) {
+    best_t = 0.0;
+    min_dist = 0.0;
+    RCLCPP_INFO(this->get_logger(), "Drone %d: Formation transition - starting from trajectory beginning", drone_id);
+  } else {
+    // Normal trajectory matching - find closest point
+    for (double t = 0.0; t <= total_duration; t += 0.01)
     {
-      double duration = msg->duration[i];
-      if (t_remaining <= duration)
+      double x = 0.0, y = 0.0, z = 0.0;
+      double t_remaining = t;
+      for (int i = 0; i < piece_num; ++i)
       {
-        int offset = i * (msg->order + 1);
-        for (int j = 0; j <= msg->order; ++j)
+        double duration = msg->duration[i];
+        if (t_remaining <= duration)
         {
-          double t_pow = std::pow(t_remaining, msg->order - j);
-          x += msg->coef_x[offset + j] * t_pow;
-          y += msg->coef_y[offset + j] * t_pow;
-          z += msg->coef_z[offset + j] * t_pow;
+          int offset = i * (msg->order + 1);
+          for (int j = 0; j <= msg->order; ++j)
+          {
+            double t_pow = std::pow(t_remaining, msg->order - j);
+            x += msg->coef_x[offset + j] * t_pow;
+            y += msg->coef_y[offset + j] * t_pow;
+            z += msg->coef_z[offset + j] * t_pow;
+          }
+          break;
         }
-        break;
+        t_remaining -= duration;
       }
-      t_remaining -= duration;
-    }
-    Eigen::Vector3d traj_pos(x, y, z);
-    double dist = (traj_pos - current_pos).norm();
-    if (dist < min_dist)
-    {
-      min_dist = dist;
-      best_t = t;
+      Eigen::Vector3d traj_pos(x, y, z);
+      double dist = (traj_pos - current_pos).norm();
+      if (dist < min_dist)
+      {
+        min_dist = dist;
+        best_t = t;
+      }
     }
   }
-  if (min_dist > 1.0)
+  // Handle large jumps during formation transitions
+  double jump_threshold = is_formation_transition ? 5.0 : 2.0; // Higher threshold for formation transitions
+  if (min_dist > jump_threshold && !is_formation_transition)
   {
-    RCLCPP_WARN(this->get_logger(), "Drone %d: Large jump (%.2f m), keeping previous trajectory", drone_id, min_dist);
-    return;
+    RCLCPP_WARN(this->get_logger(), "Drone %d: Large jump (%.2f m), but accepting for formation transition", drone_id, min_dist);
+    // Instead of rejecting, reset to start of new trajectory
+    best_t = 0.0;
+    data.start_pt = Eigen::Vector3d(
+        msg->coef_x[0], // Start point is just the first coefficient for position
+        msg->coef_y[0],
+        msg->coef_z[0]
+    );
+    RCLCPP_INFO(this->get_logger(), "Drone %d: Reset to trajectory start position (%.2f, %.2f, %.2f)", 
+                drone_id, data.start_pt.x(), data.start_pt.y(), data.start_pt.z());
+  }
+  
+  // For formation transitions, always update to trajectory start position
+  if (is_formation_transition) {
+    data.start_pt = Eigen::Vector3d(
+        msg->coef_x[0],
+        msg->coef_y[0], 
+        msg->coef_z[0]
+    );
+    RCLCPP_INFO(this->get_logger(), "Drone %d: Formation transition - updated to new start position (%.2f, %.2f, %.2f)", 
+                drone_id, data.start_pt.x(), data.start_pt.y(), data.start_pt.z());
   }
   data.current_traj = *msg;
-  data.current_time = best_t;
-  // RCLCPP_INFO(this->get_logger(), "Drone %d: New trajectory at t=%.2f", drone_id, best_t);
 }
 
 void PathVisualization::globalPathCallback(const path_manager::msg::PolyTraj::SharedPtr msg)
@@ -358,6 +438,9 @@ void PathVisualization::globalPathCallback(const path_manager::msg::PolyTraj::Sh
       global_path.push_back(Eigen::Vector3d(x, y, z));
     }
   }
+
+  auto [r, g, b] = getDroneColor(msg->drone_id);
+  publishPath(global_path, msg->drone_id, r, g, b, 0.8, global_traj_pub_);
 }
 
 void PathVisualization::updatePosition()
@@ -374,12 +457,19 @@ void PathVisualization::updatePosition()
     }
     else
     {
+      double current_ros_time = this->now().seconds();
+      double trajectory_start_time = data.current_traj.start_time.sec + data.current_traj.start_time.nanosec * 1e-9;
+      double t_cur = current_ros_time - trajectory_start_time;
+      
       double total_duration = 0.0;
       for (const auto &dur : data.current_traj.duration)
         total_duration += dur;
-      if (data.current_time <= total_duration)
+
+      t_cur = std::max(0.0, std::min(t_cur, total_duration));
+      
+      if (t_cur <= total_duration)
       {
-        double t_remaining = data.current_time;
+        double t_remaining = t_cur;
         for (size_t i = 0; i < data.current_traj.duration.size(); ++i)
         {
           double duration = data.current_traj.duration[i];
@@ -414,7 +504,6 @@ void PathVisualization::updatePosition()
         }
       }
       data.start_pt = Eigen::Vector3d(x, y, z);
-      data.current_time += 0.01;
     }
     auto [r, g, b] = getDroneColor(drone_id);
     auto marker = createMarker("position_drone_" + std::to_string(drone_id), 0,
@@ -542,7 +631,7 @@ void PathVisualization::publishRoadBoundaries()
       double half_width = segment[4] / 2.0;
 
       auto left_marker = createMarker("road_boundary", marker_id++, 
-        visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 1.0, 0.0, 0.0, 1.0);
+        visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 0.0, 0.0, 0.0, 1.0);
       geometry_msgs::msg::Point p1, p2;
 
       p1.x = start_x + nx * half_width - dx * 0.5; 
@@ -567,7 +656,7 @@ void PathVisualization::publishRoadBoundaries()
       road_boundary_pub_->publish(left_marker);
 
       auto right_marker = createMarker("road_boundary", marker_id++,
-        visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 1.0, 0.0, 0.0, 1.0);
+        visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 0.0, 0.0, 0.0, 1.0);
 
       p1.x = start_x - nx * half_width - dx * 0.5;
       p1.y = start_y - ny * half_width - dy * 0.5;
@@ -589,14 +678,6 @@ void PathVisualization::publishRoadBoundaries()
       right_marker.points.push_back(p2);
       
       road_boundary_pub_->publish(right_marker);
-
-      auto center_marker = createMarker("road_boundary", marker_id++,
-        visualization_msgs::msg::Marker::LINE_STRIP, 0.1, 1.0, 1.0, 1.0, 0.7);
-      p1.x = start_x; p1.y = start_y; p1.z = 0.2;
-      p2.x = end_x; p2.y = end_y; p2.z = 0.2;
-      center_marker.points.push_back(p1);
-      center_marker.points.push_back(p2);
-      road_boundary_pub_->publish(center_marker);
     }
   }
 
@@ -606,7 +687,7 @@ void PathVisualization::publishRoadBoundaries()
     double road_right = road_center_x_ + road_half_width;
 
     auto left_marker = createMarker("road_boundary", 0, 
-      visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 1.0, 0.0, 0.0, 1.0);
+      visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 0.0, 0.0, 0.0, 1.0);
     geometry_msgs::msg::Point p1, p2;
     p1.x = road_left; p1.y = -map_size_y_/2.0; p1.z = 0.5;
     p2.x = road_left; p2.y = map_size_y_/2.0; p2.z = 0.5;
@@ -615,22 +696,12 @@ void PathVisualization::publishRoadBoundaries()
     road_boundary_pub_->publish(left_marker);
 
     auto right_marker = createMarker("road_boundary", 1,
-      visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 1.0, 0.0, 0.0, 1.0);
+      visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 0.0, 0.0, 0.0, 1.0);
     p1.x = road_right; p1.y = -map_size_y_/2.0; p1.z = 0.5;
     p2.x = road_right; p2.y = map_size_y_/2.0; p2.z = 0.5;
     right_marker.points.push_back(p1);
     right_marker.points.push_back(p2);
     road_boundary_pub_->publish(right_marker);
 
-    auto center_marker = createMarker("road_boundary", 2,
-      visualization_msgs::msg::Marker::LINE_STRIP, 0.1, 1.0, 1.0, 1.0, 0.7);
-    p1.x = road_center_x_; p1.y = -map_size_y_/2.0; p1.z = 0.2;
-    p2.x = road_center_x_; p2.y = map_size_y_/2.0; p2.z = 0.2;
-    center_marker.points.push_back(p1);
-    center_marker.points.push_back(p2);
-    road_boundary_pub_->publish(center_marker);
   }
-
-  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-    "Publishing road boundaries with %zu segments", road_segments_.size());
 }

@@ -27,6 +27,6 @@
     grid_map/use_road_boundary: true
     # [start_x, start_y, end_x, end_y, width, ...]
     grid_map/road_segments: [
-      1.5,  -8.0,  1.5,  50.0,  4.0,
+      1.5,  -8.0,  1.5,  50.0,  6.0,
     ]
     grid_map/road_margin: 0.1

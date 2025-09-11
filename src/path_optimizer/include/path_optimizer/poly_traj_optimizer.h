@@ -16,6 +16,14 @@
 
 namespace ego_planner
 {
+  enum FORMATION_TYPE
+  {
+    NONE_FORMATION = 0,
+    REGULAR_HEXAGON = 1,
+    REGULAR_SQUARE = 2,
+    TEST_FORMATION = 3
+  };
+
   class ConstrainPoints
   {
   public:
@@ -34,6 +42,7 @@ namespace ego_planner
   class PolyTrajOptimizer
   {
   private:
+    double dbg_cost_formation_{0.0};
     GridMap::Ptr grid_map_;
     AStar::Ptr a_star_;
     poly_traj::MinJerkOpt jerkOpt_;
@@ -62,13 +71,6 @@ namespace ego_planner
       STOP_FOR_ERROR
     } force_stop_type_;
 
-    enum FORMATION_TYPE
-    {
-      NONE_FORMATION = 0,
-      REGULAR_HEXAGON = 1,
-      REGULAR_SQUARE = 2,
-      TEST_FORMATION = 3
-    };
 
     double wei_obs_;
     double wei_swarm_;
@@ -81,8 +83,7 @@ namespace ego_planner
     double swarm_clearance_;
     double max_vel_, max_acc_;
 
-    int formation_type_;
-    int formation_size_;
+    int formation_size_ = 4;  // Default to 4 drones
     bool use_formation_ = true;
     bool is_other_assigning_ = false;
     uint64_t seq_ = 0;
@@ -106,6 +107,7 @@ namespace ego_planner
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
     void setDroneId(const int drone_id);
+    void setFormation(const std::vector<Eigen::Vector3d>& formation_positions, int formation_size);
 
     inline ConstrainPoints getControlPoints() { return cps_; }
     inline const ConstrainPoints *getControlPointsPtr(void) { return &cps_; }

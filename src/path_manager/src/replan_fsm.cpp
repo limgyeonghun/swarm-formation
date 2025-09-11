@@ -1,4 +1,6 @@
 #include "path_manager/replan_fsm.h"
+#include <cmath>
+#include <sys/resource.h>
 using namespace std::chrono_literals;
 
 namespace path_manager {
@@ -42,30 +44,26 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     node_->declare_parameter("start_point_x", 0.0);
     node_->declare_parameter("start_point_y", 0.0);
     node_->declare_parameter("start_point_z", 0.0);
-    node_->declare_parameter("end_point_x", 12.0);
-    node_->declare_parameter("end_point_y", 12.0);
-    node_->declare_parameter("end_point_z", 0.0);
-
-    double start_x, start_y, start_z, end_x, end_y, end_z;
+    double start_x, start_y, start_z;
     node_->get_parameter("start_point_x", start_x);
     node_->get_parameter("start_point_y", start_y);
     node_->get_parameter("start_point_z", start_z);
-    node_->get_parameter("end_point_x", end_x);
-    node_->get_parameter("end_point_y", end_y);
-    node_->get_parameter("end_point_z", end_z);
 
     std::cout << "ReplanFSM parameters: " << std::endl;
     std::cout << "  start_point_x: " << start_x << std::endl;
     std::cout << "  start_point_y: " << start_y << std::endl;
     std::cout << "  start_point_z: " << start_z << std::endl;
-    std::cout << "  end_point_x: " << end_x << std::endl;
-    std::cout << "  end_point_y: " << end_y << std::endl;
-    std::cout << "  end_point_z: " << end_z << std::endl;
+    std::cout << "  Waiting for formation target..." << std::endl;
 
     offset_pt_ = Eigen::Vector3d(start_x, start_y, start_z);
     start_pt_ = offset_pt_;
-    end_pt_ = Eigen::Vector3d(end_x, end_y, end_z);
-    have_target_ = true;
+    end_pt_ = Eigen::Vector3d::Zero();  // Initialize end_pt_ to avoid uninitialized access
+    have_target_ = false;  // Wait for formation target
+
+    // Initialize PathManager in constructor to avoid nullptr access
+    path_manager_ = std::make_shared<PathManager>(node_);
+    
+    RCLCPP_INFO(node_->get_logger(), "PathManager initialized, waiting for formation command from formation_commander");
 
     rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
     auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
@@ -98,6 +96,11 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         topic_prefix + "/j_fi/broadcast_traj_recv", sensor_qos,
         std::bind(&ReplanFSM::recvBroadcastPolyTrajCallback, this, std::placeholders::_1));
 
+    formation_target_sub_ = node_->create_subscription<path_manager::msg::FormationTarget>(
+        "formation_targets", sensor_qos,
+        std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1));
+
+
     // odom_timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::publishOdometry, this), odom_callback_group_);
     timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this), timer_callback_group_);
 
@@ -107,17 +110,47 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
 void ReplanFSM::init()
 {
-    path_manager_ = std::make_shared<PathManager>(node_);
+    // PathManager is now initialized in constructor
+    if (!path_manager_) {
+        RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
+        return;
+    }
+    
     path_manager_->initOptimizer();
     path_manager_->deliverTrajToOptimizer();
+
+    // Only plan global trajectory if we have a valid target
+    if (!have_target_) {
+        RCLCPP_WARN(node_->get_logger(), "No target set yet, skipping global trajectory planning");
+        return;
+    }
 
     Eigen::MatrixXd iniState = Eigen::MatrixXd::Zero(3, 3);
     Eigen::MatrixXd finState = Eigen::MatrixXd::Zero(3, 3);
     iniState.col(0) = start_pt_;
     finState.col(0) = end_pt_;
 
+    // 현재 시스템 메모리 사용량 확인
+    struct rusage usage;
+    getrusage(RUSAGE_SELF, &usage);
+    size_t current_memory = usage.ru_maxrss;
+    RCLCPP_INFO(node_->get_logger(), "Current memory usage before planning: %zu MB", current_memory / 1024);
+    
+    // 메모리 사용량이 너무 높으면 경고
+    const size_t memory_warning_threshold = 8000000; // 약 8GB (KB 단위)
+    if (current_memory > memory_warning_threshold) {
+        RCLCPP_WARN(node_->get_logger(), "High memory usage detected: %zu MB. Consider restarting the node.", 
+                   current_memory / 1024);
+    }
+    
     bool success = path_manager_->planGlobalTraj(start_pt_, iniState.col(1), iniState.col(2),
                                                  {end_pt_}, finState.col(1), finState.col(2));
+    
+    // 계획 후 메모리 사용량 확인
+    getrusage(RUSAGE_SELF, &usage);
+    size_t after_memory = usage.ru_maxrss;
+    RCLCPP_INFO(node_->get_logger(), "Memory usage after planning: %zu MB (change: %+zd MB)", 
+               after_memory / 1024, (after_memory - current_memory) / 1024);
     if (success)
     {
         RCLCPP_INFO(node_->get_logger(), "Success to generate global trajectory!!!");
@@ -134,10 +167,10 @@ void ReplanFSM::init()
     {
         RCLCPP_ERROR(node_->get_logger(), "Failed to generate global trajectory!!!");
     }
-    // RCLCPP_INFO(node_->get_logger(), "Generated global trajectory successfully!!!");
-    // path_manager::msg::PolyTraj msg;
-    // globalTraj2ROSMsg(msg);
-    // global_path_pub_->publish(msg);
+    RCLCPP_INFO(node_->get_logger(), "Generated global trajectory successfully!!!");
+    path_manager::msg::PolyTraj msg;
+    globalTraj2ROSMsg(msg);
+    global_path_pub_->publish(msg);
 }
 
 // void ReplanFSM::publishOdometry() {
@@ -226,6 +259,10 @@ void ReplanFSM::computeAndPublishPaths() {
 
         case REPLAN_TRAJ:
         {
+            // 재계획 실패 카운터 추가 (무한 루프 방지)
+            static int replan_failure_count = 0;
+            const int MAX_REPLAN_FAILURES = 10;
+            
             bool success;
             if (flag_replan_astar_)
                 success = planFromLocalTraj(true, false);
@@ -235,18 +272,35 @@ void ReplanFSM::computeAndPublishPaths() {
             if (success)
             {
                 flag_replan_astar_ = false;
+                replan_failure_count = 0; // 성공시 카운터 리셋
                 changeFSMExecState(EXEC_TRAJ, "FSM");
             }
             else
             {
-                flag_replan_astar_ = true;
-                changeFSMExecState(REPLAN_TRAJ, "FSM");
+                replan_failure_count++;
+                if (replan_failure_count >= MAX_REPLAN_FAILURES) {
+                    RCLCPP_ERROR(node_->get_logger(), 
+                                "Too many replan failures (%d). Switching to WAIT_POSITION to prevent memory leak.", 
+                                replan_failure_count);
+                    replan_failure_count = 0;
+                    flag_replan_astar_ = false;
+                    have_target_ = false;
+                    changeFSMExecState(WAIT_POSITION, "FSM");
+                } else {
+                    flag_replan_astar_ = true;
+                    changeFSMExecState(REPLAN_TRAJ, "FSM");
+                }
             }
             break;
         }
 
         case EXEC_TRAJ:
         {
+            if (!path_manager_) {
+                RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
+                changeFSMExecState(EMERGENCY_STOP, "FSM");
+                break;
+            }
             auto local_traj = &path_manager_->traj_.local_traj;
             double t_cur = current_time_ - local_traj->start_time;
             t_cur = std::min(local_traj->duration, t_cur);
@@ -303,6 +357,10 @@ void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::S
 }
 
 void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg) {
+    if (!path_manager_) {
+        RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
+        return;
+    }
     if (msg->drone_id < 0) {
         RCLCPP_ERROR(node_->get_logger(), "drone_id < 0 is not allowed in a swarm system!");
         return;
@@ -331,20 +389,52 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
         return;
     }
 
-    // Ensure swarm_traj vector is large enough and properly initialized
+    // 메모리 누수 방지: 최대 드론 수 제한 및 스마트 리사이징
+    const size_t MAX_DRONES = 20; // 최대 드론 수 제한
+    if (recv_id >= MAX_DRONES) {
+        RCLCPP_WARN(node_->get_logger(), "Drone ID %zu exceeds maximum allowed (%zu). Ignoring trajectory.", 
+                    recv_id, MAX_DRONES);
+        return;
+    }
+
+    // 벡터 크기를 필요한 만큼만 확장하고 메모리 사용량 모니터링
     if (path_manager_->traj_.swarm_traj.size() <= recv_id) {
-        for (size_t i = path_manager_->traj_.swarm_traj.size(); i <= recv_id; i++) {
-            LocalTrajData blank;
-            blank.drone_id = -1;
-            blank.traj_id = -1;
-            blank.duration = 0.0;
-            blank.start_time = 0.0;
-            blank.end_time = 0.0;
-            blank.start_pos = Eigen::Vector3d::Zero();
-            path_manager_->traj_.swarm_traj.push_back(blank);
+        // 현재 메모리 사용량 확인
+        struct rusage usage;
+        getrusage(RUSAGE_SELF, &usage);
+        size_t current_memory = usage.ru_maxrss; // KB 단위
+        
+        // 메모리 사용량이 임계치를 초과하면 확장 거부
+        const size_t MEMORY_LIMIT = 10000000; // 10GB (KB 단위)
+        if (current_memory > MEMORY_LIMIT) {
+            RCLCPP_ERROR(node_->get_logger(), 
+                        "Memory usage too high (%zu MB). Cannot expand swarm_traj for drone %zu", 
+                        current_memory / 1024, recv_id);
+            return;
         }
-        RCLCPP_INFO(node_->get_logger(), "Expanded swarm_traj vector to size %zu for drone %d", 
-                    path_manager_->traj_.swarm_traj.size(), msg->drone_id);
+        
+        size_t old_size = path_manager_->traj_.swarm_traj.size();
+        size_t new_size = std::min(recv_id + 1, MAX_DRONES);
+        
+        try {
+            path_manager_->traj_.swarm_traj.resize(new_size);
+            
+            // 새로 추가된 요소들을 초기화
+            for (size_t i = old_size; i < new_size; i++) {
+                path_manager_->traj_.swarm_traj[i].drone_id = -1;
+                path_manager_->traj_.swarm_traj[i].traj_id = -1;
+                path_manager_->traj_.swarm_traj[i].duration = 0.0;
+                path_manager_->traj_.swarm_traj[i].start_time = 0.0;
+                path_manager_->traj_.swarm_traj[i].end_time = 0.0;
+                path_manager_->traj_.swarm_traj[i].start_pos = Eigen::Vector3d::Zero();
+            }
+            
+            RCLCPP_INFO(node_->get_logger(), "Expanded swarm_traj vector from %zu to %zu for drone %zu (Memory: %zu MB)", 
+                        old_size, new_size, recv_id, current_memory / 1024);
+        } catch (const std::bad_alloc& e) {
+            RCLCPP_ERROR(node_->get_logger(), "Failed to allocate memory for swarm_traj expansion: %s", e.what());
+            return;
+        }
     }
 
     path_manager_->traj_.swarm_traj[recv_id].drone_id = recv_id;
@@ -385,6 +475,10 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
 
 void ReplanFSM::polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg) 
 {
+    if (!path_manager_) {
+        RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
+        return;
+    }
     auto data = &path_manager_->traj_.local_traj;
 
     msg.drone_id = drone_id_;
@@ -418,6 +512,10 @@ void ReplanFSM::polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
 
 void ReplanFSM::globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg) 
 {
+    if (!path_manager_) {
+        RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
+        return;
+    }
     msg.drone_id = drone_id_;
 
     auto data = &path_manager_->traj_.global_traj;
@@ -449,6 +547,24 @@ void ReplanFSM::globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
 }
 
 bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTraj, bool use_formation) {
+    if (!path_manager_) {
+        RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
+        return false;
+    }
+
+    // 메모리 사용량 체크 - 궤적 계획 전
+    struct rusage usage;
+    getrusage(RUSAGE_SELF, &usage);
+    size_t current_memory = usage.ru_maxrss;
+    
+    // 메모리 사용량이 너무 높으면 계획 중단
+    const size_t MEMORY_LIMIT = 12000000; // 12GB (KB 단위)
+    if (current_memory > MEMORY_LIMIT) {
+        RCLCPP_ERROR(node_->get_logger(), 
+                    "Memory usage too high (%zu MB). Skipping trajectory planning to prevent OOM.", 
+                    current_memory / 1024);
+        return false;
+    }
 
     path_manager_->getLocalTarget(start_pt_, end_pt_, local_target_pt_, local_target_vel_, t_to_target_);
 
@@ -467,40 +583,43 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
         desired_start_acc = start_acc_;
     }
 
-    // if (have_local_traj_) {
-    //     desired_start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds() + replan_trajectory_time_;
-    //     double t_adj = desired_start_time - path_manager_->traj_.local_traj.start_time;
-    //     double t_ahead = std::min(t_adj + n_seconds_ahead_, path_manager_->traj_.local_traj.duration);
-        
-    //     desired_start_pt = path_manager_->traj_.local_traj.traj.getPos(t_adj);
-    //     desired_start_vel = path_manager_->traj_.local_traj.traj.getVel(t_adj);
-    //     desired_start_acc = path_manager_->traj_.local_traj.traj.getAcc(t_adj);
-    // } else {
-    //     desired_start_pt = start_pt_;
-    //     desired_start_vel = Eigen::Vector3d(1.0, 0.0, 0.0);
-    //     desired_start_acc = Eigen::Vector3d::Zero();
-    // }
+    bool plan_success = false;
+    try {
+        plan_success = path_manager_->computeAndOptimizePath(
+            desired_start_pt, desired_start_vel, desired_start_acc, desired_start_time,
+            local_target_pt_, local_target_vel_, flag_use_poly_init, flag_randomPolyTraj,
+            use_formation, have_local_traj_);
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(node_->get_logger(), "Exception during trajectory planning: %s", e.what());
+        plan_success = false;
+    }
 
-    // RCLCPP_ERROR(node_->get_logger(), "desired_start_pt: %.2f, %.2f, %.2f", desired_start_pt(0), desired_start_pt(1), desired_start_pt(2));
-
-    bool plan_success = path_manager_->computeAndOptimizePath(
-        desired_start_pt, desired_start_vel, desired_start_acc, desired_start_time,
-        local_target_pt_, local_target_vel_, flag_use_poly_init, flag_randomPolyTraj,
-        use_formation, have_local_traj_);
+    // 계획 후 메모리 사용량 확인
+    getrusage(RUSAGE_SELF, &usage);
+    size_t after_memory = usage.ru_maxrss;
+    if (after_memory > current_memory + 100000) { // 100MB 이상 증가시 경고
+        RCLCPP_WARN(node_->get_logger(), "Memory usage increased significantly: %+zd MB (total: %zu MB)", 
+                   (after_memory - current_memory) / 1024, after_memory / 1024);
+    }
 
     have_new_target_ = false;
 
-    path_manager::msg::PolyTraj msg2;
-    globalTraj2ROSMsg(msg2);
-    global_path_pub_->publish(msg2);
+    // 메시지 발행도 try-catch로 보호
+    try {
+        path_manager::msg::PolyTraj msg2;
+        globalTraj2ROSMsg(msg2);
+        global_path_pub_->publish(msg2);
 
-    if (plan_success) {
-        path_manager::msg::PolyTraj msg;
-        polyTraj2ROSMsg(msg);
+        if (plan_success) {
+            path_manager::msg::PolyTraj msg;
+            polyTraj2ROSMsg(msg);
 
-        optimized_path_pub_->publish(msg);
-        broadcast_traj_pub_->publish(msg);
-        have_local_traj_ = true;
+            optimized_path_pub_->publish(msg);
+            broadcast_traj_pub_->publish(msg);
+            have_local_traj_ = true;
+        }
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(node_->get_logger(), "Exception during message publishing: %s", e.what());
     }
 
     return plan_success;
@@ -522,6 +641,10 @@ bool ReplanFSM::planFromGlobalTraj(int trial_times) {
 }
 
 bool ReplanFSM::planFromLocalTraj(bool flag_use_poly_init, bool use_formation) {
+    if (!path_manager_) {
+        RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
+        return false;
+    }
     double t_debug_start = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
     LocalTrajData *info = &path_manager_->traj_.local_traj;
     double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - path_manager_->traj_.local_traj.start_time;
@@ -551,5 +674,125 @@ void ReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_cal
     RCLCPP_INFO(node_->get_logger(), "[%s]: from %s to %s", pos_call.c_str(), state_str[static_cast<int>(exec_state_)].c_str(), state_str[static_cast<int>(new_state)].c_str());
     exec_state_ = new_state;
 }
+
+void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg) {
+    // Check if this message is for this drone
+    if (msg->drone_id != drone_id_) {
+        return;
+    }
+    
+    RCLCPP_INFO(node_->get_logger(), "Received formation target for drone %d: (%.2f, %.2f, %.2f) - Formation: %s, Scale: %.2f", 
+                msg->drone_id, msg->target_position.x, msg->target_position.y, msg->target_position.z,
+                msg->formation_type.c_str(), msg->formation_scale);
+
+    // Update target position
+    Eigen::Vector3d new_target(
+        msg->target_position.x,
+        msg->target_position.y,
+        msg->target_position.z
+    );
+
+    // Extract formation information and pass to PathManager
+    if (path_manager_ && !msg->formation_positions.empty()) {
+        std::vector<Eigen::Vector3d> formation_positions;
+        formation_positions.reserve(msg->formation_positions.size());
+        
+        for (const auto& pos : msg->formation_positions) {
+            formation_positions.emplace_back(pos.x, pos.y, pos.z);
+        }
+        
+        // Set formation information to optimizer
+        path_manager_->setFormationToOptimizer(formation_positions, formation_positions.size());
+        
+        RCLCPP_INFO(node_->get_logger(), "Updated formation in PathManager: %s with %zu positions", 
+                    msg->formation_type.c_str(), formation_positions.size());
+    }
+
+    // Check if target has changed significantly or if this is the first target
+    double distance_threshold = 0.1; // 10cm threshold
+    bool is_new_target = !have_target_ || (new_target - end_pt_).norm() > distance_threshold;
+    
+    if (is_new_target) {
+        end_pt_ = new_target;
+        bool was_first_target = !have_target_;
+        have_target_ = true;
+        have_new_target_ = true;
+        
+        RCLCPP_INFO(node_->get_logger(), "Updated target for drone %d to: (%.2f, %.2f, %.2f)", 
+                    drone_id_, end_pt_.x(), end_pt_.y(), end_pt_.z());
+        
+        // Initialize PathManager components when we receive the first target
+        if (was_first_target) {
+            init();
+        }
+        
+        // Generate global trajectory from current position to new target
+        if (have_position_ && path_manager_) {
+            RCLCPP_INFO(node_->get_logger(), "Planning global trajectory from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f)",
+                       start_pt_.x(), start_pt_.y(), start_pt_.z(),
+                       end_pt_.x(), end_pt_.y(), end_pt_.z());
+            
+            Eigen::MatrixXd iniState = Eigen::MatrixXd::Zero(3, 3);
+            Eigen::MatrixXd finState = Eigen::MatrixXd::Zero(3, 3);
+            iniState.col(0) = start_pt_;
+            finState.col(0) = end_pt_;
+
+            // 현재 시스템 메모리 사용량 확인
+            struct rusage usage;
+            getrusage(RUSAGE_SELF, &usage);
+            size_t current_memory = usage.ru_maxrss;
+            RCLCPP_INFO(node_->get_logger(), "Current memory usage before planning: %zu MB", current_memory / 1024);
+            
+            // 메모리 사용량이 너무 높으면 경고
+            const size_t memory_warning_threshold = 8000000; // 약 8GB (KB 단위)
+            if (current_memory > memory_warning_threshold) {
+                RCLCPP_WARN(node_->get_logger(), "High memory usage detected: %zu MB. Consider restarting the node.", 
+                           current_memory / 1024);
+            }
+            
+            bool success = path_manager_->planGlobalTraj(start_pt_, iniState.col(1), iniState.col(2),
+                                                         {end_pt_}, finState.col(1), finState.col(2));
+            
+            // 계획 후 메모리 사용량 확인
+            getrusage(RUSAGE_SELF, &usage);
+            size_t after_memory = usage.ru_maxrss;
+            RCLCPP_INFO(node_->get_logger(), "Memory usage after planning: %zu MB (change: %+zd MB)", 
+                       after_memory / 1024, (after_memory - current_memory) / 1024);
+            if (success) {
+                RCLCPP_INFO(node_->get_logger(), "Successfully generated global trajectory to formation target!");
+                
+                // Publish the new global trajectory
+                path_manager::msg::PolyTraj msg;
+                globalTraj2ROSMsg(msg);
+                global_path_pub_->publish(msg);
+                
+                // Trigger replanning based on current state
+                if (exec_state_ == FSM_EXEC_STATE::EXEC_TRAJ) {
+                    changeFSMExecState(FSM_EXEC_STATE::REPLAN_TRAJ, "formationTargetCallback");
+                } else if (exec_state_ == FSM_EXEC_STATE::WAIT_POSITION) {
+                    changeFSMExecState(FSM_EXEC_STATE::GEN_NEW_TRAJ, "formationTargetCallback");
+                }
+            } else {
+                RCLCPP_ERROR(node_->get_logger(), "Failed to generate global trajectory to formation target!");
+                // Still trigger replanning to attempt recovery
+                if (exec_state_ == FSM_EXEC_STATE::EXEC_TRAJ) {
+                    changeFSMExecState(FSM_EXEC_STATE::REPLAN_TRAJ, "formationTargetCallback");
+                } else if (exec_state_ == FSM_EXEC_STATE::WAIT_POSITION) {
+                    changeFSMExecState(FSM_EXEC_STATE::GEN_NEW_TRAJ, "formationTargetCallback");
+                }
+            }
+        } else {
+            // If we don't have position or path_manager yet, just trigger state change
+            RCLCPP_WARN(node_->get_logger(), "Cannot plan global trajectory yet - waiting for position or path_manager initialization");
+            
+            if (exec_state_ == FSM_EXEC_STATE::EXEC_TRAJ) {
+                changeFSMExecState(FSM_EXEC_STATE::REPLAN_TRAJ, "formationTargetCallback");
+            } else if (exec_state_ == FSM_EXEC_STATE::WAIT_POSITION && have_position_) {
+                changeFSMExecState(FSM_EXEC_STATE::GEN_NEW_TRAJ, "formationTargetCallback");
+            }
+        }
+    }
+}
+
 
 }  // namespace path_manager

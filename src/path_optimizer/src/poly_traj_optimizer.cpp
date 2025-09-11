@@ -1,6 +1,7 @@
 #include "path_optimizer/poly_traj_optimizer.h"
 #include <iomanip>
 #include <ctime>
+#include <sys/resource.h>
 
 namespace ego_planner
 {
@@ -52,8 +53,27 @@ namespace ego_planner
       return false;
     }
 
+    // 메모리 사용량 체크
+    struct rusage usage;
+    getrusage(RUSAGE_SELF, &usage);
+    size_t current_memory = usage.ru_maxrss;
+    
+    // 메모리 사용량이 너무 높으면 최적화 중단
+    const size_t MEMORY_LIMIT = 10000000; // 10GB (KB 단위)
+    if (current_memory > MEMORY_LIMIT) {
+        printf("[ERROR] Memory usage too high (%zu MB). Skipping trajectory optimization to prevent OOM.\n", 
+               current_memory / 1024);
+        return false;
+    }
+
     t_now_ = node_->get_clock()->now().seconds();
     piece_num_ = initT.size();
+
+    // 메모리 할당 크기 제한
+    if (piece_num_ > 50) { // 최대 50개 세그먼트로 제한
+        printf("[WARN] Too many trajectory pieces (%d). Limiting to 50 to prevent memory issues.\n", piece_num_);
+        piece_num_ = 50;
+    }
 
     jerkOpt_.reset(iniState, finState, piece_num_);
     Eigen::Vector3d start_pos = iniState.col(0);
@@ -61,28 +81,45 @@ namespace ego_planner
     double final_cost;
     variable_num_ = 4 * (piece_num_ - 1) + 1;
 
+    // 변수 수가 너무 많으면 제한
+    if (variable_num_ > 1000) {
+        printf("[ERROR] Too many optimization variables (%d). Aborting to prevent memory issues.\n", variable_num_);
+        return false;
+    }
+
     auto t0 = node_->get_clock()->now();
     auto t1 = node_->get_clock()->now();
     auto t2 = node_->get_clock()->now();
     bool use_formation_temp = use_formation_;
 
-    std::vector<double> q(variable_num_);
-    memcpy(q.data(), initInnerPts.data(), initInnerPts.size() * sizeof(double));
-    Eigen::Map<Eigen::VectorXd> Vt(q.data() + initInnerPts.size(), initT.size());
-    RealT2VirtualT(initT, Vt);
+    std::vector<double> q;
+    try {
+        q.resize(variable_num_);
+        memcpy(q.data(), initInnerPts.data(), initInnerPts.size() * sizeof(double));
+        Eigen::Map<Eigen::VectorXd> Vt(q.data() + initInnerPts.size(), initT.size());
+        RealT2VirtualT(initT, Vt);
+    } catch (const std::bad_alloc& e) {
+        printf("[ERROR] Failed to allocate memory for optimization variables: %s\n", e.what());
+        return false;
+    }
 
     // 3. L-BFGS parameter setup
     auto t3 = node_->get_clock()->now();
     lbfgs::lbfgs_parameter_t lbfgs_params;
     lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
+    lbfgs_params.mem_size = 16;
+    lbfgs_params.g_epsilon = 0.1;
+    lbfgs_params.min_step = 1e-32;
 
     if (use_formation)
     {
-      lbfgs_params.max_iterations = 20;  // Increased from 20 to 30 for better convergence
+      lbfgs_params.max_iterations = 15;  // 메모리 절약을 위해 감소 (20->15)
+      lbfgs_params.mem_size = 8;         // 메모리 사용량 감소 (16->8)
     }
     else
     {
-      lbfgs_params.max_iterations = 60;  // Increased from 60 to 80 for better convergence
+      lbfgs_params.max_iterations = 40;  // 메모리 절약을 위해 감소 (60->40)
+      lbfgs_params.mem_size = 12;        // 메모리 사용량 감소 (16->12)
       use_formation_ = false;
     }
 
@@ -98,17 +135,42 @@ namespace ego_planner
 
     t1 = node_->get_clock()->now();
 
-    // 4. L-BFGS optimization (main computation)
+    // 4. L-BFGS optimization (main computation) - 메모리 안전 최적화
     auto t4 = node_->get_clock()->now();
-    int result = lbfgs::lbfgs_optimize(
-        variable_num_,
-        q.data(),
-        &final_cost,
-        PolyTrajOptimizer::costFunctionCallback,
-        nullptr,  // proc_stepbound (not used)
-        PolyTrajOptimizer::earlyExitCallback,  // proc_progress
-        this,
-        &lbfgs_params);
+    int result = -1;
+    try {
+        // 최적화 전 메모리 사용량 재확인
+        getrusage(RUSAGE_SELF, &usage);
+        size_t pre_opt_memory = usage.ru_maxrss;
+        
+        if (pre_opt_memory > MEMORY_LIMIT * 0.8) { // 80% 임계치
+            printf("[WARN] Memory usage high before optimization (%zu MB). Using conservative settings.\n", 
+                   pre_opt_memory / 1024);
+            lbfgs_params.max_iterations = std::min(lbfgs_params.max_iterations, 10);
+            lbfgs_params.mem_size = std::min(lbfgs_params.mem_size, 6);
+        }
+        
+        result = lbfgs::lbfgs_optimize(
+            variable_num_,
+            q.data(),
+            &final_cost,
+            PolyTrajOptimizer::costFunctionCallback,
+            nullptr,  // proc_stepbound (not used)
+            PolyTrajOptimizer::earlyExitCallback,  // proc_progress
+            this,
+            &lbfgs_params);
+            
+        // 최적화 후 메모리 사용량 확인
+        getrusage(RUSAGE_SELF, &usage);
+        size_t post_opt_memory = usage.ru_maxrss;
+        if (post_opt_memory > pre_opt_memory + 500000) { // 500MB 이상 증가
+            printf("[WARN] Optimization increased memory usage significantly: %+zd MB\n", 
+                   (post_opt_memory - pre_opt_memory) / 1024);
+        }
+    } catch (const std::exception& e) {
+        printf("[ERROR] Exception during L-BFGS optimization: %s\n", e.what());
+        return false;
+    }
     // Log L-BFGS result (only for debugging)
     if (enable_debug_logs_) {
         const char* result_str = lbfgs::lbfgs_strerror(result);
@@ -130,7 +192,11 @@ namespace ego_planner
     // Final result logging similar to con code
     printf("\033[32mid = %d, iter=%d, use_formation=%d, time(ms)=%5.3f\033[0m\n", drone_id_, iter_num_, use_formation, time_ms);
     fflush(stdout);  // Immediate output to sync with RCLCPP logs
-    
+
+    printf("[COST] formation_cost = %.6f (wei_formation=%.3f, similarity=%.6f)\n",
+           dbg_cost_formation_, wei_formation_, debug_similarity_);
+    fflush(stdout);
+
     // Additional debugging info (similar to con code)
     if (enable_debug_logs_) {
         printf("[ INFO] [DEBUG] L-BFGS Result: %d (%s)\n", result, lbfgs::lbfgs_strerror(result));
@@ -438,6 +504,8 @@ namespace ego_planner
     }
     costs(5) += var;
 
+    dbg_cost_formation_ = costs(2);
+
   }
 
   bool PolyTrajOptimizer::swarmGraphGradCostP(const int i_dp,
@@ -453,11 +521,17 @@ namespace ego_planner
       return false;
 
     int size = swarm_trajs_->size();
-    if (drone_id_ == formation_size_ - 1)
-      size = formation_size_;
-
-    if (size < formation_size_)
+    
+    // 안전한 크기 계산: 실제 swarm_trajs 크기와 formation_size 중 작은 값 사용
+    int effective_size = std::min(static_cast<int>(swarm_trajs_->size()), formation_size_);
+    
+    // formation_size_보다 작으면 아직 모든 드론의 궤적이 준비되지 않은 상태
+    if (effective_size < formation_size_) {
+      RCLCPP_DEBUG(node_->get_logger(), "Not all swarm trajectories ready: %d/%d", effective_size, formation_size_);
       return false;
+    }
+    
+    size = effective_size;
 
     if (i_dp <= 0 || i_dp >= cps_.cp_size * 2 / 3)
       return false;
@@ -472,8 +546,8 @@ namespace ego_planner
     
     // Bounds check for drone_id_
     if (drone_id_ < 0 || drone_id_ >= formation_size_) {
-        RCLCPP_ERROR(node_->get_logger(), "drone_id_ %d out of bounds (formation_size: %d)", drone_id_, formation_size_);
-        return false;
+        RCLCPP_WARN(node_->get_logger(), "drone_id_ %d out of bounds (formation_size: %d), using default position", drone_id_, formation_size_);
+        return false;  // Still return false but with warning instead of error
     }
     
     swarm_graph_pos[drone_id_] = p;
@@ -484,7 +558,7 @@ namespace ego_planner
       if (id == drone_id_)
         continue;
       
-      // Bounds check to prevent segmentation fault
+      // 이중 안전장치: size는 이미 안전한 값이지만 추가 확인
       if (id >= swarm_trajs_->size()) {
         RCLCPP_WARN(node_->get_logger(), "Swarm trajectory index %zu out of bounds (size: %zu)", id, swarm_trajs_->size());
         continue;
@@ -535,7 +609,18 @@ namespace ego_planner
         return false;
     }
     
-    swarm_graph_->updateGraph(swarm_graph_pos);
+    // Ensure swarm_graph_pos has the correct size before updating
+    if (static_cast<int>(swarm_graph_pos.size()) != formation_size_) {
+        RCLCPP_WARN(node_->get_logger(), 
+                    "Swarm graph position vector size (%zu) doesn't match formation_size (%d)", 
+                    swarm_graph_pos.size(), formation_size_);
+        return false;
+    }
+    
+    if (!swarm_graph_->updateGraph(swarm_graph_pos)) {
+        RCLCPP_DEBUG(node_->get_logger(), "Failed to update swarm graph");
+        return false;
+    }
 
     double similarity_error;
     swarm_graph_->calcFNorm2(similarity_error);
@@ -813,6 +898,21 @@ namespace ego_planner
     }
     else
     {
+      // Ensure swarm_graph_pos has the correct size
+      if (static_cast<int>(swarm_graph_pos.size()) != formation_size_) {
+        RCLCPP_WARN(node_->get_logger(), 
+                    "Resizing swarm_graph_pos from %zu to %d", 
+                    swarm_graph_pos.size(), formation_size_);
+        swarm_graph_pos.resize(formation_size_, Eigen::Vector3d::Zero());
+      }
+      
+      // Bounds check for drone_id_
+      if (drone_id_ < 0 || drone_id_ >= formation_size_) {
+        RCLCPP_ERROR(node_->get_logger(), "drone_id_ %d out of bounds (formation_size: %d)", 
+                     drone_id_, formation_size_);
+        return false;
+      }
+      
       double pt_time = t_now_;
       swarm_graph_pos[drone_id_] = pos;
       for (size_t id = 0; id < swarm_trajs_->size(); id++)
@@ -849,8 +949,13 @@ namespace ego_planner
     else
     {
       vector<Eigen::Vector3d> swarm_graph_pos(formation_size_);
-      getFormationPos(swarm_graph_pos, pos);
-      swarm_graph_->updateGraph(swarm_graph_pos);
+      if (getFormationPos(swarm_graph_pos, pos)) {
+        if (!swarm_graph_->updateGraph(swarm_graph_pos)) {
+          RCLCPP_DEBUG(node_->get_logger(), "Failed to update swarm graph in showFormationInformation");
+        }
+      } else {
+        RCLCPP_DEBUG(node_->get_logger(), "Failed to get formation positions in showFormationInformation");
+      }
     }
   }
 
@@ -883,8 +988,6 @@ namespace ego_planner
     node_->get_parameter("optimization/obstacle_clearance", obs_clearance_);
     node_->declare_parameter("optimization/swarm_clearance", 0.5);
     node_->get_parameter("optimization/swarm_clearance", swarm_clearance_);
-    node_->declare_parameter("optimization/formation_type", 1);
-    node_->get_parameter("optimization/formation_type", formation_type_);
     node_->declare_parameter("optimization/max_vel", 1.0);
     node_->get_parameter("optimization/max_vel", max_vel_);
     node_->declare_parameter("optimization/max_acc", 1.0);
@@ -896,7 +999,14 @@ namespace ego_planner
     initLogFile(log_file_path);
 
     swarm_graph_.reset(new SwarmGraph);
-    setDesiredFormation(formation_type_);
+    
+    // Set initial formation based on optimizer_params.yaml
+    int initial_formation_type = 2; // Default to REGULAR_SQUARE
+    node_->declare_parameter("optimization/formation_type", initial_formation_type);
+    node_->get_parameter("optimization/formation_type", initial_formation_type);
+    
+    RCLCPP_INFO(node_->get_logger(), "Setting initial formation type: %d", initial_formation_type);
+    setDesiredFormation(initial_formation_type);
   }
 
   void PolyTrajOptimizer::setEnvironment(const GridMap::Ptr &map)
@@ -920,5 +1030,42 @@ namespace ego_planner
   void PolyTrajOptimizer::setDroneId(const int drone_id)
   {
     drone_id_ = drone_id;
+  }
+
+  void PolyTrajOptimizer::setFormation(const std::vector<Eigen::Vector3d>& formation_positions, int formation_size)
+  {
+    if (swarm_graph_ && !formation_positions.empty()) {
+      formation_size_ = formation_size;
+      
+      // Ensure formation positions match expected formation size
+      std::vector<Eigen::Vector3d> adjusted_formation = formation_positions;
+      if (static_cast<int>(adjusted_formation.size()) != formation_size_) {
+        RCLCPP_WARN(node_->get_logger(), 
+                    "Formation positions size (%zu) doesn't match formation_size (%d), adjusting...", 
+                    adjusted_formation.size(), formation_size_);
+        adjusted_formation.resize(formation_size_, Eigen::Vector3d::Zero());
+      }
+      
+      swarm_graph_->setDesiredForm(adjusted_formation);
+      use_formation_ = true;
+      
+      RCLCPP_INFO(node_->get_logger(), "Formation set with %d positions for optimizer (drone %d)", 
+                  static_cast<int>(adjusted_formation.size()), drone_id_);
+      
+      // Print current formation details
+      RCLCPP_INFO(node_->get_logger(), "=== CURRENT FORMATION CONFIGURATION ===");
+      RCLCPP_INFO(node_->get_logger(), "Formation Size: %d", formation_size_);
+      RCLCPP_INFO(node_->get_logger(), "Drone ID: %d", drone_id_);
+      RCLCPP_INFO(node_->get_logger(), "Formation Positions:");
+      for (size_t i = 0; i < adjusted_formation.size(); ++i) {
+        RCLCPP_INFO(node_->get_logger(), "  Drone %zu: [%.3f, %.3f, %.3f]", 
+                    i, adjusted_formation[i].x(), adjusted_formation[i].y(), adjusted_formation[i].z());
+      }
+      RCLCPP_INFO(node_->get_logger(), "=====================================");
+    } else {
+      use_formation_ = false;
+      formation_size_ = 0;
+      RCLCPP_WARN(node_->get_logger(), "Failed to set formation - swarm_graph not initialized or empty positions");
+    }
   }
 }

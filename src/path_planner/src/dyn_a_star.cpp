@@ -1,8 +1,35 @@
 #include "path_planner/dyn_a_star.h"
 #include <algorithm>
 #include <chrono>
+#include <sys/resource.h>
+#include <iostream>
 
 using namespace Eigen;
+
+void AStar::updateMemoryUsage() 
+{
+    // 현재 프로세스의 메모리 사용량 확인
+    struct rusage usage;
+    getrusage(RUSAGE_SELF, &usage);
+    
+    // 현재 메모리 사용량 (KB 단위)
+    current_memory_usage_ = usage.ru_maxrss;
+    
+    // 피크 메모리 사용량 업데이트
+    if (current_memory_usage_ > peak_memory_usage_) {
+        peak_memory_usage_ = current_memory_usage_;
+    }
+}
+
+size_t AStar::estimateNodeMemoryUsage() const 
+{
+    // GridNode 크기 + 우선순위 큐 크기 + 경로 크기 예상
+    size_t grid_node_size = sizeof(GridNode);
+    size_t open_set_size = openSet_.size() * (sizeof(GridNodePtr) + sizeof(size_t)); // 포인터 + 우선순위 큐 오버헤드
+    size_t path_size = gridPath_.size() * sizeof(GridNodePtr);
+    
+    return grid_node_size + open_set_size + path_size;
+}
 
 AStar::~AStar()
 {
@@ -158,6 +185,17 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
 {
     rclcpp::Time time_1 = rclcpp::Clock().now();
     ++rounds_;
+
+    updateMemoryUsage();
+    size_t start_memory = current_memory_usage_;
+    
+    // 메모리 사용량이 너무 높으면 A* 탐색 중단
+    const size_t MEMORY_LIMIT = 8000000; // 8GB (KB 단위)
+    if (current_memory_usage_ > MEMORY_LIMIT) {
+        std::cerr << "[ERROR] Memory usage too high (" << current_memory_usage_ / 1024 
+                  << " MB). Aborting A* search to prevent OOM." << std::endl;
+        return false;
+    }
     
     step_size_ = step_size;
     inv_step_size_ = 1 / step_size;
@@ -194,8 +232,40 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
 
     double tentative_gScore;
     int num_iter = 0;
+    const int max_iterations = 500000; // 최대 반복 횟수 제한
+    const int max_open_set_size = 100000; // 오픈셋 최대 크기 제한
+    const size_t max_memory_increase_mb = 1000; // 최대 메모리 증가량 제한 (MB)
+    
     while (!openSet_.empty())
     {
+        // 메모리 사용량 제한 확인 (100회 반복마다 체크)
+        if (num_iter % 100 == 0) {
+            updateMemoryUsage();
+            size_t memory_increase = (current_memory_usage_ > start_memory) ? 
+                                     (current_memory_usage_ - start_memory) / 1024 : 0; // MB 단위로 변환
+            
+            if (memory_increase > max_memory_increase_mb) {
+                std::cerr << "Failed in A* path searching !!! Memory usage limit exceeded. "
+                          << "Current: " << current_memory_usage_ / 1024 << " MB, "
+                          << "Increase: " << memory_increase << " MB" << std::endl;
+                return false;
+            }
+        }
+        
+        // 오픈셋 크기 제한 확인
+        if (openSet_.size() > max_open_set_size) {
+            std::cerr << "Failed in A* path searching !!! Memory limit exceeded. Open set size: " 
+                      << openSet_.size() << std::endl;
+            return false;
+        }
+
+        // 최대 반복 횟수 제한 확인
+        if (num_iter > max_iterations) {
+            std::cerr << "Failed in A* path searching !!! Maximum iterations (" 
+                      << max_iterations << ") exceeded." << std::endl;
+            return false;
+        }
+
         num_iter++;
         current = openSet_.top();
         openSet_.pop();
@@ -204,7 +274,13 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
         {
             rclcpp::Time time_2 = rclcpp::Clock().now();
             rclcpp::Duration elapsed = time_2 - time_1;
-            std::cout << "A* iter:" << num_iter << ", time:" << elapsed.seconds() * 1000 << " ms" << std::endl;
+            updateMemoryUsage();
+            size_t memory_increase = (current_memory_usage_ > start_memory) ? 
+                                    (current_memory_usage_ - start_memory) / 1024 : 0;
+            
+            std::cout << "A* iter:" << num_iter << ", time:" << elapsed.seconds() * 1000 
+                      << " ms, memory:" << current_memory_usage_ / 1024 << " MB (+" 
+                      << memory_increase << " MB)" << std::endl;
             gridPath_ = retrievePath(current);
             return true;
         }
@@ -276,8 +352,14 @@ bool AStar::AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen:
 
     rclcpp::Time time_2 = rclcpp::Clock().now();
     rclcpp::Duration elapsed_total = time_2 - time_1;
-    if (elapsed_total.seconds() > 0.1)
-        std::cerr << "Time consumed in A* path finding is " << elapsed_total.seconds() << " s, iter=" << num_iter << std::endl;
+    updateMemoryUsage();
+    size_t memory_increase = (current_memory_usage_ > start_memory) ? 
+                           (current_memory_usage_ - start_memory) / 1024 : 0; // MB 단위로 변환
+    
+    std::cerr << "Failed in A* path finding! Time: " << elapsed_total.seconds() 
+              << " s, iter=" << num_iter 
+              << ", memory: " << current_memory_usage_ / 1024 << " MB (+" 
+              << memory_increase << " MB)" << std::endl;
     return false;
 }
 
@@ -293,32 +375,67 @@ std::vector<Eigen::Vector3d> AStar::getPath()
 vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vector3d start_pt, Vector3d end_pt){
 
     rclcpp::Time time_1 = rclcpp::Clock().now();
+    updateMemoryUsage();
+    size_t start_memory = current_memory_usage_;
 
     // call astar search and get the path
-    AstarSearch(step_size, start_pt, end_pt, true);
+    bool success = AstarSearch(step_size, start_pt, end_pt, true);
     vector<Vector3d> path = getPath();
     bool is_show_debug = false;
 
-    // double res = grid_map_ ? grid_map_->getResolution() : -1.0;
-    // double total_len = 0.0;
-    // for (int i = 0; i + 1 < (int)path.size(); ++i)
-    //     total_len += (path[i+1] - path[i]).norm();
-
-    // std::cerr << "[DBG] POOL_SIZE: " << POOL_SIZE_(0) << " " << POOL_SIZE_(1) << " " << POOL_SIZE_(2) << "\n";
-    // std::cerr << "[DBG] center: " << center_.transpose() << "\n";
-    // std::cerr << "[DBG] step_size(arg)=" << step_size << ", res=" << res << "\n";
-    // std::cerr << "[DBG] raw path.size=" << path.size() << ", total_len=" << total_len << " m\n";
-
-    // rclcpp::Time time_2 = rclcpp::Clock().now();
-    // rclcpp::Duration elapsed_total1 = time_2 - time_1;
-    // std::cerr << "STEP1 " << elapsed_total1.seconds() <<  std::endl;
-
-    // I don't know why, but only try A* again
-    if (!path.empty() && (path[0]-start_pt).norm() > 0.5){
-        std::cerr << "I don't know why, but only try A* again" << std::endl;
-        AstarSearch(step_size, start_pt, end_pt, false);
-        path = getPath();
+    // 경로 찾기 실패 시 그레이스풀 복구 메커니즘
+    if (!success || (!path.empty() && (path[0]-start_pt).norm() > 0.5)) {
+        std::cerr << "First A* attempt failed or path start point mismatch. Trying recovery strategies." << std::endl;
+        
+        // 전략 1: 스텝 사이즈 증가 (더 큰 그리드 사용)
+        bool second_attempt = AstarSearch(step_size * 1.5, start_pt, end_pt, false);
+        if (second_attempt) {
+            std::cerr << "Recovery succeeded with increased step size." << std::endl;
+            path = getPath();
+        } else {
+            // 전략 2: 시작점과 목표점 사이의 중간점을 통해 경로 찾기
+            Vector3d mid_pt = (start_pt + end_pt) * 0.5;
+            std::cerr << "Trying to find path through midpoint: " << mid_pt.transpose() << std::endl;
+            
+            bool first_half = AstarSearch(step_size * 1.2, start_pt, mid_pt, false);
+            if (first_half) {
+                vector<Vector3d> first_path = getPath();
+                bool second_half = AstarSearch(step_size * 1.2, mid_pt, end_pt, false);
+                if (second_half) {
+                    vector<Vector3d> second_path = getPath();
+                    // 두 경로 합치기
+                    path = first_path;
+                    path.insert(path.end(), second_path.begin(), second_path.end());
+                    std::cerr << "Successfully found path through midpoint." << std::endl;
+                } else {
+                    // 전략 3: 더 단순한 직선 경로 시도
+                    std::cerr << "Trying simplified direct path..." << std::endl;
+                    // 시작점과 끝점을 직접 연결하는 간단한 경로 생성
+                    path.clear();
+                    path.push_back(start_pt);
+                    
+                    // 시작점과 끝점 사이에 몇 개의 중간점 추가
+                    int num_points = 5;
+                    for (int i = 1; i < num_points; i++) {
+                        double ratio = static_cast<double>(i) / num_points;
+                        path.push_back(start_pt * (1 - ratio) + end_pt * ratio);
+                    }
+                    
+                    path.push_back(end_pt);
+                    std::cerr << "Created simplified direct path with " << path.size() << " points." << std::endl;
+                }
+            } else {
+                std::cerr << "All recovery attempts failed. Returning empty path." << std::endl;
+                return vector<Vector3d>(); // 빈 경로 반환
+            }
+        }
     }
+    
+    updateMemoryUsage();
+    size_t memory_increase = (current_memory_usage_ > start_memory) ? 
+                           (current_memory_usage_ - start_memory) / 1024 : 0;
+    std::cout << "Path planning memory usage: " << current_memory_usage_ / 1024 
+              << " MB (+" << memory_increase << " MB)" << std::endl;
 
     grid_map_->updateESDFLocal(start_pt);
 

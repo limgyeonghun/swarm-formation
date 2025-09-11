@@ -76,6 +76,14 @@ private:
     std::priority_queue<GridNodePtr, std::vector<GridNodePtr>, NodeComparator> openSet_;
 
     int rounds_{0};
+    
+    // 메모리 사용량 모니터링 변수
+    size_t peak_memory_usage_{0};
+    size_t current_memory_usage_{0};
+    
+    // 메모리 사용량 추적 함수
+    void updateMemoryUsage();
+    size_t estimateNodeMemoryUsage() const;
 
 public:
     typedef std::shared_ptr<AStar> Ptr;
@@ -90,6 +98,10 @@ public:
     std::vector<Eigen::Vector3d> getPath();
 
     std::vector<Eigen::Vector3d> astarSearchAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt);
+    
+    // 메모리 사용량 정보 반환 함수
+    size_t getPeakMemoryUsage() const { return peak_memory_usage_; }
+    size_t getCurrentMemoryUsage() const { return current_memory_usage_; }
 };
 
 inline double AStar::getHeu(GridNodePtr node1, GridNodePtr node2)

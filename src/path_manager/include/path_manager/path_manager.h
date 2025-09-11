@@ -38,6 +38,11 @@ namespace path_manager
     void deliverTrajToOptimizer(void) { poly_traj_opt_->setSwarmTrajs(&traj_.swarm_traj); };
     void setDroneIdtoOpt(void) { poly_traj_opt_->setDroneId(0); }
     double getSwarmClearance(void) { return poly_traj_opt_->getSwarmClearance(); }
+    void setFormationToOptimizer(const std::vector<Eigen::Vector3d>& formation_positions, int formation_size) {
+      if (poly_traj_opt_) {
+        poly_traj_opt_->setFormation(formation_positions, formation_size);
+      }
+    }
 
     TrajContainer traj_;
     
