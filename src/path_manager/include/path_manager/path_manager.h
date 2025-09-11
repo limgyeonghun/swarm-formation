@@ -13,6 +13,8 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <sys/resource.h>
+#include <sys/time.h>
 
 using namespace ego_planner;
 
@@ -24,6 +26,7 @@ namespace path_manager
     PathManager(rclcpp::Node::SharedPtr node);
 
     void initOptimizer();
+    bool isOptimizerInitialized() const { return is_optimizer_initialized_ && poly_traj_opt_ != nullptr; }
     void getLocalTarget(const Eigen::Vector3d &start_pt,
                         const Eigen::Vector3d &global_end_pt, Eigen::Vector3d &local_target_pos,
                         Eigen::Vector3d &local_target_vel, double &t_to_target);
@@ -34,13 +37,50 @@ namespace path_manager
     bool planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel,
                         const Eigen::Vector3d &start_acc, const std::vector<Eigen::Vector3d> &waypoints,
                         const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
+    bool checkCollision(int drone_id);
 
-    void deliverTrajToOptimizer(void) { poly_traj_opt_->setSwarmTrajs(&traj_.swarm_traj); };
-    void setDroneIdtoOpt(void) { poly_traj_opt_->setDroneId(0); }
-    double getSwarmClearance(void) { return poly_traj_opt_->getSwarmClearance(); }
+    void deliverTrajToOptimizer(void) { 
+        if (!is_optimizer_initialized_ || !poly_traj_opt_) {
+            RCLCPP_ERROR(node_->get_logger(), "Cannot deliver trajectory to optimizer - not initialized!");
+            return;
+        }
+        try {
+            poly_traj_opt_->setSwarmTrajs(&traj_.swarm_traj);
+        } catch (const std::exception& e) {
+            RCLCPP_ERROR(node_->get_logger(), "Exception in deliverTrajToOptimizer: %s", e.what());
+        }
+    };
+    void setDroneIdtoOpt(void) { 
+        if (!is_optimizer_initialized_ || !poly_traj_opt_) {
+            RCLCPP_ERROR(node_->get_logger(), "Cannot set drone ID to optimizer - not initialized!");
+            return;
+        }
+        poly_traj_opt_->setDroneId(0); 
+    }
+    double getSwarmClearance(void) { 
+        if (!is_optimizer_initialized_ || !poly_traj_opt_) {
+            RCLCPP_ERROR(node_->get_logger(), "Cannot get swarm clearance - optimizer not initialized!");
+            return 2.0; // Default safe clearance
+        }
+        return poly_traj_opt_->getSwarmClearance(); 
+    }
     void setFormationToOptimizer(const std::vector<Eigen::Vector3d>& formation_positions, int formation_size) {
-      if (poly_traj_opt_) {
+      if (!is_optimizer_initialized_) {
+        RCLCPP_WARN(node_->get_logger(), "Optimizer not initialized yet, skipping setFormation");
+        return;
+      }
+      if (!poly_traj_opt_) {
+        RCLCPP_ERROR(node_->get_logger(), "poly_traj_opt_ is nullptr despite is_optimizer_initialized_ being true!");
+        is_optimizer_initialized_ = false;  // Reset the flag to prevent further attempts
+        return;
+      }
+      
+      try {
         poly_traj_opt_->setFormation(formation_positions, formation_size);
+      } catch (const std::exception& e) {
+        RCLCPP_ERROR(node_->get_logger(), "Exception in setFormation: %s", e.what());
+      } catch (...) {
+        RCLCPP_ERROR(node_->get_logger(), "Unknown exception in setFormation");
       }
     }
 
@@ -66,7 +106,6 @@ namespace path_manager
     ego_planner::PolyTrajOptimizer::Ptr poly_traj_opt_;
     bool is_optimizer_initialized_;
     bool first_call_;
-    rclcpp::TimerBase::SharedPtr esdf_timer_;
     Eigen::Vector3d current_start_pt_, current_target_pt_;
     bool has_valid_state_;
 

@@ -32,9 +32,10 @@ struct MappingParameters {
   bool show_esdf_time_ = false;
   double local_bound_inflate_ = 1.0;
   
-  // ESDF update optimization parameters
-  int esdf_update_skip_ = 1;  // Number of frames to skip ESDF update
-  double esdf_update_threshold_ = 0.1;  // ESDF update threshold
+  // ESDF parameters
+  double p_hit_ = 0.70, p_miss_ = 0.35, p_min_ = 0.12, p_max_ = 0.97, p_occ_ = 0.80;
+  double prob_hit_log_, prob_miss_log_, clamp_min_log_, clamp_max_log_, min_occupancy_log_;
+  double unknown_flag_ = 0.01;
   
   // Road boundary parameters for rover operation
   bool use_road_boundary_ = false;
@@ -52,6 +53,11 @@ struct MappingData {
   std::vector<double> distance_buffer_neg_;
   std::vector<double> distance_buffer_all_;
   std::vector<double> tmp_buffer1_, tmp_buffer2_;
+  
+  // Local bound for ESDF updates
+  Eigen::Vector3i local_bound_min_, local_bound_max_;
+  bool local_updated_ = false;
+  
   bool esdf_need_update_ = false;
   double esdf_time_ = 0.0;
   double max_esdf_time_ = 0.0;
@@ -88,6 +94,10 @@ public:
   inline bool isInMap(const Eigen::Vector3d& pos);
   inline bool isInMap(const Eigen::Vector3i& idx);
   inline bool isOccupied(const Eigen::Vector3i& id);
+  inline bool isUnknown(const Eigen::Vector3i& id);
+  inline bool isUnknown(const Eigen::Vector3d& pos);
+  inline bool isKnownFree(const Eigen::Vector3i& id);
+  inline bool isKnownOccupied(const Eigen::Vector3i& id);
   inline bool isInRoadBoundary(const Eigen::Vector3d& pos);
   inline void boundIndex(Eigen::Vector3i& id);
   inline int getOccupancy(const Eigen::Vector3d& pos);
@@ -103,6 +113,11 @@ public:
   void getSurroundDistance(Eigen::Vector3d pts[2][2][2], double dists[2][2][2]);
   void interpolateTrilinearEDT(double values[2][2][2], const Eigen::Vector3d& diff, double& value);
   void interpolateTrilinearFirstGrad(double values[2][2][2], const Eigen::Vector3d& diff, Eigen::Vector3d& grad);
+  
+  void clearAndInflateLocalMap();
+  Eigen::Vector3d closetPointInMap(const Eigen::Vector3d& pt, const Eigen::Vector3d& camera_pt);
+  Eigen::Vector3d getOrigin() const { return mp_.map_origin_; }
+  Eigen::Vector3d getMapSize() const { return mp_.map_size_; }
 
   typedef std::shared_ptr<GridMap> Ptr;
 
@@ -206,6 +221,32 @@ inline double GridMap::getDistance(const Eigen::Vector3i& id) {
   Eigen::Vector3i id1 = id;
   boundIndex(id1);
   return md_.distance_buffer_all_[toAddress(id1)];
+}
+
+inline bool GridMap::isUnknown(const Eigen::Vector3i& id) {
+  Eigen::Vector3i id1 = id;
+  boundIndex(id1);
+  return md_.occupancy_buffer_[toAddress(id1)] < mp_.clamp_min_log_ - 1e-3;
+}
+
+inline bool GridMap::isUnknown(const Eigen::Vector3d& pos) {
+  Eigen::Vector3i idc;
+  posToIndex(pos, idc);
+  return isUnknown(idc);
+}
+
+inline bool GridMap::isKnownFree(const Eigen::Vector3i& id) {
+  Eigen::Vector3i id1 = id;
+  boundIndex(id1);
+  int adr = toAddress(id1);
+  return md_.occupancy_buffer_[adr] >= mp_.clamp_min_log_ && md_.occupancy_buffer_inflate_[adr] == 0;
+}
+
+inline bool GridMap::isKnownOccupied(const Eigen::Vector3i& id) {
+  Eigen::Vector3i id1 = id;
+  boundIndex(id1);
+  int adr = toAddress(id1);
+  return md_.occupancy_buffer_inflate_[adr] == 1;
 }
 
 inline bool GridMap::isInRoadBoundary(const Eigen::Vector3d& pos) {

@@ -2,13 +2,11 @@
 #define _DYN_A_STAR_H_
 
 #include <iostream>
-#include <Eigen/Eigen>
 #include <rclcpp/rclcpp.hpp>
-#include <queue>
-#include <cmath>
-#include <memory>
 
+#include <Eigen/Eigen>
 #include "path_planner/grid_map.h"
+#include <queue>
 
 constexpr double inf = 1 >> 20;  
 
@@ -24,11 +22,15 @@ struct GridNode
         UNDEFINED = 3
     };
 
-    int rounds{0};
-    enum enum_state state = UNDEFINED;
-    Eigen::Vector2i index;  // Changed to 2D for rover
+    int rounds{0}; // Distinguish every call
+    enum enum_state state
+    {
+        UNDEFINED
+    };
+    Eigen::Vector3i index;
+
     double gScore{inf}, fScore{inf};
-    GridNodePtr cameFrom{nullptr};
+    GridNodePtr cameFrom{NULL};
 };
 
 class NodeComparator
@@ -45,45 +47,50 @@ class AStar
 private:
     GridMap::Ptr grid_map_;
 
+    inline void coord2gridIndexFast(const double x, const double y, const double z, int &id_x, int &id_y, int &id_z);
+
     double getDiagHeu(GridNodePtr node1, GridNodePtr node2);
     double getManhHeu(GridNodePtr node1, GridNodePtr node2);
     double getEuclHeu(GridNodePtr node1, GridNodePtr node2);
     inline double getHeu(GridNodePtr node1, GridNodePtr node2);
 
-    bool ConvertToIndexAndAdjustStartEndPoints(const Eigen::Vector3d start_pt, const Eigen::Vector3d end_pt,
-                                                 Eigen::Vector2i &start_idx, Eigen::Vector2i &end_idx);
+    bool ConvertToIndexAndAdjustStartEndPoints(const Eigen::Vector3d start_pt, const Eigen::Vector3d end_pt, Eigen::Vector3i &start_idx, Eigen::Vector3i &end_idx);
 
-    inline Eigen::Vector3d Index2Coord(const Eigen::Vector2i &index) const;
-    inline bool Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector2i &idx) const;
+    inline Eigen::Vector3d Index2Coord(const Eigen::Vector3i &index) const;
+    inline bool Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector3i &idx) const;
 
+    //bool (*checkOccupancyPtr)( const Eigen::Vector3d &pos );
+    
     inline bool checkOccupancy(const Eigen::Vector3d &pos) { return (bool)grid_map_->getInflateOccupancy(pos); }
-    inline bool checkOccupancy_esdf(const Eigen::Vector3d &pos) {
-        double dist;
-        grid_map_->evaluateEDT(pos, dist);
-        return dist < 0.2; // 0.2m dist
+    inline bool checkOccupancy_esdf(const Eigen::Vector3d &pos){
+        const double dist = 0.2;
+        if (grid_map_->getDistance(pos) < dist ) 
+            return true;
+        else
+            return false;
     }
+    
+    // inline bool checkOccupancy(const Eigen::Vector3d &pos) { 
+    //     const double dist = 0.2;
+    //     if (grid_map_->getDistance(pos) < dist ) 
+    //         return true;
+    //     else
+    //         return false;
+    // }
 
     std::vector<GridNodePtr> retrievePath(GridNodePtr current);
 
     double step_size_, inv_step_size_;
     Eigen::Vector3d center_;
-    Eigen::Vector2i CENTER_IDX_, POOL_SIZE_;  // Changed to 2D
+    Eigen::Vector3i CENTER_IDX_, POOL_SIZE_;
     const double tie_breaker_ = 1.0 + 1.0 / 10000;
 
     std::vector<GridNodePtr> gridPath_;
 
-    GridNodePtr **GridNodeMap_;  // Changed to 2D array
+    GridNodePtr ***GridNodeMap_;
     std::priority_queue<GridNodePtr, std::vector<GridNodePtr>, NodeComparator> openSet_;
 
     int rounds_{0};
-    
-    // 메모리 사용량 모니터링 변수
-    size_t peak_memory_usage_{0};
-    size_t current_memory_usage_{0};
-    
-    // 메모리 사용량 추적 함수
-    void updateMemoryUsage();
-    size_t estimateNodeMemoryUsage() const;
 
 public:
     typedef std::shared_ptr<AStar> Ptr;
@@ -91,7 +98,7 @@ public:
     AStar(){};
     ~AStar();
 
-    void initGridMap(GridMap::Ptr occ_map, const Eigen::Vector2i pool_size);  // Changed to 2D
+    void initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size);
 
     bool AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check);
 
@@ -99,9 +106,8 @@ public:
 
     std::vector<Eigen::Vector3d> astarSearchAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt);
     
-    // 메모리 사용량 정보 반환 함수
-    size_t getPeakMemoryUsage() const { return peak_memory_usage_; }
-    size_t getCurrentMemoryUsage() const { return current_memory_usage_; }
+    Eigen::Vector3d getOrigin() const { return grid_map_->getOrigin(); }
+    Eigen::Vector3d getMapSize() const { return grid_map_->getMapSize(); }
 };
 
 inline double AStar::getHeu(GridNodePtr node1, GridNodePtr node2)
@@ -109,34 +115,26 @@ inline double AStar::getHeu(GridNodePtr node1, GridNodePtr node2)
     return tie_breaker_ * getDiagHeu(node1, node2);
 }
 
-inline Eigen::Vector3d AStar::Index2Coord(const Eigen::Vector2i &index) const
+inline Eigen::Vector3d AStar::Index2Coord(const Eigen::Vector3i &index) const
 {
-    Eigen::Vector3d coord;
-    coord(0) = ((index(0) - CENTER_IDX_(0)) * step_size_) + center_(0);
-    coord(1) = ((index(1) - CENTER_IDX_(1)) * step_size_) + center_(1);
-    coord(2) = center_(2);  // Keep z at center level for 2D
-    return coord;
-}
+    return ((index - CENTER_IDX_).cast<double>() * step_size_) + center_;
+};
 
-inline bool AStar::Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector2i &idx) const
+inline bool AStar::Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector3i &idx) const
 {
-    // Convert 3D point to 2D index for rover
-    double x_offset = pt(0) - center_(0);
-    double y_offset = pt(1) - center_(1);
-    
-    idx(0) = static_cast<int>(x_offset * inv_step_size_ + 0.5) + CENTER_IDX_(0);
-    idx(1) = static_cast<int>(y_offset * inv_step_size_ + 0.5) + CENTER_IDX_(1);
-    
-    // Check bounds
-    if (idx(0) < 0 || idx(0) >= POOL_SIZE_(0) ||
-        idx(1) < 0 || idx(1) >= POOL_SIZE_(1))
+    idx = ((pt - center_) * inv_step_size_ + Eigen::Vector3d(0.5, 0.5, 0.5)).cast<int>() + CENTER_IDX_;
+
+    if (idx(0) < 0 || idx(0) >= POOL_SIZE_(0) || idx(1) < 0 || idx(1) >= POOL_SIZE_(1) || idx(2) < 0 || idx(2) >= POOL_SIZE_(2))
     {
-        std::cerr << "Ran out of pool, index=" << idx(0) << " " << idx(1) 
-                  << ", pool_size=" << POOL_SIZE_.transpose() 
-                  << ", center_idx=" << CENTER_IDX_.transpose() << std::endl;
+        RCLCPP_ERROR(rclcpp::get_logger("astar"), "Ran out of pool, index=%d %d %d", idx(0), idx(1), idx(2));
+        RCLCPP_ERROR(rclcpp::get_logger("astar"), "Point: (%.2f,%.2f,%.2f), Center: (%.2f,%.2f,%.2f), Step: %.3f", 
+                    pt.x(), pt.y(), pt.z(), center_.x(), center_.y(), center_.z(), step_size_);
+        RCLCPP_ERROR(rclcpp::get_logger("astar"), "Pool limits: X[0,%d) Y[0,%d) Z[0,%d)", 
+                    POOL_SIZE_(0), POOL_SIZE_(1), POOL_SIZE_(2));
         return false;
     }
+
     return true;
-}
+};
 
 #endif

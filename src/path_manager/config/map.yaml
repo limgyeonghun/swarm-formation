@@ -13,7 +13,7 @@
     
     # Map Boundary Settings (2D)
     grid_map/virtual_ceil_height: -0.1  # Ground level
-    grid_map/local_map_margin: 3
+    grid_map/local_map_margin: 10
     
     # ESDF Settings (2D slice)
     grid_map/esdf_slice_height: 0.0  # Ground level slice

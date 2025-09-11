@@ -83,6 +83,7 @@ private:
     double last_start_time_;
     double n_seconds_ahead_;
     bool rviz_simulation_;
+    bool flag_escape_emergency_;
 };
 
 }  // namespace path_manager

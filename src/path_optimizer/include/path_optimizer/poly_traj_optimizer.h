@@ -126,6 +126,10 @@ namespace ego_planner
                           Eigen::MatrixXd &ctl_points,
                           poly_traj::MinJerkOpt &frontendMJ);
 
+    void showFormationInformation(bool is_show, Eigen::Vector3d pos);
+    void setDesiredFormation(int type);
+    bool getFormationPos(std::vector<Eigen::Vector3d> &swarm_graph_pos, Eigen::Vector3d pos);
+
   private:
     static double costFunctionCallback(void *func_data, const double *x, double *grad, const int n);
     static int earlyExitCallback(void *func_data, const double *x, const double *g,
@@ -184,96 +188,7 @@ namespace ego_planner
                                            Eigen::MatrixXd &gdp,
                                            double &var);
 
-    void showFormationInformation(bool is_show, Eigen::Vector3d pos);
-
     bool checkCollision(void);
-
-    bool getFormationPos(std::vector<Eigen::Vector3d> &swarm_graph_pos, Eigen::Vector3d pos);
-
-    void logToFile(const std::string &message, const std::string &level = "INFO");
-
-    void setDesiredFormation(int type)
-    {
-      std::vector<Eigen::Vector3d> swarm_des;
-      switch (type)
-      {
-      case FORMATION_TYPE::NONE_FORMATION:
-        use_formation_ = false;
-        formation_size_ = 0;
-        break;
-
-      case FORMATION_TYPE::REGULAR_HEXAGON:
-      {
-        // Eigen::Vector3d v0(0, 0, 0);
-        // Eigen::Vector3d v1(2, 0, 0);
-        // Eigen::Vector3d v2(4, 0, 0);
-        Eigen::Vector3d v0(0, 0, 0);
-        // Eigen::Vector3d v1(1, 0, 0);
-        // Eigen::Vector3d v2(0, 1, 0);
-        // Eigen::Vector3d v3(-1.7321, -1, 0);
-        // Eigen::Vector3d v4(-1.7321, 1, 0);
-        // Eigen::Vector3d v5(0, 2, 0);
-        // Eigen::Vector3d v6(1.7321, 1, 0);
-        swarm_des.push_back(v0);
-        // swarm_des.push_back(v1);
-        // swarm_des.push_back(v2);
-        // swarm_des.push_back(v3);
-        // swarm_des.push_back(v4);
-        // swarm_des.push_back(v5);
-        // swarm_des.push_back(v6);
-        formation_size_ = swarm_des.size();
-        swarm_graph_->setDesiredForm(swarm_des);
-        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "HEXAGON formation set: size=%zu", swarm_des.size());
-        break;
-      }
-
-      case FORMATION_TYPE::REGULAR_SQUARE:
-      {
-        Eigen::Vector3d v0(0, 0, 0);
-        Eigen::Vector3d v1(0, -1.5, 0);
-        Eigen::Vector3d v2(1.5, -1.5, 0);
-        Eigen::Vector3d v3(1.5, 0.0, 0);
-
-        swarm_des.push_back(v0);
-        swarm_des.push_back(v1);
-        swarm_des.push_back(v2);
-        swarm_des.push_back(v3);
-
-        formation_size_ = swarm_des.size();
-        swarm_graph_->setDesiredForm(swarm_des);
-        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "SQUARE formation set: size=%zu", swarm_des.size());
-        break;
-      }
-
-      case FORMATION_TYPE::TEST_FORMATION:
-      {
-        Eigen::Vector3d v0(0, 0, 0);
-        Eigen::Vector3d v1(2, 0, 0);
-        Eigen::Vector3d v2(4, 0, 0);
-        Eigen::Vector3d v3(-1.7321, -1, 0);
-        Eigen::Vector3d v4(-1.7321, 1, 0);
-        Eigen::Vector3d v5(0, 2, 0);
-
-        swarm_des.push_back(v0);
-        swarm_des.push_back(v1);
-        swarm_des.push_back(v2);
-        swarm_des.push_back(v3);
-        swarm_des.push_back(v4);
-        swarm_des.push_back(v5);
-
-        formation_size_ = swarm_des.size();
-        swarm_graph_->setDesiredForm(swarm_des);
-        RCLCPP_INFO(rclcpp::get_logger("PolyTrajOptimizer"), "TEST formation set: size=%zu", swarm_des.size());
-        break;
-      }
-
-      default:
-        RCLCPP_WARN(rclcpp::get_logger("PolyTrajOptimizer"), "Unknown formation type: %d", type);
-        use_formation_ = false;
-        formation_size_ = 0;
-        break;
-      }
-    };
 
   public:
     typedef std::unique_ptr<PolyTrajOptimizer> Ptr;

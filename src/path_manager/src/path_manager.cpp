@@ -71,17 +71,50 @@ namespace path_manager
 
     void PathManager::initOptimizer()
     {
-        if (is_optimizer_initialized_)
+        if (is_optimizer_initialized_ && poly_traj_opt_)
         {
+            RCLCPP_DEBUG(node_->get_logger(), "Optimizer already initialized for drone %d", traj_.local_traj.drone_id);
             return;
         }
         
-        poly_traj_opt_ = std::make_unique<ego_planner::PolyTrajOptimizer>();
-        poly_traj_opt_->setEnvironment(grid_map_);
-        poly_traj_opt_->setDroneId(traj_.local_traj.drone_id);
-        poly_traj_opt_->setParam(node_);
+        // Reset state in case of partial initialization
+        is_optimizer_initialized_ = false;
+        poly_traj_opt_.reset();
+        
+        try {
+            RCLCPP_INFO(node_->get_logger(), "Initializing optimizer for drone %d...", traj_.local_traj.drone_id);
+            
+            // Check prerequisites
+            if (!node_) {
+                throw std::runtime_error("Node is null");
+            }
+            if (!grid_map_) {
+                throw std::runtime_error("GridMap is null");
+            }
+            
+            poly_traj_opt_ = std::make_unique<ego_planner::PolyTrajOptimizer>();
+            
+            // Set parameters first to ensure node_ is initialized
+            poly_traj_opt_->setParam(node_);
+            
+            // Then set other components
+            poly_traj_opt_->setEnvironment(grid_map_);
+            poly_traj_opt_->setDroneId(traj_.local_traj.drone_id);
 
-        is_optimizer_initialized_ = true;
+            // Only mark as initialized after all steps succeed
+            is_optimizer_initialized_ = true;
+            RCLCPP_INFO(node_->get_logger(), "Optimizer initialized successfully for drone %d", traj_.local_traj.drone_id);
+        } catch (const std::exception& e) {
+            RCLCPP_ERROR(node_->get_logger(), "Exception during optimizer initialization: %s", e.what());
+            poly_traj_opt_.reset();  // Reset to nullptr on failure
+            is_optimizer_initialized_ = false;
+            throw;  // Re-throw the exception
+        } catch (...) {
+            RCLCPP_ERROR(node_->get_logger(), "Unknown exception during optimizer initialization");
+            poly_traj_opt_.reset();
+            is_optimizer_initialized_ = false;
+            throw;
+        }
     }
 
     bool PathManager::computeAndOptimizePath(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
@@ -89,10 +122,19 @@ namespace path_manager
                                              const Eigen::Vector3d &local_target_vel, const bool flag_polyInit,
                                              const bool flag_randomPolyTraj, const bool use_formation, const bool have_local_traj)
     {
+        static int count = 0;
+        RCLCPP_INFO(node_->get_logger(), 
+                   "\033[47;30m\n[drone %d replan %d]==============================================\033[0m",
+                   traj_.local_traj.drone_id, count++);
+
         if ((start_pt - local_target_pt).norm() < 0.2)
         {
+            RCLCPP_INFO(node_->get_logger(), "Close to goal");
             return false;
         }
+        auto t_start = rclcpp::Clock(RCL_ROS_TIME).now();
+        
+        /*** STEP 1: INIT ***/
         double ts = poly_traj_piece_length_ / max_vel_;
         poly_traj::MinJerkOpt initMJO;
         if (!computeInitReferenceState(start_pt, start_vel, start_acc, local_target_pt, local_target_vel, ts, initMJO, flag_polyInit))
@@ -101,9 +143,14 @@ namespace path_manager
             return false;
         }
 
+        auto t_init = rclcpp::Clock(RCL_ROS_TIME).now() - t_start;
+
         Eigen::MatrixXd cstr_pts = initMJO.getInitConstrainPoints(poly_traj_opt_->get_cps_num_prePiece_());
         poly_traj_opt_->setControlPoints(cstr_pts);
 
+        t_start = rclcpp::Clock(RCL_ROS_TIME).now();
+
+        /*** STEP 2: OPTIMIZE ***/
         poly_traj::Trajectory initTraj = initMJO.getTraj();
         int PN = initTraj.getPieceNum();
         Eigen::MatrixXd all_pos = initTraj.getPositions();
@@ -113,11 +160,26 @@ namespace path_manager
         tailState << initTraj.getJuncPos(PN), initTraj.getJuncVel(PN), initTraj.getJuncAcc(PN);
 
         bool flag_success = poly_traj_opt_->OptimizeTrajectory_lbfgs(headState, tailState, innerPts, initTraj.getDurations(), cstr_pts, use_formation);
+        
+        auto t_opt = rclcpp::Clock(RCL_ROS_TIME).now() - t_start;
+        
         if (!flag_success)
         {
             RCLCPP_ERROR(node_->get_logger(), "Failed to optimize trajectory.");
             return false;
         }
+
+        // Performance statistics
+        static double sum_time = 0;
+        static int count_success = 0;
+        double total_time_sec = (t_init.nanoseconds() + t_opt.nanoseconds()) / 1e9;
+        sum_time += total_time_sec;
+        count_success++;
+        
+        RCLCPP_INFO(node_->get_logger(), 
+                   "total time:\033[42m%.3f\033[0m,init:%.3f,optimize:%.3f,avg_time=%.3f,count_success=%d",
+                   total_time_sec, t_init.nanoseconds() / 1e9, t_opt.nanoseconds() / 1e9, 
+                   sum_time / count_success, count_success);
 
         if (have_local_traj && use_formation)
         {
@@ -210,7 +272,7 @@ namespace path_manager
                 }
                 else
                 {
-                    cout << "Should not happen! x_x 0x88" << endl;
+                    RCLCPP_ERROR(node_->get_logger(), "Should not happen! x_x 0x88");
                 }
 
                 t += piece_dur_vec(i + 1);
@@ -243,7 +305,7 @@ namespace path_manager
         {
             if (innerPts.size() != 0)
             {
-                cout << "innerPts.size() != 0" << endl;
+                RCLCPP_ERROR(node_->get_logger(), "innerPts.size() != 0");
             }
         }
         globalMJO.reset(headState, tailState, waypoints.size());
@@ -313,5 +375,77 @@ namespace path_manager
             local_target_vel = traj_.global_traj.traj.getVel(t - traj_.global_traj.global_start_time);
         }
     }
+
+bool PathManager::checkCollision(int drone_id)
+{
+    // 기본 유효성 검사
+    if (traj_.local_traj.start_time < 1e9) // It means my first planning has not started
+        return false;
+    
+    // 드론 ID 유효성 검사
+    if (drone_id < 0 || static_cast<size_t>(drone_id) >= traj_.swarm_traj.size()) {
+        RCLCPP_ERROR(node_->get_logger(), "Invalid drone_id %d in checkCollision (swarm_traj size: %zu)", 
+                   drone_id, traj_.swarm_traj.size());
+        return false;
+    }
+
+    // 궤적 유효성 검사
+    if (!traj_.local_traj.traj.getPieceNum() || !traj_.swarm_traj[drone_id].traj.getPieceNum()) {
+        RCLCPP_WARN(node_->get_logger(), "Empty trajectory in checkCollision for drone_id %d", drone_id);
+        return false;
+    }
+
+    try {
+        double my_traj_start_time = traj_.local_traj.start_time;
+        double other_traj_start_time = traj_.swarm_traj[drone_id].start_time;
+        
+        // 시간 범위 계산
+        double t_start = std::max(my_traj_start_time, other_traj_start_time);
+        double t_end = std::min(my_traj_start_time + traj_.local_traj.duration * 2 / 3,
+                           other_traj_start_time + traj_.swarm_traj[drone_id].duration);
+        
+        // 유효한 시간 범위인지 확인
+        if (t_start >= t_end) {
+            return false;  // 겹치는 시간 구간 없음
+        }
+
+        // 메모리 사용량 확인
+        struct rusage usage;
+        getrusage(RUSAGE_SELF, &usage);
+        if (usage.ru_maxrss > 7000000) { // 7GB 제한
+            RCLCPP_WARN(node_->get_logger(), "High memory usage during collision check: %zu MB", 
+                      usage.ru_maxrss / 1024);
+        }
+
+        // 충돌 검사 - 시간 간격 증가 (0.03 -> 0.05)
+        for (double t = t_start; t < t_end; t += 0.05)
+        {
+            double my_t = t - my_traj_start_time;
+            double other_t = t - other_traj_start_time;
+            
+            // 시간 범위 유효성 검사
+            if (my_t < 0 || my_t > traj_.local_traj.duration || 
+                other_t < 0 || other_t > traj_.swarm_traj[drone_id].duration) {
+                continue;
+            }
+            
+            // 충돌 검사
+            if ((traj_.local_traj.traj.getPos(my_t) -
+                traj_.swarm_traj[drone_id].traj.getPos(other_t))
+                    .norm() < poly_traj_opt_->getSwarmClearance())
+            {
+                return true;
+            }
+        }
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(node_->get_logger(), "Exception in checkCollision: %s", e.what());
+        return false;
+    } catch (...) {
+        RCLCPP_ERROR(node_->get_logger(), "Unknown exception in checkCollision");
+        return false;
+    }
+
+    return false;
+}
 
 } // namespace path_manager

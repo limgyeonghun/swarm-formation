@@ -80,6 +80,14 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   mp_.resolution_inv_ = 1.0 / mp_.resolution_;
   mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, -0.01);
   mp_.map_size_ = Eigen::Vector3d(x_size, y_size, z_size);
+  
+  // Initialize ESDF parameters
+  auto logit = [](double x) { return log(x / (1.0 - x)); };
+  mp_.prob_hit_log_ = logit(mp_.p_hit_);
+  mp_.prob_miss_log_ = logit(mp_.p_miss_);
+  mp_.clamp_min_log_ = logit(mp_.p_min_);
+  mp_.clamp_max_log_ = logit(mp_.p_max_);
+  mp_.min_occupancy_log_ = logit(mp_.p_occ_);
 
   for (int i = 0; i < 3; ++i)
     mp_.map_voxel_num_(i) = ceil(mp_.map_size_(i) / mp_.resolution_);
@@ -537,6 +545,59 @@ void GridMap::interpolateTrilinearFirstGrad(double values[2][2][2], const Eigen:
   grad[0] += diff[2] * (1 - diff[1]) * (values[1][0][1] - values[0][0][1]);
   grad[0] += diff[2] * diff[1] * (values[1][1][1] - values[0][1][1]);
   grad[0] *= mp_.resolution_inv_;
+}
+
+void GridMap::clearAndInflateLocalMap() {
+  // Clear outdated data in local bounds
+  for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x) {
+    for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y) {
+      for (int z = md_.local_bound_min_(2); z <= md_.local_bound_max_(2); ++z) {
+        md_.occupancy_buffer_inflate_[toAddress(x, y, z)] = 0;
+      }
+    }
+  }
+
+  // Inflate obstacles
+  int inf_step = ceil(mp_.obstacles_inflation_ / mp_.resolution_);
+  for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x) {
+    for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y) {
+      for (int z = md_.local_bound_min_(2); z <= md_.local_bound_max_(2); ++z) {
+        if (md_.occupancy_buffer_[toAddress(x, y, z)] > mp_.min_occupancy_log_) {
+          inflatePoint(Eigen::Vector3i(x, y, z), inf_step);
+        }
+      }
+    }
+  }
+
+  // Add virtual ceiling
+  if (mp_.virtual_ceil_height_ > -0.5) {
+    int ceil_id = floor((mp_.virtual_ceil_height_ - mp_.map_origin_(2)) * mp_.resolution_inv_);
+    for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x) {
+      for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y) {
+        md_.occupancy_buffer_inflate_[toAddress(x, y, ceil_id)] = 1;
+      }
+    }
+  }
+}
+
+Eigen::Vector3d GridMap::closetPointInMap(const Eigen::Vector3d& pt, const Eigen::Vector3d& camera_pt) {
+  Eigen::Vector3d diff = pt - camera_pt;
+  Eigen::Vector3d max_tc = mp_.map_max_boundary_ - camera_pt;
+  Eigen::Vector3d min_tc = mp_.map_min_boundary_ - camera_pt;
+
+  double min_t = 1000000;
+
+  for (int i = 0; i < 3; ++i) {
+    if (fabs(diff[i]) > 0) {
+      double t1 = max_tc[i] / diff[i];
+      if (t1 > 0 && t1 < min_t) min_t = t1;
+
+      double t2 = min_tc[i] / diff[i];
+      if (t2 > 0 && t2 < min_t) min_t = t2;
+    }
+  }
+
+  return camera_pt + (min_t - 1e-3) * diff;
 }
 
 void GridMap::updateESDFLocal(const Eigen::Vector3d& center_pos) {
