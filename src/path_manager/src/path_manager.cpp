@@ -54,7 +54,7 @@ namespace path_manager
             Eigen::Vector3i idx;
             grid_map_->posToIndex(obs, idx);
             grid_map_->setOccupancy(idx, 1.0);
-            grid_map_->inflatePoint(idx, 3.0);
+            grid_map_->inflatePoint(idx, 5.0);
         }
         grid_map_->updateESDF3d(); // not used? -> esdf_timer
 
@@ -122,6 +122,12 @@ namespace path_manager
                                              const Eigen::Vector3d &local_target_vel, const bool flag_polyInit,
                                              const bool flag_randomPolyTraj, const bool use_formation, const bool have_local_traj)
     {
+        // Ensure optimizer is initialized before proceeding
+        if (!isOptimizerInitialized()) {
+            RCLCPP_ERROR(node_->get_logger(), "Cannot compute trajectory: optimizer not initialized!");
+            return false;
+        }
+        
         static int count = 0;
         RCLCPP_INFO(node_->get_logger(), 
                    "\033[47;30m\n[drone %d replan %d]==============================================\033[0m",
@@ -190,12 +196,12 @@ namespace path_manager
                 rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::duration<double>(delta_replan_time)));
             }
-            traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(), trajectory_start_time);
+            traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(), trajectory_start_time, traj_.local_traj.drone_id);
         }
         else
         {
             traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(),
-                            rclcpp::Clock(RCL_ROS_TIME).now().seconds());
+                            rclcpp::Clock(RCL_ROS_TIME).now().seconds(), traj_.local_traj.drone_id);
         }
         return true;
     }
@@ -378,71 +384,24 @@ namespace path_manager
 
 bool PathManager::checkCollision(int drone_id)
 {
-    // 기본 유효성 검사
     if (traj_.local_traj.start_time < 1e9) // It means my first planning has not started
-        return false;
-    
-    // 드론 ID 유효성 검사
-    if (drone_id < 0 || static_cast<size_t>(drone_id) >= traj_.swarm_traj.size()) {
-        RCLCPP_ERROR(node_->get_logger(), "Invalid drone_id %d in checkCollision (swarm_traj size: %zu)", 
-                   drone_id, traj_.swarm_traj.size());
-        return false;
-    }
+      return false;
 
-    // 궤적 유효성 검사
-    if (!traj_.local_traj.traj.getPieceNum() || !traj_.swarm_traj[drone_id].traj.getPieceNum()) {
-        RCLCPP_WARN(node_->get_logger(), "Empty trajectory in checkCollision for drone_id %d", drone_id);
-        return false;
-    }
+    double my_traj_start_time = traj_.local_traj.start_time;
+    double other_traj_start_time = traj_.swarm_traj[drone_id].start_time;
 
-    try {
-        double my_traj_start_time = traj_.local_traj.start_time;
-        double other_traj_start_time = traj_.swarm_traj[drone_id].start_time;
-        
-        // 시간 범위 계산
-        double t_start = std::max(my_traj_start_time, other_traj_start_time);
-        double t_end = std::min(my_traj_start_time + traj_.local_traj.duration * 2 / 3,
-                           other_traj_start_time + traj_.swarm_traj[drone_id].duration);
-        
-        // 유효한 시간 범위인지 확인
-        if (t_start >= t_end) {
-            return false;  // 겹치는 시간 구간 없음
-        }
+    double t_start = max(my_traj_start_time, other_traj_start_time);
+    double t_end = min(my_traj_start_time + traj_.local_traj.duration * 2 / 3,
+                       other_traj_start_time + traj_.swarm_traj[drone_id].duration);
 
-        // 메모리 사용량 확인
-        struct rusage usage;
-        getrusage(RUSAGE_SELF, &usage);
-        if (usage.ru_maxrss > 7000000) { // 7GB 제한
-            RCLCPP_WARN(node_->get_logger(), "High memory usage during collision check: %zu MB", 
-                      usage.ru_maxrss / 1024);
-        }
-
-        // 충돌 검사 - 시간 간격 증가 (0.03 -> 0.05)
-        for (double t = t_start; t < t_end; t += 0.05)
-        {
-            double my_t = t - my_traj_start_time;
-            double other_t = t - other_traj_start_time;
-            
-            // 시간 범위 유효성 검사
-            if (my_t < 0 || my_t > traj_.local_traj.duration || 
-                other_t < 0 || other_t > traj_.swarm_traj[drone_id].duration) {
-                continue;
-            }
-            
-            // 충돌 검사
-            if ((traj_.local_traj.traj.getPos(my_t) -
-                traj_.swarm_traj[drone_id].traj.getPos(other_t))
-                    .norm() < poly_traj_opt_->getSwarmClearance())
-            {
-                return true;
-            }
-        }
-    } catch (const std::exception& e) {
-        RCLCPP_ERROR(node_->get_logger(), "Exception in checkCollision: %s", e.what());
-        return false;
-    } catch (...) {
-        RCLCPP_ERROR(node_->get_logger(), "Unknown exception in checkCollision");
-        return false;
+    for (double t = t_start; t < t_end; t += 0.03)
+    {
+      if ((traj_.local_traj.traj.getPos(t - my_traj_start_time) -
+           traj_.swarm_traj[drone_id].traj.getPos(t - other_traj_start_time))
+              .norm() < poly_traj_opt_->getSwarmClearance())
+      {
+        return true;
+      }
     }
 
     return false;

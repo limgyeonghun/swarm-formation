@@ -40,48 +40,30 @@ namespace path_manager
     bool checkCollision(int drone_id);
 
     void deliverTrajToOptimizer(void) { 
-        if (!is_optimizer_initialized_ || !poly_traj_opt_) {
-            RCLCPP_ERROR(node_->get_logger(), "Cannot deliver trajectory to optimizer - not initialized!");
-            return;
-        }
-        try {
-            poly_traj_opt_->setSwarmTrajs(&traj_.swarm_traj);
-        } catch (const std::exception& e) {
-            RCLCPP_ERROR(node_->get_logger(), "Exception in deliverTrajToOptimizer: %s", e.what());
+        if (isOptimizerInitialized()) {
+            poly_traj_opt_->setSwarmTrajs(&traj_.swarm_traj); 
         }
     };
     void setDroneIdtoOpt(void) { 
-        if (!is_optimizer_initialized_ || !poly_traj_opt_) {
-            RCLCPP_ERROR(node_->get_logger(), "Cannot set drone ID to optimizer - not initialized!");
-            return;
+        if (isOptimizerInitialized()) {
+            poly_traj_opt_->setDroneId(traj_.local_traj.drone_id); 
         }
-        poly_traj_opt_->setDroneId(0); 
     }
     double getSwarmClearance(void) { 
-        if (!is_optimizer_initialized_ || !poly_traj_opt_) {
-            RCLCPP_ERROR(node_->get_logger(), "Cannot get swarm clearance - optimizer not initialized!");
-            return 2.0; // Default safe clearance
-        }
-        return poly_traj_opt_->getSwarmClearance(); 
+        return isOptimizerInitialized() ? poly_traj_opt_->getSwarmClearance() : 0.0; 
     }
     void setFormationToOptimizer(const std::vector<Eigen::Vector3d>& formation_positions, int formation_size) {
-      if (!is_optimizer_initialized_) {
-        RCLCPP_WARN(node_->get_logger(), "Optimizer not initialized yet, skipping setFormation");
-        return;
-      }
-      if (!poly_traj_opt_) {
-        RCLCPP_ERROR(node_->get_logger(), "poly_traj_opt_ is nullptr despite is_optimizer_initialized_ being true!");
-        is_optimizer_initialized_ = false;  // Reset the flag to prevent further attempts
-        return;
-      }
-      
-      try {
+        if (!isOptimizerInitialized()) {
+            RCLCPP_ERROR(node_->get_logger(), "Cannot set formation: optimizer not initialized!");
+            return;
+        }
+        
+        RCLCPP_INFO(node_->get_logger(), "Setting formation with %zu positions to optimizer", formation_positions.size());
         poly_traj_opt_->setFormation(formation_positions, formation_size);
-      } catch (const std::exception& e) {
-        RCLCPP_ERROR(node_->get_logger(), "Exception in setFormation: %s", e.what());
-      } catch (...) {
-        RCLCPP_ERROR(node_->get_logger(), "Unknown exception in setFormation");
-      }
+        
+        // Reset first_call_ to true when formation changes
+        first_call_ = true;
+        RCLCPP_INFO(node_->get_logger(), "Reset first_call_ to true due to formation change");
     }
 
     TrajContainer traj_;

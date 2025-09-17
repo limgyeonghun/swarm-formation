@@ -84,7 +84,6 @@ namespace ego_planner
     if (enable_debug_logs_) {
         printf("[ INFO] [DEBUG] L-BFGS params: mem_size=%d, max_iter=%d, g_epsilon=%.2e, min_step=%.2e, use_formation=%d\n", 
                lbfgs_params.mem_size, lbfgs_params.max_iterations, lbfgs_params.g_epsilon, lbfgs_params.min_step, use_formation);
-        fflush(stdout);  // Immediate output for debug info
     }
 
     iter_num_ = 0;
@@ -107,7 +106,6 @@ namespace ego_planner
         printf("[ INFO] [DEBUG] L-BFGS Result: %d (%s)\n", result, result_str);
         printf("[ INFO] [DEBUG] Iteration info: costFunction calls=%d, max_iterations=%d\n", 
                iter_num_, lbfgs_params.max_iterations);
-        fflush(stdout);  // Immediate output for debug info
     }
 
     // Collision check (only if obstacles are enabled)
@@ -121,20 +119,18 @@ namespace ego_planner
 
     // Final result logging similar to con code
     printf("\033[32mid = %d, iter=%d, use_formation=%d, time(ms)=%5.3f\033[0m\n", drone_id_, iter_num_, use_formation, time_ms);
-    fflush(stdout);  // Immediate output to sync with RCLCPP logs
 
     printf("[COST] formation_cost = %.6f (wei_formation=%.3f, similarity=%.6f)\n",
            dbg_cost_formation_, wei_formation_, debug_similarity_);
-    fflush(stdout);
 
     // Additional debugging info (similar to con code)
     if (enable_debug_logs_) {
         printf("[ INFO] [DEBUG] L-BFGS Result: %d (%s)\n", result, lbfgs::lbfgs_strerror(result));
         printf("[ INFO] [DEBUG] Iteration info: costFunction calls=%d, max_iterations=%d, Final cost: %.6f\n", 
                iter_num_, lbfgs_params.max_iterations, final_cost);
-        fflush(stdout);  // Immediate output for debug info
     }
     printf("=================================================\n");
+    fflush(stdout);
     optimal_points = cps_.points;
 
     showFormationInformation(false, start_pos);
@@ -148,28 +144,63 @@ namespace ego_planner
   {
     double T_end;
     poly_traj::Trajectory traj = jerkOpt_.getTraj();
-
+  
     int N = traj.getPieceNum();
     int k = cps_num_prePiece_ * N + 1;
     int idx = k / 3 * 2;
     int piece_of_idx = floor((idx - 1) / cps_num_prePiece_);
     Eigen::VectorXd durations = traj.getDurations();
-    T_end = durations.head(piece_of_idx).sum() + durations(piece_of_idx) * (idx - piece_of_idx * cps_num_prePiece_) / cps_num_prePiece_;
-
+  
+    // 안전 가드: 인덱스 이상 시 전체 길이로 대체
+    if (piece_of_idx < 0 || piece_of_idx >= N) {
+      T_end = durations.sum();
+    } else {
+      T_end = durations.head(piece_of_idx).sum()
+            + durations(piece_of_idx)
+            * (idx - piece_of_idx * cps_num_prePiece_) / (double)cps_num_prePiece_;
+    }
+  
     bool occ = false;
     double dt = 0.01;
-    int i_end = floor(T_end / dt);
+    int i_end = std::max(1, (int)floor(T_end / dt));
     double t = 0.0;
     collision_check_time_end_ = T_end;
-
+  
     for (int i = 0; i < i_end; i++)
     {
       Eigen::Vector3d pos = traj.getPos(t);
-      if (grid_map_->getInflateOccupancy(pos) == 1)
+  
+      // 핵심: 왜 점유가 1인지 이유를 뽑아본다
+      int infl = grid_map_->getInflateOccupancy(pos);
+      if (infl == 1)
       {
+        bool in_map   = grid_map_->isInMap(pos);
+        bool in_road  = grid_map_->isInRoadBoundary(pos);   // road boundary 사용 시 중요
+        int  occ_raw  = grid_map_->getOccupancy(pos);       // 원본 점유(도로 밖이면 1로 나올 수 있음)
+        double dist_esdf = 0.0;
+        grid_map_->evaluateEDT(pos, dist_esdf);
+  
+        RCLCPP_WARN(node_->get_logger(),
+          "[COLLISION] t=%.3f pos=(%.3f, %.3f, %.3f) infl=1 in_map=%d in_road=%d occ=%d esdf=%.3f",
+          t, pos.x(), pos.y(), pos.z(), (int)in_map, (int)in_road, occ_raw, dist_esdf);
+  
+        // 도로 경계 밖이라면 이유를 명시
+        if (in_map && !in_road) {
+          RCLCPP_WARN(node_->get_logger(),
+            "[COLLISION] Road-boundary violation at t=%.3f (treated as obstacle). "
+            "Check grid_map.use_road_boundary/road_width/road_margin/segments.", t);
+        }
+  
+        // 맵 밖인 경우(이럴 땐 getInflateOccupancy가 -1인데, 도로경계 로직으로 1이 될 수 있어 log로 확인)
+        if (!in_map) {
+          RCLCPP_WARN(node_->get_logger(),
+            "[COLLISION] Out of map at t=%.3f. Check map size/origin/resolution.", t);
+        }
+  
         occ = true;
         break;
       }
+  
       t += dt;
     }
     return occ;
@@ -235,7 +266,6 @@ namespace ego_planner
             std::chrono::high_resolution_clock::now() - t_start).count();
         printf("[ INFO] [DEBUG] CostFunction iter=%d: Traj=%.2fms, Smooth=%.2fms, PVA=%.2fms, Grad=%.2fms, Time=%.2fms, Total=%.2fms\n",
                opt->iter_num_, traj_gen_time, smoothness_time, pva_cost_time, grad_time, time_cost_time, total_callback_time);
-        fflush(stdout);  // Immediate output for debug info
     }
 
     return smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost;
@@ -759,7 +789,7 @@ namespace ego_planner
     Eigen::Vector3d start_pos = iniState.col(0);
     Eigen::Vector3d end_pos = finState.col(0);
 
-    simple_path = a_star_->astarSearchAndGetSimplePath(grid_map_->getResolution(), start_pos, end_pos);
+    simple_path = a_star_->astarSearchAndGetSimplePath(grid_map_->getResolution(), start_pos, end_pos, drone_id_);
 
     int piece_num = simple_path.size() - 1;
     Eigen::MatrixXd innerPts;
@@ -920,19 +950,20 @@ namespace ego_planner
     grid_map_ = map;
     a_star_.reset(new AStar);
     
-    // 맵 크기에 맞게 A* 풀 사이즈 계산
-    // map.yaml: 30m x 120m x 0.3m, resolution 0.1m
-    // 필요한 격자 수: 300 x 1200 x 3 + 충분한 여유분
-    Eigen::Vector3i voxel_num = grid_map_->getVoxelNum();
+    // Calculate pool size based on map size and resolution
+    Eigen::Vector3d map_size = grid_map_->getMapSize();
+    double resolution = grid_map_->getResolution();
     
-    // A* 풀 사이즈를 안전하게 계산 (메모리 절약을 위해 크기 제한)
-    Eigen::Vector3i pool_size(800, 200, 10);  // 2D for rover - 고정 크기 사용
+    // Add safety margin and ensure minimum pool size
+    int pool_x = std::max(800, static_cast<int>(std::ceil(map_size.x() / resolution * 1.2)));
+    int pool_y = std::max(800, static_cast<int>(std::ceil(map_size.y() / resolution * 1.2)));
+    int pool_z = std::max(20, static_cast<int>(std::ceil(map_size.z() / resolution * 1.2)));
     
-    RCLCPP_INFO(node_->get_logger(), "A* pool size: (%d, %d, %d), total nodes: %d", 
-                pool_size(0), pool_size(1), pool_size(2), 
-                pool_size(0) * pool_size(1) * pool_size(2));
+    Eigen::Vector3i pool_size(pool_x, pool_y, pool_z);
     
-    // A* 초기화를 한 번만 수행
+    RCLCPP_INFO(node_->get_logger(), "Setting A* pool size to (%d, %d, %d) for map size (%.1f, %.1f, %.1f)m with resolution %.2f", 
+                pool_x, pool_y, pool_z, map_size.x(), map_size.y(), map_size.z(), resolution);
+
     a_star_->initGridMap(grid_map_, pool_size);
   }
 

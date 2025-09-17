@@ -163,6 +163,30 @@ void FormationManager::generateFormationTargets(
     targets.push_back(center + pattern_point);
   }
 
+  // For line formation: make goal points diagonal by increasing y by +1 per index
+  // Keep x as-is, modify only y relative to current targets
+  if (formation_type == "line") {
+    // Keep x as-is. Increase only y so that Drone1 gets the largest y.
+    // y offset per drone i: 2.0 * (N-1-i)
+    const size_t n = targets.size();
+    for (size_t i = 0; i < n; ++i) {
+      targets[i].y() += 2.0 * static_cast<double>((n > 0 ? (n - 1 - i) : 0));
+    }
+  }
+
+  // Re-map targets for triangle formation when exactly 4 drones are used
+  // Mapping: Drone1<-pos2, Drone2<-pos3, Drone3<-pos4, Drone4<-pos1
+  if (formation_type == "triangle" && num_drones_ == 4 && targets.size() >= 4) {
+    std::vector<Eigen::Vector3d> remapped_targets(4);
+    remapped_targets[0] = targets[1];
+    remapped_targets[1] = targets[2];
+    remapped_targets[2] = targets[3];
+    remapped_targets[3] = targets[0];
+    targets = remapped_targets;
+  }
+
+  // (line) 1↔2 스왑/역순 재배치는 사용하지 않음: x 유지, y만 오프셋 적용
+
   // Set desired formation in SwarmGraph
   if (swarm_graph_) {
     swarm_graph_->setDesiredForm(targets);
@@ -207,15 +231,23 @@ std::vector<Eigen::Vector3d> FormationManager::generateFormationPattern(
     }
   }
   else if (formation_type == "line") {
-    // Line formation
-    double spacing = scale / (num_drones - 1);
+    // Line formation optimized for road following
+    // Road width: 6m, safe area: 4m (1m margin each side)
+    double road_width = 6.0;  // From road_segments configuration
+    double safe_width = 4.0;  // Safe driving width with margins
+    double spacing = (num_drones > 1) ? safe_width / (num_drones - 1) : 0.0;
+    
     for (int i = 0; i < num_drones; ++i) {
       pattern.push_back(Eigen::Vector3d(
-        -scale/2 + i * spacing, 
+        -safe_width/2 + i * spacing,  // Range: [-2.0, 2.0] for 4 drones
         0.0, 
         0.0
       ));
     }
+    
+    RCLCPP_INFO(this->get_logger(), 
+                "Line formation pattern: safe_width=%.1f, spacing=%.2f", 
+                safe_width, spacing);
   }
   else if (formation_type == "circle") {
     // Circle formation

@@ -50,6 +50,7 @@ namespace ego_planner
     TrajContainer()
     {
       local_traj.traj_id = 0;
+      local_traj.drone_id = -1;  // Initialize to -1, will be set by PathManager
     }
     ~TrajContainer() {}
 
@@ -61,14 +62,17 @@ namespace ego_planner
       global_traj.glb_t_of_lc_tgt = world_time;
       global_traj.last_glb_t_of_lc_tgt = -1.0;
 
-      local_traj.drone_id = -1;
+      // Don't reset drone_id to -1 here, keep the existing value
       local_traj.duration = 0.0;
       local_traj.traj_id = 0;
     }
 
     void setLocalTraj(const poly_traj::Trajectory &trajectory, const double &world_time, const int drone_id = -1)
     {
-      local_traj.drone_id = drone_id;
+      // Only update drone_id if a valid one is provided
+      if (drone_id >= 0) {
+        local_traj.drone_id = drone_id;
+      }
       local_traj.traj_id++;
       local_traj.duration = trajectory.getTotalDuration();
       local_traj.start_pos = trajectory.getJuncPos(0);

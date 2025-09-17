@@ -111,26 +111,8 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
 void ReplanFSM::init()
 {
-    // PathManager is now initialized in constructor
-    if (!path_manager_) {
-        RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
-        return;
-    }
-    
-    try {
-        path_manager_->initOptimizer();
-        // Only deliver trajectory to optimizer if initialization was successful
-        if (path_manager_->isOptimizerInitialized()) {
-            path_manager_->deliverTrajToOptimizer();
-            RCLCPP_INFO(node_->get_logger(), "Optimizer initialized and trajectory delivered successfully");
-        } else {
-            RCLCPP_ERROR(node_->get_logger(), "Optimizer initialization failed - cannot deliver trajectory");
-            return;
-        }
-    } catch (const std::exception& e) {
-        RCLCPP_ERROR(node_->get_logger(), "Exception during optimizer initialization: %s", e.what());
-        return;
-    }
+    path_manager_->initOptimizer();
+    path_manager_->deliverTrajToOptimizer();
 
     // Only plan global trajectory if we have a valid target
     if (!have_target_) {
@@ -417,15 +399,8 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
     path_manager_->traj_.swarm_traj[recv_id].duration = trajectory.getTotalDuration();
     path_manager_->traj_.swarm_traj[recv_id].start_pos = trajectory.getPos(0.0);
 
-    /* Check Collision */
-    try {
-        if (path_manager_->checkCollision(recv_id)) {
-            changeFSMExecState(REPLAN_TRAJ, "SWARM_CHECK");
-        }
-    } catch (const std::exception& e) {
-        RCLCPP_ERROR(node_->get_logger(), "Exception in collision check: %s", e.what());
-    } catch (...) {
-        RCLCPP_ERROR(node_->get_logger(), "Unknown exception in collision check");
+    if (path_manager_->checkCollision(recv_id)) {
+        changeFSMExecState(REPLAN_TRAJ, "SWARM_CHECK");
     }
 
     /* Check if receive agents have lower drone id */
@@ -515,25 +490,6 @@ void ReplanFSM::globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
 }
 
 bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTraj, bool use_formation) {
-    if (!path_manager_) {
-        RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
-        return false;
-    }
-
-    // 메모리 사용량 체크 - 궤적 계획 전
-    struct rusage usage;
-    getrusage(RUSAGE_SELF, &usage);
-    size_t current_memory = usage.ru_maxrss;
-    
-    // 메모리 사용량이 너무 높으면 계획 중단
-    const size_t MEMORY_LIMIT = 12000000; // 12GB (KB 단위)
-    if (current_memory > MEMORY_LIMIT) {
-        RCLCPP_ERROR(node_->get_logger(), 
-                    "Memory usage too high (%zu MB). Skipping trajectory planning to prevent OOM.", 
-                    current_memory / 1024);
-        return false;
-    }
-
     path_manager_->getLocalTarget(start_pt_, end_pt_, local_target_pt_, local_target_vel_, t_to_target_);
 
     Eigen::Vector3d desired_start_pt, desired_start_vel, desired_start_acc;
@@ -551,43 +507,25 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
         desired_start_acc = start_acc_;
     }
 
-    bool plan_success = false;
-    try {
-        plan_success = path_manager_->computeAndOptimizePath(
-            desired_start_pt, desired_start_vel, desired_start_acc, desired_start_time,
-            local_target_pt_, local_target_vel_, flag_use_poly_init, flag_randomPolyTraj,
-            use_formation, have_local_traj_);
-    } catch (const std::exception& e) {
-        RCLCPP_ERROR(node_->get_logger(), "Exception during trajectory planning: %s", e.what());
-        plan_success = false;
-    }
-
-    // 계획 후 메모리 사용량 확인
-    getrusage(RUSAGE_SELF, &usage);
-    size_t after_memory = usage.ru_maxrss;
-    if (after_memory > current_memory + 100000) { // 100MB 이상 증가시 경고
-        RCLCPP_WARN(node_->get_logger(), "Memory usage increased significantly: %+zd MB (total: %zu MB)", 
-                   (after_memory - current_memory) / 1024, after_memory / 1024);
-    }
+    bool plan_success = path_manager_-> computeAndOptimizePath( 
+        desired_start_pt, desired_start_vel, desired_start_acc,
+        desired_start_time, local_target_pt_, local_target_vel_,
+        (have_new_target_ || flag_use_poly_init),
+        flag_randomPolyTraj, use_formation, have_local_traj_);
 
     have_new_target_ = false;
 
-    // 메시지 발행도 try-catch로 보호
-    try {
-        path_manager::msg::PolyTraj msg2;
-        globalTraj2ROSMsg(msg2);
-        global_path_pub_->publish(msg2);
+    path_manager::msg::PolyTraj msg2;
+    globalTraj2ROSMsg(msg2);
+    global_path_pub_->publish(msg2);
 
-        if (plan_success) {
-            path_manager::msg::PolyTraj msg;
-            polyTraj2ROSMsg(msg);
+    if (plan_success) {
+        path_manager::msg::PolyTraj msg;
+        polyTraj2ROSMsg(msg);
 
-            optimized_path_pub_->publish(msg);
-            broadcast_traj_pub_->publish(msg);
-            have_local_traj_ = true;
-        }
-    } catch (const std::exception& e) {
-        RCLCPP_ERROR(node_->get_logger(), "Exception during message publishing: %s", e.what());
+        optimized_path_pub_->publish(msg);
+        broadcast_traj_pub_->publish(msg);
+        have_local_traj_ = true;
     }
 
     return plan_success;
@@ -612,10 +550,6 @@ bool ReplanFSM::planFromGlobalTraj(int trial_times) {
 }
 
 bool ReplanFSM::planFromLocalTraj(bool flag_use_poly_init, bool use_formation) {
-    if (!path_manager_) {
-        RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
-        return false;
-    }
     double t_debug_start = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
     LocalTrajData *info = &path_manager_->traj_.local_traj;
     double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - path_manager_->traj_.local_traj.start_time;
@@ -665,16 +599,26 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
 
     // Extract formation information and pass to PathManager
     if (path_manager_ && !msg->formation_positions.empty()) {
+        // Ensure optimizer is initialized before setting formation
+        if (!path_manager_->isOptimizerInitialized()) {
+            RCLCPP_INFO(node_->get_logger(), "Initializing optimizer before setting formation");
+            try {
+                path_manager_->initOptimizer();
+                path_manager_->deliverTrajToOptimizer();
+            } catch (const std::exception& e) {
+                RCLCPP_ERROR(node_->get_logger(), "Failed to initialize optimizer: %s", e.what());
+                return;
+            }
+        }
+        
         std::vector<Eigen::Vector3d> formation_positions;
         formation_positions.reserve(msg->formation_positions.size());
         
         for (const auto& pos : msg->formation_positions) {
             formation_positions.emplace_back(pos.x, pos.y, pos.z);
         }
-        
         // Set formation information to optimizer
         path_manager_->setFormationToOptimizer(formation_positions, formation_positions.size());
-        
         RCLCPP_INFO(node_->get_logger(), "Updated formation in PathManager: %s with %zu positions", 
                     msg->formation_type.c_str(), formation_positions.size());
     }
@@ -691,12 +635,6 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         
         RCLCPP_INFO(node_->get_logger(), "Updated target for drone %d to: (%.2f, %.2f, %.2f)", 
                     drone_id_, end_pt_.x(), end_pt_.y(), end_pt_.z());
-        
-        // Initialize PathManager components when we receive the first target
-        if (was_first_target) {
-            init();
-        }
-        
         // Generate global trajectory from current position to new target
         if (have_position_ && path_manager_) {
             RCLCPP_INFO(node_->get_logger(), "Planning global trajectory from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f)",

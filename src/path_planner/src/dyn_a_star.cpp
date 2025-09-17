@@ -1,4 +1,7 @@
 #include "path_planner/dyn_a_star.h"
+#include <cmath>
+#include <cstdlib>
+#include <ctime>
 
 using namespace std;
 using namespace Eigen;
@@ -95,7 +98,7 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
 
     if (checkOccupancy(Index2Coord(start_idx)))
     {
-        //RCLCPP_WARN(rclcpp::get_logger("astar"), "Start point is inside an obstacle.");
+        RCLCPP_WARN(rclcpp::get_logger("astar"), "Start point is inside an obstacle.");
         do
         {
             start_pt = (start_pt - end_pt).normalized() * step_size_ + start_pt;
@@ -106,7 +109,7 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
 
     if (checkOccupancy(Index2Coord(end_idx)))
     {
-        //RCLCPP_WARN(rclcpp::get_logger("astar"), "End point is inside an obstacle.");
+        RCLCPP_WARN(rclcpp::get_logger("astar"), "End point is inside an obstacle.");
         do
         {
             end_pt = (end_pt - start_pt).normalized() * step_size_ + end_pt;
@@ -138,8 +141,8 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
         return false;
     }
 
-    // if ( start_pt(0) > -1 && start_pt(0) < 0 )
-    //     cout << "start_pt=" << start_pt.transpose() << " end_pt=" << end_pt.transpose() << endl;
+    if ( start_pt(0) > -1 && start_pt(0) < 0 )
+        cout << "start_pt=" << start_pt.transpose() << " end_pt=" << end_pt.transpose() << endl;
 
     GridNodePtr startPtr = GridNodeMap_[start_idx(0)][start_idx(1)][start_idx(2)];
     GridNodePtr endPtr = GridNodeMap_[end_idx(0)][end_idx(1)][end_idx(2)];
@@ -199,14 +202,6 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
                     if (neighborIdx(0) < 1 || neighborIdx(0) >= POOL_SIZE_(0) - 1 || 
                         neighborIdx(1) < 1 || neighborIdx(1) >= POOL_SIZE_(1) - 1 || 
                         neighborIdx(2) < 1 || neighborIdx(2) >= POOL_SIZE_(2) - 1)
-                    {
-                        continue;
-                    }
-
-                    // 추가 안전성 검사
-                    if (neighborIdx(0) < 0 || neighborIdx(0) >= POOL_SIZE_(0) || 
-                        neighborIdx(1) < 0 || neighborIdx(1) >= POOL_SIZE_(1) || 
-                        neighborIdx(2) < 0 || neighborIdx(2) >= POOL_SIZE_(2))
                     {
                         continue;
                     }
@@ -284,21 +279,14 @@ vector<Vector3d> AStar::getPath()
     return path;
 }
 
-vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vector3d start_pt, Vector3d end_pt){
+vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vector3d start_pt, Vector3d end_pt, int drone_id){
     // call astar search and get the path
-    if (!AstarSearch(step_size, start_pt, end_pt, true)) {
-        RCLCPP_WARN(rclcpp::get_logger("astar"), "A* search failed with ESDF check, trying without ESDF");
-        if (!AstarSearch(step_size, start_pt, end_pt, false)) {
-            RCLCPP_ERROR(rclcpp::get_logger("astar"), "A* search failed completely");
-            return {};
-        }
-    }
-    
+    AstarSearch(step_size, start_pt, end_pt, true);
     vector<Vector3d> path = getPath();
+    bool is_show_debug = false;
 
-    if (path.empty()) {
-        RCLCPP_ERROR(rclcpp::get_logger("astar"), "Empty path returned");
-        return {};
+    if (drone_id == 2){
+        is_show_debug = true;
     }
 
     // I don't know why, but only try A* again
@@ -312,7 +300,7 @@ vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vect
     vector<Vector3d> simple_path;
     int size = path.size();
     if (size <= 2){
-        RCLCPP_WARN(rclcpp::get_logger("astar"), "the path only have two points");
+        RCLCPP_WARN(rclcpp::get_logger("astar"), "I don't know why, but only try A* again");
         return path;
     }
         
@@ -339,7 +327,6 @@ vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vect
             if (is_safe && i == (size -1)){
                 finish = true;
                 simple_path.push_back(check_pt);
-                break;
             }
 
             if (is_safe){
@@ -349,10 +336,19 @@ vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vect
                 end_idx = i;
                 cut_start = path[end_idx-1];
                 simple_path.push_back(cut_start);
-                break;
             }
         }
     }
+
+    // debug
+    if (is_show_debug){
+        cout << "[simple A* path] : --------- " << endl;
+        int n1 = simple_path.size();
+        cout << "simple A* path size : " << n1 << endl;
+        for (int i=0; i<n1; i++)
+            cout << simple_path[i].transpose() << endl;
+    }
+    
 
     // check the near points and delete it
     bool near_flag;
@@ -375,6 +371,15 @@ vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vect
         }
         
     } while (near_flag);
+
+    // debug
+    if (is_show_debug){
+        cout << "[delete simple path] : --------- " << endl;
+        int n2 = simple_path.size();
+        cout << "delete simple path size : " << n2 << endl;
+        for (int i=0; i<n2; i++)
+            cout << simple_path[i].transpose() << endl;
+    }
     
     // check the path and add a point if two of them are too far away
     bool too_long_flag;
@@ -395,6 +400,15 @@ vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vect
             }
         }
     } while (too_long_flag && debug_num < 10);
+
+    // debug
+    if (is_show_debug){
+        cout << "[final simple path] : --------- " << endl;
+        int n3 = simple_path.size();
+        cout << "final simple path size : " << n3 << endl;
+        for (int i=0; i<n3; i++)
+            cout << simple_path[i].transpose() << endl;
+    }
     
     return simple_path;    
 }

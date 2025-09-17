@@ -8,7 +8,7 @@
 #include "path_planner/grid_map.h"
 #include <queue>
 
-constexpr double inf = 1 >> 20;  
+constexpr double inf = 1e20; 
 
 struct GridNode;
 typedef GridNode *GridNodePtr;
@@ -104,7 +104,7 @@ public:
 
     std::vector<Eigen::Vector3d> getPath();
 
-    std::vector<Eigen::Vector3d> astarSearchAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt);
+    std::vector<Eigen::Vector3d> astarSearchAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, int drone_id);
     
     Eigen::Vector3d getOrigin() const { return grid_map_->getOrigin(); }
     Eigen::Vector3d getMapSize() const { return grid_map_->getMapSize(); }
@@ -127,10 +127,6 @@ inline bool AStar::Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector3i &idx) 
     if (idx(0) < 0 || idx(0) >= POOL_SIZE_(0) || idx(1) < 0 || idx(1) >= POOL_SIZE_(1) || idx(2) < 0 || idx(2) >= POOL_SIZE_(2))
     {
         RCLCPP_ERROR(rclcpp::get_logger("astar"), "Ran out of pool, index=%d %d %d", idx(0), idx(1), idx(2));
-        RCLCPP_ERROR(rclcpp::get_logger("astar"), "Point: (%.2f,%.2f,%.2f), Center: (%.2f,%.2f,%.2f), Step: %.3f", 
-                    pt.x(), pt.y(), pt.z(), center_.x(), center_.y(), center_.z(), step_size_);
-        RCLCPP_ERROR(rclcpp::get_logger("astar"), "Pool limits: X[0,%d) Y[0,%d) Z[0,%d)", 
-                    POOL_SIZE_(0), POOL_SIZE_(1), POOL_SIZE_(2));
         return false;
     }
 
