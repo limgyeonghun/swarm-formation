@@ -6,6 +6,7 @@
 #include "path_planner/dyn_a_star.h"
 #include "path_optimizer/poly_traj_optimizer.h"
 #include "path_optimizer/plan_container.hpp"
+#include "../../common/log_manager.hpp"
 #include <Eigen/Eigen>
 #include <vector>
 #include <chrono>
@@ -93,6 +94,10 @@ namespace path_manager
     bool has_valid_state_;
 
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr simple_path_pub_;
+
+    std::shared_ptr<swarm_formation::LogManager> log_manager_;
+    bool enable_debug_logs_;
+
   };
 
 } // namespace path_manager

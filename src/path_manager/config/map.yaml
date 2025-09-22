@@ -20,10 +20,10 @@
     grid_map/show_esdf_time: false
     
     # Road Boundary Settings (for road following)
-    grid_map/use_road_boundary: false
+    grid_map/use_road_boundary: true
     # [start_x, start_y, end_x, end_y, width, ...]
     # Extended road path for swarm formation following - updated for x-direction movement
     grid_map/road_segments: [
-      -10.0,  -1.5,   100.0, -1.5,   8.0,
+      -10.0,  -0.5,   100.0, -14.5,   10.0,
     ]
-    grid_map/road_margin: 0.1  # Increased safety margin
+    grid_map/road_margin: 0.2  # Increased safety margin

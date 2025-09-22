@@ -5,33 +5,10 @@
 
 namespace ego_planner
 {
-  void PolyTrajOptimizer::initLogFile(const std::string &path)
+  void PolyTrajOptimizer::setLogManager(swarm_formation::LogManager::Ptr log_manager)
   {
-    log_file_path_ = path;
-    log_file_.open(log_file_path_, std::ios::out | std::ios::app);
-    if (!log_file_.is_open())
-    {
-      std::cerr << "Failed to open log file: " << log_file_path_ << std::endl;
-    }
-    else
-    {
-      auto t = std::time(nullptr);
-      auto tm = *std::localtime(&t);
-      log_file_ << "=== Log started at " << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << " ===\n";
-    }
+    log_manager_ = log_manager;
   }
-
-  void PolyTrajOptimizer::closeLogFile()
-  {
-    if (log_file_.is_open())
-    {
-      auto t = std::time(nullptr);
-      auto tm = *std::localtime(&t);
-      log_file_ << "=== Log ended at " << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << " ===\n";
-      log_file_.close();
-    }
-  }
-
 
   bool PolyTrajOptimizer::OptimizeTrajectory_lbfgs(
       const Eigen::MatrixXd &iniState, const Eigen::MatrixXd &finState,
@@ -80,10 +57,11 @@ namespace ego_planner
       use_formation_ = false;
     }
 
-    // Debug: Print L-BFGS parameters (similar to con code)
-    if (enable_debug_logs_) {
-        printf("[ INFO] [DEBUG] L-BFGS params: mem_size=%d, max_iter=%d, g_epsilon=%.2e, min_step=%.2e, use_formation=%d\n", 
-               lbfgs_params.mem_size, lbfgs_params.max_iterations, lbfgs_params.g_epsilon, lbfgs_params.min_step, use_formation);
+    // Debug: Print L-BFGS parameters
+    if (log_manager_ && enable_debug_logs_) {
+        log_manager_->infof("L-BFGS params: mem_size=%d, max_iter=%d, g_epsilon=%f, min_step=%f, use_formation=%d",
+          lbfgs_params.mem_size, lbfgs_params.max_iterations, lbfgs_params.g_epsilon, 
+          lbfgs_params.min_step, use_formation);
     }
 
     iter_num_ = 0;
@@ -101,11 +79,10 @@ namespace ego_planner
         this,
         &lbfgs_params);
     // Log L-BFGS result (only for debugging)
-    if (enable_debug_logs_) {
+    if (log_manager_ && enable_debug_logs_) {
         const char* result_str = lbfgs::lbfgs_strerror(result);
-        printf("[ INFO] [DEBUG] L-BFGS Result: %d (%s)\n", result, result_str);
-        printf("[ INFO] [DEBUG] Iteration info: costFunction calls=%d, max_iterations=%d\n", 
-               iter_num_, lbfgs_params.max_iterations);
+        log_manager_->infof("L-BFGS Result: %d (%s)", result, result_str);
+        log_manager_->infof("Iteration info: costFunction calls=%d, max_iterations=%d", iter_num_, lbfgs_params.max_iterations);
     }
 
     // Collision check (only if obstacles are enabled)
@@ -117,20 +94,27 @@ namespace ego_planner
     double time_ms = (t2 - t1).seconds() * 1000;
     double total_time_ms = (t2 - t0).seconds() * 1000;
 
-    // Final result logging similar to con code
-    printf("\033[32mid = %d, iter=%d, use_formation=%d, time(ms)=%5.3f\033[0m\n", drone_id_, iter_num_, use_formation, time_ms);
-
-    printf("[COST] formation_cost = %.6f (wei_formation=%.3f, similarity=%.6f)\n",
-           dbg_cost_formation_, wei_formation_, debug_similarity_);
-
-    // Additional debugging info (similar to con code)
-    if (enable_debug_logs_) {
-        printf("[ INFO] [DEBUG] L-BFGS Result: %d (%s)\n", result, lbfgs::lbfgs_strerror(result));
-        printf("[ INFO] [DEBUG] Iteration info: costFunction calls=%d, max_iterations=%d, Final cost: %.6f\n", 
-               iter_num_, lbfgs_params.max_iterations, final_cost);
+    // Final result logging
+    if (log_manager_) {
+        log_manager_->infof("Optimization completed: iter=%d, use_formation=%d, time(ms)=%f", iter_num_, use_formation, time_ms);
+        
+        log_manager_->infof("[COST] formation_cost=%f (wei_formation=%f, similarity=%f)", dbg_cost_formation_, wei_formation_, debug_similarity_);
+        
+        // Additional debugging info
+        if (enable_debug_logs_) {
+            const char* result_str = lbfgs::lbfgs_strerror(result);
+            log_manager_->infof("  start_point_z: %f", start_pos.z());
+            log_manager_->debugf("L-BFGS Final Result: %d (%s)", result, result_str);
+            log_manager_->debugf("Final iteration info: costFunction calls=%d, max_iterations=%d, Final cost=%f", 
+              iter_num_, lbfgs_params.max_iterations, final_cost);
+        }
+    } else {
+        // Fallback to macro logger if log_manager is not available
+        LOG_INFO("id=%d, iter=%d, use_formation=%d, time(ms)=%.3f",
+                 drone_id_, iter_num_, use_formation, time_ms);
+        LOG_INFO("[COST] formation_cost=%.6f (wei_formation=%.3f, similarity=%.6f)",
+                 dbg_cost_formation_, wei_formation_, debug_similarity_);
     }
-    printf("=================================================\n");
-    fflush(stdout);
     optimal_points = cps_.points;
 
     showFormationInformation(false, start_pos);
@@ -150,8 +134,7 @@ namespace ego_planner
     int idx = k / 3 * 2;
     int piece_of_idx = floor((idx - 1) / cps_num_prePiece_);
     Eigen::VectorXd durations = traj.getDurations();
-  
-    // 안전 가드: 인덱스 이상 시 전체 길이로 대체
+
     if (piece_of_idx < 0 || piece_of_idx >= N) {
       T_end = durations.sum();
     } else {
@@ -169,32 +152,26 @@ namespace ego_planner
     for (int i = 0; i < i_end; i++)
     {
       Eigen::Vector3d pos = traj.getPos(t);
-  
-      // 핵심: 왜 점유가 1인지 이유를 뽑아본다
+
       int infl = grid_map_->getInflateOccupancy(pos);
       if (infl == 1)
       {
         bool in_map   = grid_map_->isInMap(pos);
-        bool in_road  = grid_map_->isInRoadBoundary(pos);   // road boundary 사용 시 중요
-        int  occ_raw  = grid_map_->getOccupancy(pos);       // 원본 점유(도로 밖이면 1로 나올 수 있음)
+        bool in_road  = grid_map_->isInRoadBoundary(pos);
+        int  occ_raw  = grid_map_->getOccupancy(pos);
         double dist_esdf = 0.0;
         grid_map_->evaluateEDT(pos, dist_esdf);
   
-        RCLCPP_WARN(node_->get_logger(),
-          "[COLLISION] t=%.3f pos=(%.3f, %.3f, %.3f) infl=1 in_map=%d in_road=%d occ=%d esdf=%.3f",
-          t, pos.x(), pos.y(), pos.z(), (int)in_map, (int)in_road, occ_raw, dist_esdf);
-  
-        // 도로 경계 밖이라면 이유를 명시
+        LOG_WARN("[COLLISION] t=%.3f pos=(%.3f, %.3f, %.3f) infl=1 in_map=%d in_road=%d occ=%d esdf=%.3f",
+                 t, pos.x(), pos.y(), pos.z(), (int)in_map, (int)in_road, occ_raw, dist_esdf);
+
         if (in_map && !in_road) {
-          RCLCPP_WARN(node_->get_logger(),
-            "[COLLISION] Road-boundary violation at t=%.3f (treated as obstacle). "
-            "Check grid_map.use_road_boundary/road_width/road_margin/segments.", t);
+          LOG_WARN("[COLLISION] Road-boundary violation at t=%.3f (treated as obstacle). "
+                   "Check grid_map.use_road_boundary/road_width/road_margin/segments.", t);
         }
-  
-        // 맵 밖인 경우(이럴 땐 getInflateOccupancy가 -1인데, 도로경계 로직으로 1이 될 수 있어 log로 확인)
+
         if (!in_map) {
-          RCLCPP_WARN(node_->get_logger(),
-            "[COLLISION] Out of map at t=%.3f. Check map size/origin/resolution.", t);
+          LOG_WARN("[COLLISION] Out of map at t=%.3f. Check map size/origin/resolution.", t);
         }
   
         occ = true;
@@ -260,12 +237,12 @@ namespace ego_planner
 
     opt->iter_num_ += 1;
 
-    // Debug output similar to con code (using printf for speed)
-    if (opt->iter_num_ % 50 == 0 && opt->enable_debug_logs_) {
+    // Debug output for performance monitoring
+    if (opt->iter_num_ % 50 == 0 && opt->log_manager_ && opt->enable_debug_logs_) {
         double total_callback_time = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - t_start).count();
-        printf("[ INFO] [DEBUG] CostFunction iter=%d: Traj=%.2fms, Smooth=%.2fms, PVA=%.2fms, Grad=%.2fms, Time=%.2fms, Total=%.2fms\n",
-               opt->iter_num_, traj_gen_time, smoothness_time, pva_cost_time, grad_time, time_cost_time, total_callback_time);
+        opt->log_manager_->debugf("CostFunction iter=%d: Traj=%fms, Smooth=%fms, PVA=%fms, Grad=%fms, Time=%fms, Total=%fms", 
+          opt->iter_num_, traj_gen_time, smoothness_time, pva_cost_time, grad_time, time_cost_time, total_callback_time);
     }
 
     return smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost;
@@ -488,11 +465,13 @@ namespace ego_planner
     grad_prev_t = 0;
     costp = 0;
     double pt_time = t_now_ + t;
-    vector<Eigen::Vector3d> swarm_graph_pos(formation_size_), swarm_graph_vel(formation_size_);
+    Eigen::Vector3d nanv = Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
+    vector<Eigen::Vector3d> swarm_graph_pos(formation_size_, nanv);
+    vector<Eigen::Vector3d> swarm_graph_vel(formation_size_, nanv);
     
     // Bounds check for drone_id_
     if (drone_id_ < 0 || drone_id_ >= formation_size_) {
-        RCLCPP_WARN(node_->get_logger(), "drone_id_ %d out of bounds (formation_size: %d), using default position", drone_id_, formation_size_);
+        LOG_WARN("drone_id_ %d out of bounds (formation_size: %d), using default position", drone_id_, formation_size_);
         return false;  // Still return false but with warning instead of error
     }
     
@@ -505,18 +484,19 @@ namespace ego_planner
         continue;
 
       if (id >= swarm_trajs_->size()) {
-        RCLCPP_WARN(node_->get_logger(), "Swarm trajectory index %zu out of bounds (size: %zu)", id, swarm_trajs_->size());
+        LOG_WARN("Swarm trajectory index %zu out of bounds (size: %zu)", id, swarm_trajs_->size());
         continue;
       }
       
       // Additional bounds check for formation arrays
       if (id >= formation_size_) {
-        RCLCPP_WARN(node_->get_logger(), "Formation index %zu out of bounds (formation_size: %d)", id, formation_size_);
+        LOG_WARN("Formation index %zu out of bounds (formation_size: %d)", id, formation_size_);
         continue;
       }
       
       // Check if trajectory is properly initialized (drone_id should be valid)
       if (swarm_trajs_->at(id).drone_id < 0) {
+        // keep debug as ROS debug to avoid adding new macro
         RCLCPP_DEBUG(node_->get_logger(), "Skipping uninitialized trajectory at index %zu", id);
         continue;
       }
@@ -543,11 +523,17 @@ namespace ego_planner
     // Verify all positions are valid before updating graph
     bool valid_positions = true;
     for (size_t i = 0; i < swarm_graph_pos.size(); i++) {
-        if (!std::isfinite(swarm_graph_pos[i].norm())) {
-            RCLCPP_WARN(node_->get_logger(), "Invalid position at index %zu", i);
-            valid_positions = false;
-            break;
-        }
+      const auto &pp = swarm_graph_pos[i];
+      const bool nanx = std::isnan(pp.x());
+      const bool nany = std::isnan(pp.y());
+      const bool nanz = std::isnan(pp.z());
+      const bool infx = std::isinf(pp.x());
+      const bool infy = std::isinf(pp.y());
+      const bool infz = std::isinf(pp.z());
+      if (!std::isfinite(pp.norm()) || nanx || nany || nanz || infx || infy || infz) {
+        valid_positions = false;
+        break;
+      }
     }
     
     if (!valid_positions) {
@@ -556,9 +542,6 @@ namespace ego_planner
     
     // Ensure swarm_graph_pos has the correct size before updating
     if (static_cast<int>(swarm_graph_pos.size()) != formation_size_) {
-        RCLCPP_WARN(node_->get_logger(), 
-                    "Swarm graph position vector size (%zu) doesn't match formation_size (%d)", 
-                    swarm_graph_pos.size(), formation_size_);
         return false;
     }
     
@@ -579,8 +562,8 @@ namespace ego_planner
 
       // Bounds check for drone_id_ in swarm_grad
       if (static_cast<size_t>(drone_id_) >= swarm_grad.size()) {
-        RCLCPP_WARN(node_->get_logger(), "drone_id_ %d out of bounds for swarm_grad (size: %zu)", 
-                    drone_id_, swarm_grad.size());
+        LOG_WARN("drone_id_ %d out of bounds for swarm_grad (size: %zu)", 
+                 drone_id_, swarm_grad.size());
         return false;
       }
       
@@ -590,7 +573,7 @@ namespace ego_planner
       {
         // Additional bounds check for gradient arrays
         if (id >= swarm_grad.size() || id >= swarm_graph_vel.size()) {
-          RCLCPP_WARN(node_->get_logger(), "Gradient array index %zu out of bounds", id);
+          LOG_WARN("Gradient array index %zu out of bounds", id);
           continue;
         }
         
@@ -903,10 +886,15 @@ namespace ego_planner
     
     node_->declare_parameter("enable_obstacles", true);
     node_->get_parameter("enable_obstacles", enable_obstacles_);
-    RCLCPP_INFO(node_->get_logger(), "Obstacle avoidance: %s", enable_obstacles_ ? "enabled" : "disabled");
     
-    node_->declare_parameter("enable_debug_logs", false);
+    // Get enable_debug_logs parameter (declared in replan_fsm)
     node_->get_parameter("enable_debug_logs", enable_debug_logs_);
+    
+    // Use conditional logging - only RCLCPP when debug logs disabled, only LogManager when enabled
+    if (!enable_debug_logs_) {
+        RCLCPP_INFO(node_->get_logger(), "Obstacle avoidance: %s", enable_obstacles_ ? "enabled" : "disabled");
+        RCLCPP_INFO(node_->get_logger(), "Debug logging: disabled (using RCLCPP only)");
+    }
     node_->declare_parameter("optimization/weight_obstacle", 1000.0);
     node_->get_parameter("optimization/weight_obstacle", wei_obs_);
     node_->declare_parameter("optimization/weight_swarm", 0.0);
@@ -929,10 +917,14 @@ namespace ego_planner
     node_->declare_parameter("optimization/max_acc", 1.0);
     node_->get_parameter("optimization/max_acc", max_acc_);
 
-    std::string log_file_path;
-    node_->declare_parameter("optimization/log_file_path", "/home/suv/ws/ros_ws/optimizer.log");
-    node_->get_parameter("optimization/log_file_path", log_file_path);
-    initLogFile(log_file_path);
+    // Log initialization based on enable_debug_logs setting
+    if (enable_debug_logs_) {
+        if (log_manager_) {
+            log_manager_->infof("PolyTrajOptimizer parameters initialized");
+            log_manager_->infof("Obstacle avoidance: %s", enable_obstacles_ ? "enabled" : "disabled");
+            log_manager_->infof("Debug logging: enabled (using LogManager)");
+        }
+    }
 
     swarm_graph_.reset(new SwarmGraph);
     
@@ -941,7 +933,7 @@ namespace ego_planner
     node_->declare_parameter("optimization/formation_type", initial_formation_type);
     node_->get_parameter("optimization/formation_type", initial_formation_type);
     
-    RCLCPP_INFO(node_->get_logger(), "Setting initial formation type: %d", initial_formation_type);
+    LOG_INFO("Setting initial formation type: %d", initial_formation_type);
     setDesiredFormation(initial_formation_type);
   }
 
@@ -979,7 +971,7 @@ namespace ego_planner
   {
     // Safety check: ensure node_ is properly initialized before using logger
     if (!node_) {
-      std::cerr << "ERROR: PolyTrajOptimizer node_ is null in setFormation!" << std::endl;
+      LOG_ERROR("PolyTrajOptimizer node_ is null in setFormation!");
       return;
     }
     
@@ -998,23 +990,23 @@ namespace ego_planner
       swarm_graph_->setDesiredForm(adjusted_formation);
       use_formation_ = true;
       
-      RCLCPP_INFO(node_->get_logger(), "Formation set with %d positions for optimizer (drone %d)", 
-                  static_cast<int>(adjusted_formation.size()), drone_id_);
+      LOG_INFO("Formation set with %d positions for optimizer (drone %d)", 
+               static_cast<int>(adjusted_formation.size()), drone_id_);
       
       // Print current formation details
-      RCLCPP_INFO(node_->get_logger(), "=== CURRENT FORMATION CONFIGURATION ===");
-      RCLCPP_INFO(node_->get_logger(), "Formation Size: %d", formation_size_);
-      RCLCPP_INFO(node_->get_logger(), "Drone ID: %d", drone_id_);
-      RCLCPP_INFO(node_->get_logger(), "Formation Positions:");
+      LOG_INFO("=== CURRENT FORMATION CONFIGURATION ===");
+      LOG_INFO("Formation Size: %d", formation_size_);
+      LOG_INFO("Drone ID: %d", drone_id_);
+      LOG_INFO("Formation Positions:");
       for (size_t i = 0; i < adjusted_formation.size(); ++i) {
-        RCLCPP_INFO(node_->get_logger(), "  Drone %zu: [%.3f, %.3f, %.3f]", 
-                    i, adjusted_formation[i].x(), adjusted_formation[i].y(), adjusted_formation[i].z());
+        LOG_INFO("  Drone %zu: [%.3f, %.3f, %.3f]", 
+                 i, adjusted_formation[i].x(), adjusted_formation[i].y(), adjusted_formation[i].z());
       }
-      RCLCPP_INFO(node_->get_logger(), "=====================================");
+      LOG_INFO("=====================================");
     } else {
       use_formation_ = false;
       formation_size_ = 0;
-      RCLCPP_WARN(node_->get_logger(), "Failed to set formation - swarm_graph not initialized or empty positions");
+      LOG_WARN("Failed to set formation - swarm_graph not initialized or empty positions");
     }
   }
 

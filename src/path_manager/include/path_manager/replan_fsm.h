@@ -10,6 +10,32 @@
 #include "path_manager/msg/formation_target.hpp"
 #include "path_manager/path_manager.h"
 #include "path_optimizer/plan_container.hpp"
+#include "../../common/log_manager.hpp"
+
+// Conditional logging macros to avoid code duplication
+#define FSM_LOG_INFO(msg, ...) do { \
+    if (!enable_debug_logs_) { \
+        RCLCPP_INFO(node_->get_logger(), msg, ##__VA_ARGS__); \
+    } else if (log_manager_) { \
+        log_manager_->infof(msg, ##__VA_ARGS__); \
+    } \
+} while(0)
+
+#define FSM_LOG_WARN(msg, ...) do { \
+    if (!enable_debug_logs_) { \
+        RCLCPP_WARN(node_->get_logger(), msg, ##__VA_ARGS__); \
+    } else if (log_manager_) { \
+        log_manager_->warnf(msg, ##__VA_ARGS__); \
+    } \
+} while(0)
+
+#define FSM_LOG_ERROR(msg, ...) do { \
+    if (!enable_debug_logs_) { \
+        RCLCPP_ERROR(node_->get_logger(), msg, ##__VA_ARGS__); \
+    } else if (log_manager_) { \
+        log_manager_->errorf(msg, ##__VA_ARGS__); \
+    } \
+} while(0)
 
 namespace path_manager {
 
@@ -85,6 +111,9 @@ private:
     double n_seconds_ahead_;
     bool rviz_simulation_;
     bool flag_escape_emergency_;
+    bool enable_debug_logs_;
+
+    std::unique_ptr<swarm_formation::LogManager> log_manager_;
 };
 
 }  // namespace path_manager

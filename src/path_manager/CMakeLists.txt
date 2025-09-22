@@ -43,6 +43,7 @@ add_library(${PROJECT_NAME}_lib
   src/path_manager.cpp
   src/replan_fsm.cpp
   src/formation_manager.cpp
+  ../common/log_manager.cpp
 )
 
 ament_target_dependencies(${PROJECT_NAME}_lib

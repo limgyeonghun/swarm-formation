@@ -12,6 +12,14 @@ namespace path_manager
           is_optimizer_initialized_(false),
           first_call_(true)
     {
+        log_manager_ = std::make_shared<swarm_formation::LogManager>(
+            node_->get_name(), "./logs/runtime", swarm_formation::LogManager::INFO);
+        
+        enable_debug_logs_ = false;
+        if (node_->has_parameter("enable_debug_logs")) {
+            node_->get_parameter("enable_debug_logs", enable_debug_logs_);
+        }
+            
         int drone_id;
         node_->get_parameter("drone_id", drone_id);
         traj_.local_traj.drone_id = drone_id;
@@ -97,6 +105,9 @@ namespace path_manager
             // Set parameters first to ensure node_ is initialized
             poly_traj_opt_->setParam(node_);
             
+            // Set LogManager for unified logging
+            poly_traj_opt_->setLogManager(log_manager_);
+            
             // Then set other components
             poly_traj_opt_->setEnvironment(grid_map_);
             poly_traj_opt_->setDroneId(traj_.local_traj.drone_id);
@@ -129,13 +140,20 @@ namespace path_manager
         }
         
         static int count = 0;
-        RCLCPP_INFO(node_->get_logger(), 
-                   "\033[47;30m\n[drone %d replan %d]==============================================\033[0m",
-                   traj_.local_traj.drone_id, count++);
+        if (enable_debug_logs_) {
+            log_manager_->infof("=== DRONE %d REPLAN %d START ===", 
+                               traj_.local_traj.drone_id, count++);
+            log_manager_->infof("Start: (%.2f,%.2f,%.2f) -> Target: (%.2f,%.2f,%.2f), Distance: %.2fm",
+                               start_pt(0), start_pt(1), start_pt(2), 
+                               local_target_pt(0), local_target_pt(1), local_target_pt(2),
+                               (start_pt - local_target_pt).norm());
+        }
 
         if ((start_pt - local_target_pt).norm() < 0.2)
         {
-            RCLCPP_INFO(node_->get_logger(), "Close to goal");
+            if (enable_debug_logs_) {
+                log_manager_->info("Close to goal");
+            }
             return false;
         }
         auto t_start = rclcpp::Clock(RCL_ROS_TIME).now();
@@ -145,7 +163,7 @@ namespace path_manager
         poly_traj::MinJerkOpt initMJO;
         if (!computeInitReferenceState(start_pt, start_vel, start_acc, local_target_pt, local_target_vel, ts, initMJO, flag_polyInit))
         {
-            RCLCPP_ERROR(node_->get_logger(), "Failed to compute initial reference state.");
+            log_manager_->error("Failed to compute initial reference state.");
             return false;
         }
 
@@ -171,7 +189,7 @@ namespace path_manager
         
         if (!flag_success)
         {
-            RCLCPP_ERROR(node_->get_logger(), "Failed to optimize trajectory.");
+            log_manager_->error("Failed to optimize trajectory.");
             return false;
         }
 
@@ -182,10 +200,11 @@ namespace path_manager
         sum_time += total_time_sec;
         count_success++;
         
-        RCLCPP_INFO(node_->get_logger(), 
-                   "total time:\033[42m%.3f\033[0m,init:%.3f,optimize:%.3f,avg_time=%.3f,count_success=%d",
-                   total_time_sec, t_init.nanoseconds() / 1e9, t_opt.nanoseconds() / 1e9, 
-                   sum_time / count_success, count_success);
+        if (enable_debug_logs_) {
+            log_manager_->infof("PERFORMANCE - Total:%.3fms, Init:%.3fms, Optimize:%.3fms, Avg:%.3fms, Success:%d",
+                               total_time_sec * 1000, t_init.nanoseconds() / 1e6, t_opt.nanoseconds() / 1e6, 
+                               (sum_time / count_success) * 1000, count_success);
+        }
 
         if (have_local_traj && use_formation)
         {
@@ -202,6 +221,11 @@ namespace path_manager
         {
             traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(),
                             rclcpp::Clock(RCL_ROS_TIME).now().seconds(), traj_.local_traj.drone_id);
+        }
+        
+        if (enable_debug_logs_) {
+            log_manager_->infof("=== DRONE %d REPLAN COMPLETED SUCCESSFULLY ===", 
+                               traj_.local_traj.drone_id);
         }
         return true;
     }

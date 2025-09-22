@@ -9,10 +9,38 @@
 #include <path_planner/dyn_a_star.h>
 #include <path_planner/grid_map.h>
 #include <swarm_graph/swarm_graph.hpp>
+#include "../../common/log_manager.hpp"
+
+// Forward declaration for LogManager
+using LogManager = swarm_formation::LogManager;
 #include "lbfgs.hpp"
 #include "plan_container.hpp"
 #include "poly_traj_utils.hpp"
 #include "munkres_algorithm.hpp"
+
+#define LOG_INFO(msg, ...) do { \
+  if (!enable_debug_logs_) { \
+      RCLCPP_INFO(node_->get_logger(), "[POLY_TRAJ_OPT][drone %d] " msg, drone_id_, ##__VA_ARGS__); \
+  } else if (log_manager_) { \
+      log_manager_->infof("[POLY_TRAJ_OPT][drone %d] " msg, drone_id_, ##__VA_ARGS__); \
+  } \
+} while(0)
+
+#define LOG_WARN(msg, ...) do { \
+  if (!enable_debug_logs_) { \
+      RCLCPP_WARN(node_->get_logger(), "[POLY_TRAJ_OPT][drone %d] " msg, drone_id_, ##__VA_ARGS__); \
+  } else if (log_manager_) { \
+      log_manager_->warnf("[POLY_TRAJ_OPT][drone %d] " msg, drone_id_, ##__VA_ARGS__); \
+  } \
+} while(0)
+
+#define LOG_ERROR(msg, ...) do { \
+  if (!enable_debug_logs_) { \
+      RCLCPP_ERROR(node_->get_logger(), "[POLY_TRAJ_OPT][drone %d] " msg, drone_id_, ##__VA_ARGS__); \
+  } else if (log_manager_) { \
+      log_manager_->errorf("[POLY_TRAJ_OPT][drone %d] " msg, drone_id_, ##__VA_ARGS__); \
+  } \
+} while(0)
 
 namespace ego_planner
 {
@@ -49,8 +77,7 @@ namespace ego_planner
     SwarmTrajData *swarm_trajs_{nullptr};
     ConstrainPoints cps_;
     SwarmGraph::Ptr swarm_graph_;
-    std::ofstream log_file_;
-    std::string log_file_path_;
+    swarm_formation::LogManager::Ptr log_manager_;
 
     int drone_id_;
     int cps_num_prePiece_;
@@ -91,18 +118,17 @@ namespace ego_planner
 
     double t_now_;
     bool enable_obstacles_;
-    bool enable_debug_logs_;  // Debug logging control
+    bool enable_debug_logs_;
 
     rclcpp::Node::SharedPtr node_;
 
   public:
     PolyTrajOptimizer() {}
     // ~PolyTrajOptimizer() { }
-    ~PolyTrajOptimizer() { closeLogFile(); }
+    ~PolyTrajOptimizer() = default;
 
     void setParam(const rclcpp::Node::SharedPtr &node);
-    void initLogFile(const std::string &path);
-    void closeLogFile();
+    void setLogManager(swarm_formation::LogManager::Ptr log_manager);
     void setEnvironment(const GridMap::Ptr &map);
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);

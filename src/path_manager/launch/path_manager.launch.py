@@ -212,30 +212,25 @@ def create_drone_nodes(context, *args, **kwargs):
         output='screen',
     )
 
-    # 순차적 시작을 위한 지연 시간 설정
     immediate_actions = [visualization] + rover_nodes + jfi_nodes
 
-    # 1단계: formation_manager 먼저 시작 (3초 후)
     formation_manager_delayed = TimerAction(
         period=0.0,
         actions=[formation_manager],
     )
 
-    # 2단계: traj_nodes 시작 (5초 후)
     traj_nodes_delayed = TimerAction(
         period=0.0,
         actions=traj_nodes,
     )
 
-    # 3단계: replan_nodes 시작 (7초 후) - 궤적 서버가 먼저 준비된 후
     replan_nodes_delayed = TimerAction(
         period=0.0,
         actions=replan_nodes,
     )
 
-    # 4단계: formation_commander 마지막 시작 (9초 후) - 모든 노드가 준비된 후
     formation_commander_delayed = TimerAction(
-        period=5.0,
+        period=0.0,
         actions=[formation_commander],
     )
 
