@@ -103,6 +103,7 @@ public:
   inline int getOccupancy(const Eigen::Vector3d& pos);
   inline int getOccupancy(const Eigen::Vector3i& id);
   inline int getInflateOccupancy(const Eigen::Vector3d& pos);
+  inline int getInflateOccupancy2D(const Eigen::Vector3d& pos);  // 2D optimized version
   inline double getResolution();
 
   Eigen::Vector3i getVoxelNum() const { return mp_.map_voxel_num_; }
@@ -249,9 +250,27 @@ inline bool GridMap::isKnownOccupied(const Eigen::Vector3i& id) {
   return md_.occupancy_buffer_inflate_[adr] == 1;
 }
 
+inline int GridMap::getInflateOccupancy2D(const Eigen::Vector3d& pos) {
+  if (!isInMap(pos)) return -1;
+  
+  // 2D에서는 도로 경계 체크가 더 중요
+  if (!isInRoadBoundary(pos)) return 1;
+  
+  Eigen::Vector3i id;
+  posToIndex(pos, id);
+  
+  // 2D에서는 z축 상관없이 해당 x,y 위치의 모든 z레벨 체크
+  for (int z = 0; z < mp_.map_voxel_num_(2); z++) {
+    if (md_.occupancy_buffer_inflate_[toAddress(id(0), id(1), z)] == 1) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 inline bool GridMap::isInRoadBoundary(const Eigen::Vector3d& pos) {
   if (!mp_.use_road_boundary_) return true;
-  if (mp_.road_segments_.empty()) return false;
+  if (mp_.road_segments_.empty()) return true;  // 도로 세그먼트가 없으면 모든 곳이 유효
 
   for (const auto& segment : mp_.road_segments_) {
 

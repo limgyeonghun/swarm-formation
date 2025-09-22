@@ -88,7 +88,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     }
     else
     {
-        std::string px4_position_topic = "/vehicle" + std::to_string(drone_id_ + 1) + "/fmu/out/vehicle_local_position";
+        std::string px4_position_topic = "/vehicle" + std::to_string(drone_id_ + 1) + "/fmu/out/vehicle_local_position_v1";
         px4_position_sub_ = node_->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
             px4_position_topic, sensor_qos, std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1));
     }
@@ -646,27 +646,17 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
             iniState.col(0) = start_pt_;
             finState.col(0) = end_pt_;
 
-            // 현재 시스템 메모리 사용량 확인
-            struct rusage usage;
-            getrusage(RUSAGE_SELF, &usage);
-            size_t current_memory = usage.ru_maxrss;
-            RCLCPP_INFO(node_->get_logger(), "Current memory usage before planning: %zu MB", current_memory / 1024);
-            
-            // 메모리 사용량이 너무 높으면 경고
-            const size_t memory_warning_threshold = 8000000; // 약 8GB (KB 단위)
-            if (current_memory > memory_warning_threshold) {
-                RCLCPP_WARN(node_->get_logger(), "High memory usage detected: %zu MB. Consider restarting the node.", 
-                           current_memory / 1024);
+            if (!isMapReady(start_pt_)) {
+                RCLCPP_WARN(node_->get_logger(), "Map not ready for planning, delaying formation target execution");
+                rclcpp::sleep_for(std::chrono::milliseconds(100));
+                if (!isMapReady(start_pt_)) {
+                    RCLCPP_ERROR(node_->get_logger(), "Map still not ready after delay, attempting planning anyway");
+                }
             }
             
             bool success = path_manager_->planGlobalTraj(start_pt_, iniState.col(1), iniState.col(2),
                                                          {end_pt_}, finState.col(1), finState.col(2));
             
-            // 계획 후 메모리 사용량 확인
-            getrusage(RUSAGE_SELF, &usage);
-            size_t after_memory = usage.ru_maxrss;
-            RCLCPP_INFO(node_->get_logger(), "Memory usage after planning: %zu MB (change: %+zd MB)", 
-                       after_memory / 1024, (after_memory - current_memory) / 1024);
             if (success) {
                 RCLCPP_INFO(node_->get_logger(), "Successfully generated global trajectory to formation target!");
                 
@@ -701,6 +691,21 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
             }
         }
     }
+}
+
+bool ReplanFSM::isMapReady(const Eigen::Vector3d& start_pos) {
+    if (!path_manager_) {
+        RCLCPP_WARN(node_->get_logger(), "PathManager not initialized yet");
+        return false;
+    }
+    
+    bool map_ready = path_manager_->isMapReady(start_pos);
+    if (!map_ready) {
+        RCLCPP_DEBUG(node_->get_logger(), "Map not ready for position (%f,%f,%f)", 
+                    start_pos(0), start_pos(1), start_pos(2));
+    }
+    
+    return map_ready;
 }
 
 

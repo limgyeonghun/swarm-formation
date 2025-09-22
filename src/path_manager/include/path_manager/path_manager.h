@@ -69,6 +69,7 @@ namespace path_manager
     TrajContainer traj_;
     
     void updateRobotState(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& local_target_pt);
+    bool isMapReady(const Eigen::Vector3d& start_pos) const;
 
   private:
     bool computeInitReferenceState(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel,

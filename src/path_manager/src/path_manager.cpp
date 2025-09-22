@@ -407,4 +407,31 @@ bool PathManager::checkCollision(int drone_id)
     return false;
 }
 
+bool PathManager::isMapReady(const Eigen::Vector3d& start_pos) const {
+    if (!grid_map_) {
+        return false;
+    }
+
+    if (!grid_map_->isInMap(start_pos)) {
+        return false;
+    }
+
+    Eigen::Vector3i start_idx;
+    grid_map_->posToIndex(start_pos, start_idx);
+
+    int check_radius = 1;
+    for (int dx = -check_radius; dx <= check_radius; dx++) {
+        for (int dy = -check_radius; dy <= check_radius; dy++) {
+            Eigen::Vector3i check_idx = start_idx + Eigen::Vector3i(dx, dy, 0);
+            if (grid_map_->isInMap(check_idx)) {
+                if (grid_map_->isUnknown(check_idx)) {
+                    return false;
+                }
+            }
+        }
+    }
+    
+    return true;
+}
+
 } // namespace path_manager

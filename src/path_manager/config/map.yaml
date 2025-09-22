@@ -2,8 +2,8 @@
   ros__parameters:
     # Grid Map Basic Settings (2D for Rover) - Extended for long path
     grid_map/resolution: 0.1
-    grid_map/map_size_x: 120.0
-    grid_map/map_size_y: 120.0  # Extended to 120m for (0,0) -> (-1,100) path
+    grid_map/map_size_x: 200.0  # Extended to support x=80m movement
+    grid_map/map_size_y: 60.0  # Extended to 120m for (0,0) -> (-1,100) path
     grid_map/map_size_z: 1.0   # Minimal height for 2D operation
     grid_map/frame_id: "world"
     
@@ -20,10 +20,10 @@
     grid_map/show_esdf_time: false
     
     # Road Boundary Settings (for road following)
-    grid_map/use_road_boundary: true
+    grid_map/use_road_boundary: false
     # [start_x, start_y, end_x, end_y, width, ...]
-    # Extended road path for swarm formation following
+    # Extended road path for swarm formation following - updated for x-direction movement
     grid_map/road_segments: [
-      1.5,  -10.0,  1.5,  100.0,  8.0,
+      -10.0,  -1.5,   100.0, -1.5,   8.0,
     ]
     grid_map/road_margin: 0.1  # Increased safety margin

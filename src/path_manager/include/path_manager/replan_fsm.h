@@ -46,6 +46,7 @@ private:
     bool planFromGlobalTraj(int trial_times = 1);
     bool planFromLocalTraj(bool flag_use_poly_init, bool use_formation);
     void changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_call);
+    bool isMapReady(const Eigen::Vector3d& start_pos);
 
     std::shared_ptr<PathManager> path_manager_;
 

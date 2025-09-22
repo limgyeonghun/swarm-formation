@@ -954,15 +954,7 @@ namespace ego_planner
     Eigen::Vector3d map_size = grid_map_->getMapSize();
     double resolution = grid_map_->getResolution();
     
-    // Add safety margin and ensure minimum pool size
-    int pool_x = std::max(800, static_cast<int>(std::ceil(map_size.x() / resolution * 1.2)));
-    int pool_y = std::max(800, static_cast<int>(std::ceil(map_size.y() / resolution * 1.2)));
-    int pool_z = std::max(20, static_cast<int>(std::ceil(map_size.z() / resolution * 1.2)));
-    
-    Eigen::Vector3i pool_size(pool_x, pool_y, pool_z);
-    
-    RCLCPP_INFO(node_->get_logger(), "Setting A* pool size to (%d, %d, %d) for map size (%.1f, %.1f, %.1f)m with resolution %.2f", 
-                pool_x, pool_y, pool_z, map_size.x(), map_size.y(), map_size.z(), resolution);
+    Eigen::Vector3i pool_size(800, 200, 20);
 
     a_star_->initGridMap(grid_map_, pool_size);
   }

@@ -53,29 +53,29 @@ private:
 
         switch (command_count_ % 4) {
             case 0:
-                msg.formation_center.x = 0.0;
-                msg.formation_center.y = 80.0;
+                msg.formation_center.x = 80.0;
+                msg.formation_center.y = -12.5;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "square";
-                msg.formation_scale = 2.0;
+                msg.formation_scale = 3.0;
                 break;
             case 1:
-                msg.formation_center.x = 0.0;
-                msg.formation_center.y = 80.0;
+                msg.formation_center.x = 80.0;
+                msg.formation_center.y = -12.5;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "triangle";
                 msg.formation_scale = 2.5;
                 break;
             case 2:
-                msg.formation_center.x = 0.0;
-                msg.formation_center.y = 80.0;
+                msg.formation_center.x = 85.0;
+                msg.formation_center.y = -12.5;
                 msg.formation_center.z = 0.0;
-                msg.formation_type = "line";
-                msg.formation_scale = 4.0;
+                msg.formation_type = "square";
+                msg.formation_scale = 3.0;
                 break;
             case 3:
-                msg.formation_center.x = 0.0;
-                msg.formation_center.y = 80.0;
+                msg.formation_center.x = 80.0;
+                msg.formation_center.y = -12.5;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "square";
                 msg.formation_scale = 2.0;

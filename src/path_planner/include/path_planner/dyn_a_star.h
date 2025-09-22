@@ -50,9 +50,13 @@ private:
     inline void coord2gridIndexFast(const double x, const double y, const double z, int &id_x, int &id_y, int &id_z);
 
     double getDiagHeu(GridNodePtr node1, GridNodePtr node2);
+    double getDiagHeu2D(GridNodePtr node1, GridNodePtr node2);
     double getManhHeu(GridNodePtr node1, GridNodePtr node2);
+    double getManhHeu2D(GridNodePtr node1, GridNodePtr node2);
     double getEuclHeu(GridNodePtr node1, GridNodePtr node2);
+    double getEuclHeu2D(GridNodePtr node1, GridNodePtr node2);
     inline double getHeu(GridNodePtr node1, GridNodePtr node2);
+    inline double getHeu2D(GridNodePtr node1, GridNodePtr node2);
 
     bool ConvertToIndexAndAdjustStartEndPoints(const Eigen::Vector3d start_pt, const Eigen::Vector3d end_pt, Eigen::Vector3i &start_idx, Eigen::Vector3i &end_idx);
 
@@ -61,8 +65,22 @@ private:
 
     //bool (*checkOccupancyPtr)( const Eigen::Vector3d &pos );
     
-    inline bool checkOccupancy(const Eigen::Vector3d &pos) { return (bool)grid_map_->getInflateOccupancy(pos); }
+    inline bool checkOccupancy(const Eigen::Vector3d &pos) { 
+        int occ = grid_map_->getInflateOccupancy(pos);
+        return (occ > 0);  // -1(맵 밖)은 false, 1(장애물)은 true, 0(자유공간)은 false
+    }
+    inline bool checkOccupancy2D(const Eigen::Vector3d &pos) { 
+        int occ = grid_map_->getInflateOccupancy2D(pos);
+        return (occ > 0);  // -1(맵 밖)은 false, 1(장애물)은 true, 0(자유공간)은 false
+    }
     inline bool checkOccupancy_esdf(const Eigen::Vector3d &pos){
+        const double dist = 0.2;
+        if (grid_map_->getDistance(pos) < dist ) 
+            return true;
+        else
+            return false;
+    }
+    inline bool checkOccupancy_esdf2D(const Eigen::Vector3d &pos){
         const double dist = 0.2;
         if (grid_map_->getDistance(pos) < dist ) 
             return true;
@@ -79,16 +97,24 @@ private:
     // }
 
     std::vector<GridNodePtr> retrievePath(GridNodePtr current);
+    // std::vector<GridNodePtr> retrieveBidirectionalPath(GridNodePtr meetNode, GridNodePtr startPtr, GridNodePtr endPtr);
+    
+    // Jump Point Search helper functions (currently unused)
+    // GridNodePtr jump(GridNodePtr current, int dx, int dy, int dz, GridNodePtr goal);
+    // bool isForced(GridNodePtr node, int dx, int dy, int dz);
+    // std::vector<std::pair<int,int>> getJumpSuccessors(GridNodePtr current, GridNodePtr goal);
 
     double step_size_, inv_step_size_;
     Eigen::Vector3d center_;
     Eigen::Vector3i CENTER_IDX_, POOL_SIZE_;
-    const double tie_breaker_ = 1.0 + 1.0 / 10000;
+    const double tie_breaker_ = 1.0 + 1.0 / 10000;  // tie-breaker 최적화
+    const int max_iterations_ = 50000;  // 최대 반복 횟수 제한
 
     std::vector<GridNodePtr> gridPath_;
 
     GridNodePtr ***GridNodeMap_;
     std::priority_queue<GridNodePtr, std::vector<GridNodePtr>, NodeComparator> openSet_;
+    // std::priority_queue<GridNodePtr, std::vector<GridNodePtr>, NodeComparator> openSetReverse_;
 
     int rounds_{0};
 
@@ -101,10 +127,21 @@ public:
     void initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size);
 
     bool AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check);
-
+    
+    // 2D optimized A* search for rover pathfinding
+    bool AstarSearch2D(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check);
+    
+    // Enhanced search algorithms for better pathfinding (currently unused)
+    // bool BidirectionalAstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check);
+    // bool JumpPointSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check);
+    
     std::vector<Eigen::Vector3d> getPath();
 
+    // Main path planning function - uses 2D A* search by default
     std::vector<Eigen::Vector3d> astarSearchAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, int drone_id);
+    
+    // 2D optimized path planning with simplification for rovers
+    std::vector<Eigen::Vector3d> astarSearch2DAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, int drone_id);
     
     Eigen::Vector3d getOrigin() const { return grid_map_->getOrigin(); }
     Eigen::Vector3d getMapSize() const { return grid_map_->getMapSize(); }
@@ -113,6 +150,11 @@ public:
 inline double AStar::getHeu(GridNodePtr node1, GridNodePtr node2)
 {
     return tie_breaker_ * getDiagHeu(node1, node2);
+}
+
+inline double AStar::getHeu2D(GridNodePtr node1, GridNodePtr node2)
+{
+    return tie_breaker_ * getDiagHeu2D(node1, node2);
 }
 
 inline Eigen::Vector3d AStar::Index2Coord(const Eigen::Vector3i &index) const
@@ -127,6 +169,7 @@ inline bool AStar::Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector3i &idx) 
     if (idx(0) < 0 || idx(0) >= POOL_SIZE_(0) || idx(1) < 0 || idx(1) >= POOL_SIZE_(1) || idx(2) < 0 || idx(2) >= POOL_SIZE_(2))
     {
         RCLCPP_ERROR(rclcpp::get_logger("astar"), "Ran out of pool, index=%d %d %d", idx(0), idx(1), idx(2));
+        RCLCPP_ERROR(rclcpp::get_logger("astar"), "Ran out of pool, pt=(%f,%f,%f)", pt(0), pt(1), pt(2));
         return false;
     }
 

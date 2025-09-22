@@ -235,7 +235,7 @@ def create_drone_nodes(context, *args, **kwargs):
 
     # 4단계: formation_commander 마지막 시작 (9초 후) - 모든 노드가 준비된 후
     formation_commander_delayed = TimerAction(
-        period=0.0,
+        period=5.0,
         actions=[formation_commander],
     )
 
