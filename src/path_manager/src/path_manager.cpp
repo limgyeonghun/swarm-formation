@@ -101,12 +101,12 @@ namespace path_manager
             }
             
             poly_traj_opt_ = std::make_unique<ego_planner::PolyTrajOptimizer>();
+
+            // Set LogManager for unified logging
+            poly_traj_opt_->setLogManager(log_manager_);
             
             // Set parameters first to ensure node_ is initialized
             poly_traj_opt_->setParam(node_);
-            
-            // Set LogManager for unified logging
-            poly_traj_opt_->setLogManager(log_manager_);
             
             // Then set other components
             poly_traj_opt_->setEnvironment(grid_map_);
