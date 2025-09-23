@@ -2,12 +2,12 @@
 #define REPLAN_FSM_H
 
 #include <rclcpp/rclcpp.hpp>
-#include <geometry_msgs/msg/point_stamped.hpp>
 #include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <Eigen/Dense>
 #include "path_manager/msg/poly_traj.hpp"
 #include "path_manager/msg/formation_target.hpp"
+#include "path_manager/msg/position_command.hpp"
 #include "path_manager/path_manager.h"
 #include "path_optimizer/plan_container.hpp"
 #include "../../common/log_manager.hpp"
@@ -55,9 +55,8 @@ public:
     ~ReplanFSM() {};
     
     void init();
-    // void publishOdometry();
     void computeAndPublishPaths();
-    void positionCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg);
+    void targetPositionCallback(const path_manager::msg::PositionCommand::SharedPtr msg);
     void PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
     void recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg);
     void formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg);
@@ -79,8 +78,7 @@ private:
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr optimized_path_pub_;
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr global_path_pub_;
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr broadcast_traj_pub_;
-    // rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
-    rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr position_sub_;
+    rclcpp::Subscription<path_manager::msg::PositionCommand>::SharedPtr target_position_sub_;
     rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr broadcast_traj_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr px4_position_sub_;
     rclcpp::Subscription<path_manager::msg::FormationTarget>::SharedPtr formation_target_sub_;
@@ -100,6 +98,7 @@ private:
     double no_replan_thresh_;
     double replan_trajectory_time_;
     Eigen::Vector3d current_pos_;
+    Eigen::Vector3d current_vel_;
     Eigen::Vector3d start_pt_, start_vel_, start_acc_;
     Eigen::Vector3d end_pt_;
     Eigen::Vector3d local_target_pt_;

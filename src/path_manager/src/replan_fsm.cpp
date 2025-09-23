@@ -19,7 +19,6 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
       replan_thresh_(-1.0),
       no_replan_thresh_(-1.0),
       replan_trajectory_time_(-1.0),
-      current_time_(0.0),
       last_start_time_(0.0),
       n_seconds_ahead_(0.0), 
       rviz_simulation_ (false),
@@ -69,8 +68,15 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
     offset_pt_ = Eigen::Vector3d(start_x, start_y, start_z);
     start_pt_ = offset_pt_;
+    current_pos_ = offset_pt_;  // Initialize current_pos_ with start position to break circular dependency
+    current_vel_ = Eigen::Vector3d::Zero();  // Initialize velocity to zero
     end_pt_ = Eigen::Vector3d::Zero();  // Initialize end_pt_ to avoid uninitialized access
     have_target_ = false;  // Wait for formation target
+    
+    RCLCPP_INFO(node_->get_logger(), "Initial position set to: (%.2f, %.2f, %.2f)", 
+                current_pos_(0), current_pos_(1), current_pos_(2));
+    log_manager_->infof("Initial position set to: (%.2f, %.2f, %.2f)", 
+                current_pos_(0), current_pos_(1), current_pos_(2));
 
     // Initialize PathManager in constructor to avoid nullptr access
     path_manager_ = std::make_shared<PathManager>(node_);
@@ -90,13 +96,13 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     optimized_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>("planning/trajectory", sensor_qos);
     global_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>("planning/global", sensor_qos);
     broadcast_traj_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/broadcast_traj_send", sensor_qos);
-    // odom_pub_ = node_->create_publisher<nav_msgs::msg::Odometry>(odom_topic, sensor_qos);
 
     if (rviz_simulation_)
     {
-        std::string position_topic = "/drone_" + std::to_string(drone_id_) + "/current_position";
-        position_sub_ = node_->create_subscription<geometry_msgs::msg::PointStamped>(
-            position_topic, sensor_qos, std::bind(&ReplanFSM::positionCallback, this, std::placeholders::_1));
+        std::string target_position_topic = "/vehicle" + std::to_string(drone_id_ + 1) + "/target_position";
+        target_position_sub_ = node_->create_subscription<path_manager::msg::PositionCommand>(
+            target_position_topic, sensor_qos, std::bind(&ReplanFSM::targetPositionCallback, this, std::placeholders::_1));
+        have_position_ = true;  // We have initial position from parameters
     }
     else
     {
@@ -113,12 +119,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         "formation_targets", sensor_qos,
         std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1));
 
-
-    // odom_timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::publishOdometry, this), odom_callback_group_);
     timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this), timer_callback_group_);
-
-    // odom_timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::publishOdometry, this));
-    // timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this));
 }
 
 void ReplanFSM::init()
@@ -166,37 +167,6 @@ void ReplanFSM::init()
         FSM_LOG_ERROR("Exception during global trajectory planning: %s", e.what());
     }
 }
-
-// void ReplanFSM::publishOdometry() {
-//     if (exec_state_ != FSM_EXEC_STATE::EXEC_TRAJ || !have_local_traj_) {
-//         return;
-//     }
-
-//     auto local_traj = &path_manager_->traj_.local_traj;
-//     double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - local_traj->start_time;
-//     t_cur = std::min(local_traj->duration, t_cur);
-
-//     double t_ahead = std::min(t_cur + n_seconds_ahead_, local_traj->duration);
-//     Eigen::Vector3d pos = local_traj->traj.getPos(t_ahead);
-//     Eigen::Vector3d vel = local_traj->traj.getVel(t_ahead);
-
-//     // RCLCPP_INFO(node_->get_logger(), "[vehicle %d] t_cur: %f ",drone_id_ + 1, t_cur);
-
-//     nav_msgs::msg::Odometry msg{};
-//     msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
-//     msg.header.frame_id = "odom";
-//     msg.child_frame_id = "base_link";
-
-//     msg.pose.pose.position.x = pos(0);
-//     msg.pose.pose.position.y = pos(1);
-//     msg.pose.pose.position.z = pos(2);
-
-//     msg.twist.twist.linear.x = vel(0);
-//     msg.twist.twist.linear.y = vel(1);
-//     msg.twist.twist.linear.z = vel(2);
-
-//     odom_pub_->publish(msg);
-// }
 
 void ReplanFSM::computeAndPublishPaths() {
     static int fsm_num = 0;
@@ -299,7 +269,7 @@ void ReplanFSM::computeAndPublishPaths() {
                 break;
             }
             auto local_traj = &path_manager_->traj_.local_traj;
-            double t_cur = current_time_ - local_traj->start_time;
+            double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - local_traj->start_time;
             t_cur = std::min(local_traj->duration, t_cur);
 
 	        //RCLCPP_INFO(node_->get_logger(), "t_cur: %.2f, duration: %.2f", t_cur, local_traj->duration);
@@ -339,11 +309,13 @@ void ReplanFSM::computeAndPublishPaths() {
     }
 }
 
-void ReplanFSM::positionCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg) {
-    current_pos_ = Eigen::Vector3d(msg->point.x, msg->point.y, msg->point.z);
-    // RCLCPP_ERROR(node_->get_logger(), "Current position: %.2f, %.2f, %.2f", current_pos_(0), current_pos_(1), current_pos_(2));
-    current_time_ = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
-    have_position_ = true;
+void ReplanFSM::targetPositionCallback(const path_manager::msg::PositionCommand::SharedPtr msg) {
+    current_pos_ = Eigen::Vector3d(msg->position.x, msg->position.y, msg->position.z);
+    current_vel_ = Eigen::Vector3d(msg->velocity.x, msg->velocity.y, msg->velocity.z);
+    
+    // Debug log to show position updates
+    RCLCPP_DEBUG(node_->get_logger(), "Updated position from traj_server: (%.2f, %.2f, %.2f)", 
+                current_pos_(0), current_pos_(1), current_pos_(2));
 }
 
 void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
@@ -351,7 +323,9 @@ void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::S
     current_pos_(1) = msg->y + offset_pt_(1);
     current_pos_(2) = offset_pt_(2);
 
-    current_time_ = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
+    current_vel_(0) = msg->vx;
+    current_vel_(1) = msg->vy;
+    current_vel_(2) = 0.0;
     have_position_ = true;
 }
 
@@ -428,7 +402,6 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
         changeFSMExecState(REPLAN_TRAJ, "SWARM_CHECK");
     }
 
-    RCLCPP_INFO(node_->get_logger(), "Recv agent %d, pieces=%d", recv_id, piece_nums);
     /* Check if receive agents have lower drone id */
     if (!have_recv_pre_agent_) {
         if (static_cast<int>(path_manager_->traj_.swarm_traj.size()) >= drone_id_) {
@@ -561,8 +534,7 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
 
 bool ReplanFSM::planFromGlobalTraj(int trial_times) {
     start_pt_ = current_pos_;
-    // start_vel_ = current_vel_; //todo
-    start_vel_.setZero();
+    start_vel_ = current_vel_;
     start_acc_.setZero();
 
     for (int i = 0; i < trial_times; i++) {
@@ -611,132 +583,73 @@ void ReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_cal
 }
 
 void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg) {
-    // Check if this message is for this drone
     if (msg->drone_id != drone_id_) {
         return;
     }
-    
-    RCLCPP_INFO(node_->get_logger(), "Received formation target for drone %d: (%.2f, %.2f, %.2f) - Formation: %s, Scale: %.2f", 
-                msg->drone_id, msg->target_position.x, msg->target_position.y, msg->target_position.z,
-                msg->formation_type.c_str(), msg->formation_scale);
-    log_manager_->infof("Received formation target for drone %d: (%.2f, %.2f, %.2f) - Formation: %s, Scale: %.2f", 
-                msg->drone_id, msg->target_position.x, msg->target_position.y, msg->target_position.z,
-                msg->formation_type.c_str(), msg->formation_scale);
 
-    // Update target position
-    Eigen::Vector3d new_target(
+    if (msg->target_position.z < -0.1) {
+        return;
+    }
+
+    RCLCPP_INFO(node_->get_logger(), "Formation Target Triggered for drone %d!", drone_id_);
+    log_manager_->infof("Formation Target Triggered for drone %d!", drone_id_);
+
+    // Initialize optimizer if not already initialized
+    if (!path_manager_->isOptimizerInitialized()) {
+        try {
+            RCLCPP_INFO(node_->get_logger(), "Initializing optimizer for drone %d...", drone_id_);
+            log_manager_->infof("Initializing optimizer for drone %d...", drone_id_);
+            path_manager_->initOptimizer();
+            path_manager_->deliverTrajToOptimizer();
+            RCLCPP_INFO(node_->get_logger(), "Optimizer initialized successfully for drone %d", drone_id_);
+            log_manager_->infof("Optimizer initialized successfully for drone %d", drone_id_);
+        } catch (const std::exception& e) {
+            RCLCPP_ERROR(node_->get_logger(), "Failed to initialize optimizer for drone %d: %s", drone_id_, e.what());
+            log_manager_->errorf("Failed to initialize optimizer for drone %d: %s", drone_id_, e.what());
+            return;
+        }
+    }
+
+    start_pt_ = current_pos_;
+
+    bool success = false;
+    end_pt_ = Eigen::Vector3d(
         msg->target_position.x,
         msg->target_position.y,
-        msg->target_position.z
-    );
+        msg->target_position.z);
 
-    // Extract formation information and pass to PathManager
-    if (path_manager_ && !msg->formation_positions.empty()) {
-        // Ensure optimizer is initialized before setting formation
-        if (!path_manager_->isOptimizerInitialized()) {
-            RCLCPP_INFO(node_->get_logger(), "Initializing optimizer before setting formation");
-            log_manager_->infof("Initializing optimizer before setting formation");
-            try {
-                path_manager_->initOptimizer();
-                path_manager_->deliverTrajToOptimizer();
-            } catch (const std::exception& e) {
-                RCLCPP_ERROR(node_->get_logger(), "Failed to initialize optimizer: %s", e.what());
-                log_manager_->errorf("Failed to initialize optimizer: %s", e.what());
-                return;
-            }
-        }
-        
+    success = path_manager_->planGlobalTraj(
+        current_pos_, current_vel_, Eigen::Vector3d::Zero(),
+        {end_pt_}, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+
+
+    if (success) {
         std::vector<Eigen::Vector3d> formation_positions;
         formation_positions.reserve(msg->formation_positions.size());
-        
+            
         for (const auto& pos : msg->formation_positions) {
             formation_positions.emplace_back(pos.x, pos.y, pos.z);
         }
-        // Set formation information to optimizer
         path_manager_->setFormationToOptimizer(formation_positions, formation_positions.size());
-        RCLCPP_INFO(node_->get_logger(), "Updated formation in PathManager: %s with %zu positions", 
-                    msg->formation_type.c_str(), formation_positions.size());
-        log_manager_->infof("Updated formation in PathManager: %s with %zu positions", 
-                    msg->formation_type.c_str(), formation_positions.size());
-    }
 
-    // Check if target has changed significantly or if this is the first target
-    double distance_threshold = 0.1; // 10cm threshold
-    bool is_new_target = !have_target_ || (new_target - end_pt_).norm() > distance_threshold;
-    
-    if (is_new_target) {
-        end_pt_ = new_target;
-        bool was_first_target = !have_target_;
         have_target_ = true;
         have_new_target_ = true;
-        
-        RCLCPP_INFO(node_->get_logger(), "Updated target for drone %d to: (%.2f, %.2f, %.2f)", 
-                    drone_id_, end_pt_.x(), end_pt_.y(), end_pt_.z());
-        log_manager_->infof("Updated target for drone %d to: (%.2f, %.2f, %.2f)", 
-                    drone_id_, end_pt_.x(), end_pt_.y(), end_pt_.z());
-        // Generate global trajectory from current position to new target
-        if (have_position_ && path_manager_) {
-            RCLCPP_INFO(node_->get_logger(), "Planning global trajectory from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f)",
-                       start_pt_.x(), start_pt_.y(), start_pt_.z(),
-                       end_pt_.x(), end_pt_.y(), end_pt_.z());
-            log_manager_->infof("Planning global trajectory from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f)",
-                       start_pt_.x(), start_pt_.y(), start_pt_.z(),
-                       end_pt_.x(), end_pt_.y(), end_pt_.z());
-            
-            Eigen::MatrixXd iniState = Eigen::MatrixXd::Zero(3, 3);
-            Eigen::MatrixXd finState = Eigen::MatrixXd::Zero(3, 3);
-            iniState.col(0) = start_pt_;
-            finState.col(0) = end_pt_;
 
-            if (!isMapReady(start_pt_)) {
-                RCLCPP_WARN(node_->get_logger(), "Map not ready for planning, delaying formation target execution");
-                log_manager_->warnf("Map not ready for planning, delaying formation target execution");
-                rclcpp::sleep_for(std::chrono::milliseconds(100));
-                if (!isMapReady(start_pt_)) {
-                    RCLCPP_ERROR(node_->get_logger(), "Map still not ready after delay, attempting planning anyway");
-                    log_manager_->errorf("Map still not ready after delay, attempting planning anyway");
-                }
-            }
+        if (exec_state_ == WAIT_POSITION)
+            changeFSMExecState(SEQUENTIAL_START, "formationTargetCallback");
+        else if (exec_state_ == EXEC_TRAJ)
+            changeFSMExecState(REPLAN_TRAJ, "formationTargetCallback");
+
+        path_manager::msg::PolyTraj traj_msg;
+        globalTraj2ROSMsg(traj_msg);
+        global_path_pub_->publish(traj_msg);
             
-            bool success = path_manager_->planGlobalTraj(start_pt_, iniState.col(1), iniState.col(2),
-                                                         {end_pt_}, finState.col(1), finState.col(2));
-            
-            if (success) {
-                RCLCPP_INFO(node_->get_logger(), "Successfully generated global trajectory to formation target!");
-                log_manager_->infof("Successfully generated global trajectory to formation target!");
-                
-                // Publish the new global trajectory
-                path_manager::msg::PolyTraj msg;
-                globalTraj2ROSMsg(msg);
-                global_path_pub_->publish(msg);
-                
-                // Trigger replanning based on current state
-                if (exec_state_ == FSM_EXEC_STATE::EXEC_TRAJ) {
-                    changeFSMExecState(FSM_EXEC_STATE::REPLAN_TRAJ, "formationTargetCallback");
-                } else if (exec_state_ == FSM_EXEC_STATE::WAIT_POSITION) {
-                    changeFSMExecState(FSM_EXEC_STATE::GEN_NEW_TRAJ, "formationTargetCallback");
-                }
-            } else {
-                RCLCPP_ERROR(node_->get_logger(), "Failed to generate global trajectory to formation target!");
-                log_manager_->errorf("Failed to generate global trajectory to formation target!");
-                // Still trigger replanning to attempt recovery
-                if (exec_state_ == FSM_EXEC_STATE::EXEC_TRAJ) {
-                    changeFSMExecState(FSM_EXEC_STATE::REPLAN_TRAJ, "formationTargetCallback");
-                } else if (exec_state_ == FSM_EXEC_STATE::WAIT_POSITION) {
-                    changeFSMExecState(FSM_EXEC_STATE::GEN_NEW_TRAJ, "formationTargetCallback");
-                }
-            }
-        } else {
-            // If we don't have position or path_manager yet, just trigger state change
-            RCLCPP_WARN(node_->get_logger(), "Cannot plan global trajectory yet - waiting for position or path_manager initialization");
-            log_manager_->warnf("Cannot plan global trajectory yet - waiting for position or path_manager initialization");
-            
-            if (exec_state_ == FSM_EXEC_STATE::EXEC_TRAJ) {
-                changeFSMExecState(FSM_EXEC_STATE::REPLAN_TRAJ, "formationTargetCallback");
-            } else if (exec_state_ == FSM_EXEC_STATE::WAIT_POSITION && have_position_) {
-                changeFSMExecState(FSM_EXEC_STATE::GEN_NEW_TRAJ, "formationTargetCallback");
-            }
-        }
+        RCLCPP_INFO(node_->get_logger(), "Successfully generated and published global trajectory for drone %d", drone_id_);
+        log_manager_->infof("Successfully generated and published global trajectory for drone %d", drone_id_);
+    }
+    else {
+        RCLCPP_ERROR(node_->get_logger(), "Unable to generate global trajectory for drone %d!", drone_id_);
+        log_manager_->errorf("Unable to generate global trajectory for drone %d!", drone_id_);
     }
 }
 
