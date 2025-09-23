@@ -36,10 +36,12 @@ find_package(Eigen3 REQUIRED)
 add_library(${PROJECT_NAME}_lib
   src/dyn_a_star.cpp
   src/grid_map.cpp
+  ../common/log_manager.cpp
 )
 
 target_include_directories(${PROJECT_NAME}_lib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../common>
   $<INSTALL_INTERFACE:include>
   ${EIGEN3_INCLUDE_DIRS}
 )

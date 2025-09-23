@@ -103,7 +103,6 @@ namespace ego_planner
         // Additional debugging info
         if (enable_debug_logs_) {
             const char* result_str = lbfgs::lbfgs_strerror(result);
-            log_manager_->infof("  start_point_z: %f", start_pos.z());
             log_manager_->debugf("L-BFGS Final Result: %d (%s)", result, result_str);
             log_manager_->debugf("Final iteration info: costFunction calls=%d, max_iterations=%d, Final cost=%f", 
               iter_num_, lbfgs_params.max_iterations, final_cost);
@@ -458,23 +457,20 @@ namespace ego_planner
       return false;
 
     int size = swarm_trajs_->size();
+    if (drone_id_ == formation_size_ - 1)
+      size = formation_size_;
+
+    if (size < formation_size_)
+      return false;
 
     bool ret = false;
     gradp.setZero();
     gradt = 0;
     grad_prev_t = 0;
     costp = 0;
+
     double pt_time = t_now_ + t;
-    Eigen::Vector3d nanv = Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
-    vector<Eigen::Vector3d> swarm_graph_pos(formation_size_, nanv);
-    vector<Eigen::Vector3d> swarm_graph_vel(formation_size_, nanv);
-    
-    // Bounds check for drone_id_
-    if (drone_id_ < 0 || drone_id_ >= formation_size_) {
-        LOG_WARN("drone_id_ %d out of bounds (formation_size: %d), using default position", drone_id_, formation_size_);
-        return false;  // Still return false but with warning instead of error
-    }
-    
+    std::vector<Eigen::Vector3d> swarm_graph_pos(formation_size_), swarm_graph_vel(formation_size_);
     swarm_graph_pos[drone_id_] = p;
     swarm_graph_vel[drone_id_] = v;
 
@@ -482,24 +478,6 @@ namespace ego_planner
     {
       if (id == drone_id_)
         continue;
-
-      if (id >= swarm_trajs_->size()) {
-        LOG_WARN("Swarm trajectory index %zu out of bounds (size: %zu)", id, swarm_trajs_->size());
-        continue;
-      }
-      
-      // Additional bounds check for formation arrays
-      if (id >= formation_size_) {
-        LOG_WARN("Formation index %zu out of bounds (formation_size: %d)", id, formation_size_);
-        continue;
-      }
-      
-      // Check if trajectory is properly initialized (drone_id should be valid)
-      if (swarm_trajs_->at(id).drone_id < 0) {
-        // keep debug as ROS debug to avoid adding new macro
-        RCLCPP_DEBUG(node_->get_logger(), "Skipping uninitialized trajectory at index %zu", id);
-        continue;
-      }
 
       double traj_i_satrt_time = swarm_trajs_->at(id).start_time;
 
@@ -520,35 +498,7 @@ namespace ego_planner
       swarm_graph_vel[id] = swarm_v;
     }
 
-    // Verify all positions are valid before updating graph
-    bool valid_positions = true;
-    for (size_t i = 0; i < swarm_graph_pos.size(); i++) {
-      const auto &pp = swarm_graph_pos[i];
-      const bool nanx = std::isnan(pp.x());
-      const bool nany = std::isnan(pp.y());
-      const bool nanz = std::isnan(pp.z());
-      const bool infx = std::isinf(pp.x());
-      const bool infy = std::isinf(pp.y());
-      const bool infz = std::isinf(pp.z());
-      if (!std::isfinite(pp.norm()) || nanx || nany || nanz || infx || infy || infz) {
-        valid_positions = false;
-        break;
-      }
-    }
-    
-    if (!valid_positions) {
-        return false;
-    }
-    
-    // Ensure swarm_graph_pos has the correct size before updating
-    if (static_cast<int>(swarm_graph_pos.size()) != formation_size_) {
-        return false;
-    }
-    
-    if (!swarm_graph_->updateGraph(swarm_graph_pos)) {
-        RCLCPP_DEBUG(node_->get_logger(), "Failed to update swarm graph");
-        return false;
-    }
+    swarm_graph_->updateGraph(swarm_graph_pos);
 
     double similarity_error;
     swarm_graph_->calcFNorm2(similarity_error);
@@ -557,33 +507,19 @@ namespace ego_planner
     {
       ret = true;
       costp = wei_formation_ * similarity_error;
-      vector<Eigen::Vector3d> swarm_grad;
+      std::vector<Eigen::Vector3d> swarm_grad;
       swarm_graph_->getGrad(swarm_grad);
 
-      // Bounds check for drone_id_ in swarm_grad
-      if (static_cast<size_t>(drone_id_) >= swarm_grad.size()) {
-        LOG_WARN("drone_id_ %d out of bounds for swarm_grad (size: %zu)", 
-                 drone_id_, swarm_grad.size());
-        return false;
-      }
-      
       gradp = wei_formation_ * swarm_grad[drone_id_];
 
       for (size_t id = 0; id < size; id++)
       {
-        // Additional bounds check for gradient arrays
-        if (id >= swarm_grad.size() || id >= swarm_graph_vel.size()) {
-          LOG_WARN("Gradient array index %zu out of bounds", id);
-          continue;
-        }
-        
         gradt += wei_formation_ * swarm_grad[id].dot(swarm_graph_vel[id]);
         if (id != drone_id_)
           grad_prev_t += wei_formation_ * swarm_grad[id].dot(swarm_graph_vel[id]);
       }
     }
 
-    debug_similarity_ = similarity_error;
     return ret;
   }
 
@@ -629,61 +565,43 @@ namespace ego_planner
       return false;
 
     bool ret = false;
+
     gradp.setZero();
     gradt = 0;
     grad_prev_t = 0;
     costp = 0;
 
     const double CLEARANCE2 = (swarm_clearance_ * 1.5) * (swarm_clearance_ * 1.5);
+    constexpr double a = 2.0, b = 1.0, inv_a2 = 1 / a / a, inv_b2 = 1 / b / b;
+
     double pt_time = t_now_ + t;
 
-    // Early exit if no swarm trajectories
-    if (swarm_trajs_->empty()) {
-        return false;
-    }
-    
     for (size_t id = 0; id < swarm_trajs_->size(); id++)
     {
-      // Additional bounds check for safety
-      if (id >= swarm_trajs_->size()) {
-        RCLCPP_WARN(node_->get_logger(), "Swarm trajectory index %zu out of bounds in swarmGradCostP", id);
-        break;
-      }
-      
-      // Check if trajectory is properly initialized and not our own drone
       if ((swarm_trajs_->at(id).drone_id < 0) || swarm_trajs_->at(id).drone_id == drone_id_)
       {
         continue;
       }
-      
-      // Additional safety check for trajectory validity
-      if (swarm_trajs_->at(id).duration <= 0.0) {
-        RCLCPP_DEBUG(node_->get_logger(), "Skipping invalid trajectory duration at index %zu", id);
-        continue;
-      }
 
       double traj_i_satrt_time = swarm_trajs_->at(id).start_time;
+
       Eigen::Vector3d swarm_p, swarm_v;
-      
-      // Pre-calculate time difference to avoid repeated calculation
-      double time_diff = pt_time - traj_i_satrt_time;
-      
-      if (time_diff < swarm_trajs_->at(id).duration)
+      if (pt_time < traj_i_satrt_time + swarm_trajs_->at(id).duration)
       {
-        swarm_p = swarm_trajs_->at(id).traj.getPos(time_diff);
-        swarm_v = swarm_trajs_->at(id).traj.getVel(time_diff);
+        swarm_p = swarm_trajs_->at(id).traj.getPos(pt_time - traj_i_satrt_time);
+        swarm_v = swarm_trajs_->at(id).traj.getVel(pt_time - traj_i_satrt_time);
       }
       else
       {
-        double exceed_time = time_diff - swarm_trajs_->at(id).duration;
+        double exceed_time = pt_time - (traj_i_satrt_time + swarm_trajs_->at(id).duration);
         swarm_v = swarm_trajs_->at(id).traj.getVel(swarm_trajs_->at(id).duration);
         swarm_p = swarm_trajs_->at(id).traj.getPos(swarm_trajs_->at(id).duration) +
                   exceed_time * swarm_v;
       }
-      
+
       Eigen::Vector3d dist_vec = p - swarm_p;
-      constexpr double a = 2.0, b = 1.0, inv_a2 = 1 / a / a, inv_b2 = 1 / b / b;
-      double ellip_dist2 = dist_vec(2) * dist_vec(2) * inv_a2 + (dist_vec(0) * dist_vec(0) + dist_vec(1) * dist_vec(1)) * inv_b2;
+      double ellip_dist2 = dist_vec(2) * dist_vec(2) * inv_a2 +
+                            (dist_vec(0) * dist_vec(0) + dist_vec(1) * dist_vec(1)) * inv_b2;
       double dist2_err = CLEARANCE2 - ellip_dist2;
       double dist2_err2 = dist2_err * dist2_err;
       double dist2_err3 = dist2_err2 * dist2_err;
@@ -692,8 +610,8 @@ namespace ego_planner
       {
         ret = true;
         costp += wei_swarm_ * dist2_err3;
-        
-        Eigen::Vector3d dJ_dP = wei_swarm_ * 3 * dist2_err2 * (-2) * Eigen::Vector3d(inv_b2 * dist_vec(0), inv_b2 * dist_vec(1), inv_a2 * dist_vec(2));
+        Eigen::Vector3d dJ_dP = wei_swarm_ * 3 * dist2_err2 * (-2) *
+                                    Eigen::Vector3d(inv_b2 * dist_vec(0), inv_b2 * dist_vec(1), inv_a2 * dist_vec(2));
         gradp += dJ_dP;
         gradt += dJ_dP.dot(v - swarm_v);
         grad_prev_t += dJ_dP.dot(-swarm_v);
@@ -941,6 +859,11 @@ namespace ego_planner
   {
     grid_map_ = map;
     a_star_.reset(new AStar);
+    
+    // Set log manager for A* if available
+    if (log_manager_) {
+      a_star_->setLogManager(log_manager_);
+    }
     
     // Calculate pool size based on map size and resolution
     Eigen::Vector3d map_size = grid_map_->getMapSize();

@@ -6,18 +6,37 @@
 using namespace std;
 using namespace Eigen;
 
+void AStar::setLogManager(swarm_formation::LogManager::Ptr log_manager) {
+    log_manager_ = log_manager;
+    if (log_manager_) {
+        log_manager_->info("A* 로그 매니저가 설정되었습니다.");
+    }
+}
+
 AStar::~AStar()
 {
+    if (log_manager_) {
+        log_manager_->info("A* 소멸자 호출 - 메모리 정리 시작");
+    }
     for (int i = 0; i < POOL_SIZE_(0); i++)
         for (int j = 0; j < POOL_SIZE_(1); j++)
             for (int k = 0; k < POOL_SIZE_(2); k++)
                 delete GridNodeMap_[i][j][k];
+    if (log_manager_) {
+        log_manager_->info("A* 메모리 정리 완료");
+    }
 }
 
 void AStar::initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size)
 {
     POOL_SIZE_ = pool_size;
     CENTER_IDX_ = pool_size / 2;
+    
+    if (log_manager_) {
+        log_manager_->infof("그리드 맵 초기화 - Pool size: (%d,%d,%d), Center: (%d,%d,%d)", 
+                           POOL_SIZE_(0), POOL_SIZE_(1), POOL_SIZE_(2),
+                           CENTER_IDX_(0), CENTER_IDX_(1), CENTER_IDX_(2));
+    }
 
     GridNodeMap_ = new GridNodePtr **[POOL_SIZE_(0)];
     for (int i = 0; i < POOL_SIZE_(0); i++)
@@ -34,6 +53,10 @@ void AStar::initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size)
     }
 
     grid_map_ = occ_map;
+    
+    if (log_manager_) {
+        log_manager_->info("그리드 맵 초기화 완료");
+    }
 }
 
 double AStar::getDiagHeu(GridNodePtr node1, GridNodePtr node2)
@@ -123,11 +146,24 @@ vector<GridNodePtr> AStar::retrievePath(GridNodePtr current)
 
 bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d end_pt, Vector3i &start_idx, Vector3i &end_idx)
 {
-    if (!Coord2Index(start_pt, start_idx) || !Coord2Index(end_pt, end_idx))
+    if (log_manager_) {
+        log_manager_->debugf("시작/끝점 변환 시도 - Start: (%.2f,%.2f,%.2f), End: (%.2f,%.2f,%.2f)", 
+                           start_pt(0), start_pt(1), start_pt(2), end_pt(0), end_pt(1), end_pt(2));
+    }
+    
+    if (!Coord2Index(start_pt, start_idx) || !Coord2Index(end_pt, end_idx)) {
+        if (log_manager_) {
+            log_manager_->error("좌표를 인덱스로 변환 실패");
+        }
         return false;
+    }
 
     if (checkOccupancy(Index2Coord(start_idx)))
     {
+        if (log_manager_) {
+            log_manager_->warnf("시작점이 장애물 내부에 위치 - Idx: (%d,%d,%d), Coord: (%.2f,%.2f,%.2f)", 
+                               start_idx(0), start_idx(1), start_idx(2), start_pt(0), start_pt(1), start_pt(2));
+        }
         RCLCPP_INFO(rclcpp::get_logger("astar"), "Start idx %d %d %d", start_idx(0), start_idx(1), start_idx(2));
         RCLCPP_INFO(rclcpp::get_logger("astar"), "Start point %f %f %f", start_pt(0), start_pt(1), start_pt(2));
         RCLCPP_WARN(rclcpp::get_logger("astar"), "Start point is inside an obstacle.");
@@ -138,11 +174,17 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
             if (!Coord2Index(start_pt, start_idx))
                 return false;
         } while (checkOccupancy(Index2Coord(start_idx)));
+        if (log_manager_) {
+            log_manager_->warnf("시작점 조정 완료 - 새로운 시작점: (%.2f,%.2f,%.2f)", start_pt(0), start_pt(1), start_pt(2));
+        }
         RCLCPP_WARN(rclcpp::get_logger("astar"), "New start point: (%f,%f,%f)", start_pt(0), start_pt(1), start_pt(2));
     }
 
     if (checkOccupancy(Index2Coord(end_idx)))
     {
+        if (log_manager_) {
+            log_manager_->warnf("도착점이 장애물 내부에 위치 - Coord: (%.2f,%.2f,%.2f)", end_pt(0), end_pt(1), end_pt(2));
+        }
         RCLCPP_WARN(rclcpp::get_logger("astar"), "End point is inside an obstacle.");
         RCLCPP_WARN(rclcpp::get_logger("astar"), "End point: (%f,%f,%f)", end_pt(0), end_pt(1), end_pt(2));
         do
@@ -151,6 +193,9 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
             if (!Coord2Index(end_pt, end_idx))
                 return false;
         } while (checkOccupancy(Index2Coord(end_idx)));
+        if (log_manager_) {
+            log_manager_->warnf("도착점 조정 완료 - 새로운 도착점: (%.2f,%.2f,%.2f)", end_pt(0), end_pt(1), end_pt(2));
+        }
         RCLCPP_WARN(rclcpp::get_logger("astar"), "New END point: (%f,%f,%f)", end_pt(0), end_pt(1), end_pt(2));
     }
 
@@ -162,15 +207,32 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
     auto time_1 = rclcpp::Clock().now();
     ++rounds_;
     
+    if (log_manager_) {
+        log_manager_->infof("3D A* 검색 시작 - Round: %d, Step size: %.3f, ESDF 사용: %s", 
+                           rounds_, step_size, use_esdf_check ? "Yes" : "No");
+        log_manager_->infof("시작점: (%.2f,%.2f,%.2f), 도착점: (%.2f,%.2f,%.2f)", 
+                           start_pt(0), start_pt(1), start_pt(2), end_pt(0), end_pt(1), end_pt(2));
+    }
+    
     step_size_ = step_size;
     inv_step_size_ = 1 / step_size;
     center_ = (start_pt + end_pt) / 2;
 
+    if (log_manager_) {
+        log_manager_->debugf("검색 중심점: (%.2f,%.2f,%.2f)", center_(0), center_(1), center_(2));
+    }
     RCLCPP_INFO(rclcpp::get_logger("astar"), "CENTER: (%f,%f,%f)", center_(0), center_(1), center_(2));
 
     Vector3i start_idx, end_idx;
     if (!ConvertToIndexAndAdjustStartEndPoints(start_pt, end_pt, start_idx, end_idx))
     {
+        if (log_manager_) {
+            log_manager_->errorf("3D A* 검색 실패 - 시작/끝점 처리 불가");
+            log_manager_->errorf("시작점: (%.2f,%.2f,%.2f), 도착점: (%.2f,%.2f,%.2f)", 
+                               start_pt.x(), start_pt.y(), start_pt.z(), end_pt.x(), end_pt.y(), end_pt.z());
+            log_manager_->errorf("Pool 크기: (%d,%d,%d), 중심: (%d,%d,%d)", 
+                               POOL_SIZE_(0), POOL_SIZE_(1), POOL_SIZE_(2), CENTER_IDX_(0), CENTER_IDX_(1), CENTER_IDX_(2));
+        }
         RCLCPP_ERROR(rclcpp::get_logger("astar"), "Unable to handle the initial or end point, force return!");
         RCLCPP_ERROR(rclcpp::get_logger("astar"), "Start: (%.2f,%.2f,%.2f) End: (%.2f,%.2f,%.2f)", 
                     start_pt.x(), start_pt.y(), start_pt.z(), end_pt.x(), end_pt.y(), end_pt.z());
@@ -210,36 +272,34 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
         current = openSet_.top();
         openSet_.pop();
 
-        // 목표 도달 체크
         if (current->index(0) == endPtr->index(0) && current->index(1) == endPtr->index(1) && current->index(2) == endPtr->index(2))
         {
             auto time_2 = rclcpp::Clock().now();
             auto elapsed = time_2 - time_1;
+            if (log_manager_) {
+                log_manager_->infof("3D A* 검색 성공! 반복: %d회, 시간: %.3fms", num_iter, elapsed.seconds()*1000);
+            }
             printf("\033[34mA star iter:%d, time:%.3f\033[0m\n", num_iter, elapsed.seconds()*1000);
             gridPath_ = retrievePath(current);
             return true;
         }
         current->state = GridNode::CLOSEDSET;
 
-        // 우선순위 기반 이웃 탐색
         static const int neighbor_offsets[26][3] = {
-            // 직접 이웃 (6개) - 가장 높은 우선순위
             {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1},
-            // 대각선 이웃 (12개)
             {1,1,0}, {1,-1,0}, {-1,1,0}, {-1,-1,0},
             {1,0,1}, {1,0,-1}, {-1,0,1}, {-1,0,-1},
             {0,1,1}, {0,1,-1}, {0,-1,1}, {0,-1,-1},
-            // 3D 대각선 (8개) - 가장 낮은 우선순위
             {1,1,1}, {1,1,-1}, {1,-1,1}, {1,-1,-1},
             {-1,1,1}, {-1,1,-1}, {-1,-1,1}, {-1,-1,-1}
         };  
         static const double neighbor_costs_ordered[26] = {
-            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, // 직접 이웃
+            1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             1.414213562373095, 1.414213562373095, 1.414213562373095, 1.414213562373095,
             1.414213562373095, 1.414213562373095, 1.414213562373095, 1.414213562373095,
-            1.414213562373095, 1.414213562373095, 1.414213562373095, 1.414213562373095, // 2D 대각선
+            1.414213562373095, 1.414213562373095, 1.414213562373095, 1.414213562373095,
             1.732050807568877, 1.732050807568877, 1.732050807568877, 1.732050807568877,
-            1.732050807568877, 1.732050807568877, 1.732050807568877, 1.732050807568877  // 3D 대각선
+            1.732050807568877, 1.732050807568877, 1.732050807568877, 1.732050807568877
         };
         
         for (int i = 0; i < 26; i++)
@@ -253,7 +313,6 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
             neighborIdx(1) = (current->index)(1) + dy;
             neighborIdx(2) = (current->index)(2) + dz;
 
-            // 경계 체크
             if (neighborIdx(0) < 1 || neighborIdx(0) >= POOL_SIZE_(0) - 1 || 
                 neighborIdx(1) < 1 || neighborIdx(1) >= POOL_SIZE_(1) - 1 || 
                 neighborIdx(2) < 1 || neighborIdx(2) >= POOL_SIZE_(2) - 1)
@@ -263,7 +322,7 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
             
             neighborPtr = GridNodeMap_[neighborIdx(0)][neighborIdx(1)][neighborIdx(2)];
             if (!neighborPtr) {
-                continue; // 에러 로그 제거로 성능 향상
+                continue;
             }
             neighborPtr->index = neighborIdx;
 
@@ -276,7 +335,6 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
 
             neighborPtr->rounds = rounds_;
 
-            // 장애물 체크 최적화 (좌표 변환 최소화)
             if(use_esdf_check){
                 if (checkOccupancy_esdf(Index2Coord(neighborPtr->index)))
                     continue;
@@ -284,8 +342,7 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
                 if (checkOccupancy(Index2Coord(neighborPtr->index)))
                     continue;
             }
-            
-            // 미리 계산된 비용 사용
+
             double static_cost = neighbor_costs_ordered[i];
             tentative_gScore = current->gScore + static_cost;
 
@@ -302,7 +359,6 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
                 neighborPtr->cameFrom = current;
                 neighborPtr->gScore = tentative_gScore;
                 neighborPtr->fScore = tentative_gScore + getHeu(neighborPtr, endPtr);
-                // 주의: priority_queue에서는 업데이트된 노드를 다시 push해야 함
                 openSet_.push(neighborPtr);
             }
         }
@@ -311,6 +367,9 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
         auto elapsed = time_2 - time_1;
         if (elapsed.seconds() > 0.2)
         {
+            if (log_manager_) {
+                log_manager_->warnf("3D A* 검색 시간 초과 - %.3fms 경과, 반복: %d회", elapsed.seconds()*1000, num_iter);
+            }
             RCLCPP_WARN(rclcpp::get_logger("astar"), "Failed in A star path searching !!! 0.2 seconds time limit exceeded.");
             return false;
         }
@@ -319,6 +378,10 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
     auto time_2 = rclcpp::Clock().now();
     auto elapsed_total = time_2 - time_1;
 
+    if (log_manager_) {
+        log_manager_->warnf("3D A* 검색 실패 - 전체 시간: %.3fms, 반복: %d회", elapsed_total.seconds()*1000, num_iter);
+    }
+    
     if (elapsed_total.seconds() > 0.1)
         RCLCPP_WARN(rclcpp::get_logger("astar"), "Time consume in A star path finding is %.3fs, iter=%d", elapsed_total.seconds(), num_iter);
 
@@ -330,15 +393,28 @@ bool AStar::AstarSearch2D(const double step_size, Vector3d start_pt, Vector3d en
     auto time_1 = rclcpp::Clock().now();
     ++rounds_;
     
+    if (log_manager_) {
+        log_manager_->infof("2D A* 검색 시작 - Round: %d, Step size: %.3f, ESDF 사용: %s", 
+                           rounds_, step_size, use_esdf_check ? "Yes" : "No");
+        log_manager_->infof("시작점: (%.2f,%.2f,%.2f), 도착점: (%.2f,%.2f,%.2f)", 
+                           start_pt(0), start_pt(1), start_pt(2), end_pt(0), end_pt(1), end_pt(2));
+    }
+    
     step_size_ = step_size;
     inv_step_size_ = 1 / step_size;
     center_ = (start_pt + end_pt) / 2;
 
+    if (log_manager_) {
+        log_manager_->debugf("2D 검색 중심점: (%.2f,%.2f,%.2f)", center_(0), center_(1), center_(2));
+    }
     RCLCPP_INFO(rclcpp::get_logger("astar"), "2D A* CENTER: (%f,%f,%f)", center_(0), center_(1), center_(2));
 
     Vector3i start_idx, end_idx;
     if (!ConvertToIndexAndAdjustStartEndPoints(start_pt, end_pt, start_idx, end_idx))
     {
+        if (log_manager_) {
+            log_manager_->error("2D A* 검색 실패 - 시작/끝점 처리 불가");
+        }
         RCLCPP_ERROR(rclcpp::get_logger("astar"), "Unable to handle the initial or end point in 2D search, force return!");
         return false;
     }
@@ -375,13 +451,15 @@ bool AStar::AstarSearch2D(const double step_size, Vector3d start_pt, Vector3d en
         {
             auto time_2 = rclcpp::Clock().now();
             auto elapsed = time_2 - time_1;
+            if (log_manager_) {
+                log_manager_->infof("2D A* 검색 성공! 반복: %d회, 시간: %.3fms", num_iter, elapsed.seconds()*1000);
+            }
             printf("\033[34m2D A star iter:%d, time:%.3f\033[0m\n", num_iter, elapsed.seconds()*1000);
             gridPath_ = retrievePath(current);
             return true;
         }
         current->state = GridNode::CLOSEDSET;
 
-        // 2차원 탐색: dx, dy만 사용, dz는 0으로 고정
         for (int dx = -1; dx <= 1; dx++)
             for (int dy = -1; dy <= 1; dy++)
             {
@@ -391,7 +469,7 @@ bool AStar::AstarSearch2D(const double step_size, Vector3d start_pt, Vector3d en
                 Vector3i neighborIdx;
                 neighborIdx(0) = (current->index)(0) + dx;
                 neighborIdx(1) = (current->index)(1) + dy;
-                neighborIdx(2) = (current->index)(2); // z축은 현재 레벨 유지
+                neighborIdx(2) = (current->index)(2);
 
                 if (neighborIdx(0) < 1 || neighborIdx(0) >= POOL_SIZE_(0) - 1 || 
                     neighborIdx(1) < 1 || neighborIdx(1) >= POOL_SIZE_(1) - 1 || 
@@ -424,11 +502,10 @@ bool AStar::AstarSearch2D(const double step_size, Vector3d start_pt, Vector3d en
                     if (checkOccupancy2D(Index2Coord(neighborPtr->index)))
                         continue;
                 }
-                
-                // 2D 비용 계산 최적화 (sqrt 계산 최소화)
+
                 double static_cost;
                 if (dx != 0 && dy != 0) {
-                    static_cost = 1.414213562373095;  // sqrt(2) 상수
+                    static_cost = 1.414213562373095;
                 } else {
                     static_cost = 1.0;
                 }
@@ -447,6 +524,7 @@ bool AStar::AstarSearch2D(const double step_size, Vector3d start_pt, Vector3d en
                     neighborPtr->cameFrom = current;
                     neighborPtr->gScore = tentative_gScore;
                     neighborPtr->fScore = tentative_gScore + getHeu2D(neighborPtr, endPtr);
+                    openSet_.push(neighborPtr);
                 }
             }
         
@@ -454,6 +532,9 @@ bool AStar::AstarSearch2D(const double step_size, Vector3d start_pt, Vector3d en
         auto elapsed = time_2 - time_1;
         if (elapsed.seconds() > 0.2)
         {
+            if (log_manager_) {
+                log_manager_->warnf("2D A* 검색 시간 초과 - %.3fms 경과, 반복: %d회", elapsed.seconds()*1000, num_iter);
+            }
             RCLCPP_WARN(rclcpp::get_logger("astar"), "Failed in 2D A star path searching !!! 0.2 seconds time limit exceeded.");
             return false;
         }
@@ -462,6 +543,10 @@ bool AStar::AstarSearch2D(const double step_size, Vector3d start_pt, Vector3d en
     auto time_2 = rclcpp::Clock().now();
     auto elapsed_total = time_2 - time_1;
 
+    if (log_manager_) {
+        log_manager_->warnf("2D A* 검색 실패 - 전체 시간: %.3fms, 반복: %d회", elapsed_total.seconds()*1000, num_iter);
+    }
+    
     if (elapsed_total.seconds() > 0.1)
         RCLCPP_WARN(rclcpp::get_logger("astar"), "Time consume in 2D A star path finding is %.3fs, iter=%d", elapsed_total.seconds(), num_iter);
 
@@ -480,35 +565,52 @@ vector<Vector3d> AStar::getPath()
 }
 
 vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vector3d start_pt, Vector3d end_pt, int drone_id){
-    // 2D 기반 탐색으로 통일 - z축 차이가 크면 시작점 z로 맞춤
+
+    if (log_manager_) {
+        log_manager_->infof("드론 %d: 경로 검색 및 단순화 시작", drone_id);
+        log_manager_->debugf("원본 시작점: (%.2f,%.2f,%.2f), 도착점: (%.2f,%.2f,%.2f)", 
+                           start_pt(0), start_pt(1), start_pt(2), end_pt(0), end_pt(1), end_pt(2));
+    }
+
     Vector3d adjusted_end_pt = end_pt;
     if (abs(start_pt(2) - end_pt(2)) > 1.0) {
-        adjusted_end_pt(2) = start_pt(2);  // z축을 시작점과 동일하게 조정
+        adjusted_end_pt(2) = start_pt(2);
+        if (log_manager_) {
+            log_manager_->infof("Z 좌표 차이가 큰 경우 감지 - %.2f에서 %.2f로 조정", end_pt(2), adjusted_end_pt(2));
+        }
         RCLCPP_INFO(rclcpp::get_logger("astar"), "Large z difference detected, adjusting end point z from %.2f to %.2f", 
                    end_pt(2), adjusted_end_pt(2));
     }
-    
-    // 2D 탐색 실행
+
     if (AstarSearch2D(step_size, start_pt, adjusted_end_pt, true)) {
         vector<Vector3d> path = getPath();
         if (path.size() > 1 && (path[0]-start_pt).norm() < 0.5) {
+            if (log_manager_) {
+                log_manager_->infof("드론 %d: 2D A* 검색 성공 (ESDF 사용) - 경로 점 개수: %zu", drone_id, path.size());
+            }
             RCLCPP_INFO(rclcpp::get_logger("astar"), "2D A* search successful");
-            // 2D 경로 후처리로 바로 이동
             return astarSearch2DAndGetSimplePath(step_size, start_pt, adjusted_end_pt, drone_id);
         }
     }
-    
-    // 2D 탐색 실패시 ESDF 없이 재시도
+
+    if (log_manager_) {
+        log_manager_->warnf("드론 %d: 2D A* 검색 실패 (ESDF 사용), ESDF 없이 재시도", drone_id);
+    }
     RCLCPP_WARN(rclcpp::get_logger("astar"), "2D A* search failed, retrying without ESDF");
     if (AstarSearch2D(step_size, start_pt, adjusted_end_pt, false)) {
         vector<Vector3d> path = getPath();
         if (path.size() > 1 && (path[0]-start_pt).norm() < 0.5) {
+            if (log_manager_) {
+                log_manager_->infof("드론 %d: 2D A* 검색 성공 (ESDF 비사용) - 경로 점 개수: %zu", drone_id, path.size());
+            }
             RCLCPP_INFO(rclcpp::get_logger("astar"), "2D A* search successful without ESDF");
             return astarSearch2DAndGetSimplePath(step_size, start_pt, adjusted_end_pt, drone_id);
         }
     }
-    
-    // 2D 탐색이 완전히 실패한 경우에만 기본 경로 반환
+
+    if (log_manager_) {
+        log_manager_->errorf("드론 %d: 2D A* 검색 완전 실패 - 직선 경로 반환", drone_id);
+    }
     RCLCPP_ERROR(rclcpp::get_logger("astar"), "2D A* search completely failed, returning direct path");
     vector<Vector3d> fallback_path;
     fallback_path.push_back(start_pt);
@@ -517,23 +619,30 @@ vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vect
 }
 
 vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Vector3d start_pt, Vector3d end_pt, int drone_id){
-    // 2D A* 탐색 실행 (이미 호출되었으므로 경로만 가져옴)
     vector<Vector3d> path = getPath();
     bool is_show_debug = false;
 
-    // 경로 검증 (이미 상위 함수에서 검증되었으므로 간단히 확인만)
+    if (log_manager_) {
+        log_manager_->infof("드론 %d: 2D 경로 단순화 시작 - 원본 경로 점 개수: %zu", drone_id, path.size());
+    }
+
     if (path.size() <= 1 || (path[0]-start_pt).norm() > 0.5){
+        if (log_manager_) {
+            log_manager_->errorf("드론 %d: 2D 경로 단순화에서 잘못된 경로 감지 - 경로 점 개수: %zu", drone_id, path.size());
+        }
         RCLCPP_ERROR(rclcpp::get_logger("astar"), "Invalid path in 2D simplification");
         vector<Vector3d> fallback_path;
         fallback_path.push_back(start_pt);
         fallback_path.push_back(end_pt);
         return fallback_path;
     }
-    
-    // 간소화된 경로 생성
+
     vector<Vector3d> simple_path;
     int size = path.size();
     if (size <= 2){
+        if (log_manager_) {
+            log_manager_->warnf("드론 %d: 2D 경로가 2점만 가지고 있음", drone_id);
+        }
         RCLCPP_WARN(rclcpp::get_logger("astar"), "2D path only has two points");
         return path;
     }
@@ -547,24 +656,21 @@ vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Ve
         for (int i = end_idx; i < size; i++){
             bool is_safe = true;
             Vector3d check_pt = path[i];
-            
-            // 2D 경로에서는 더 정밀한 체크 간격 사용
+
             int check_num = ceil((check_pt - cut_start).norm() / 0.01);
-            
-            // 충돌 체크 (2D 최적화)
+
             for (int j=0; j<=check_num; j++){
                 double alpha = double(1.0 / check_num) * j;
                 Vector3d check_safe_pt = (1 - alpha) * cut_start + alpha * check_pt;
-                
-                // 2D 경로에서는 z축 높이를 시작점과 동일하게 유지
+
                 check_safe_pt(2) = start_pt(2);
-                
+
                 if (checkOccupancy_esdf2D(check_safe_pt)){
                     is_safe = false;
                     break;
                 }
             }
-            
+
             if (is_safe && i == (size -1)){
                 finish = true;
                 simple_path.push_back(check_pt);
@@ -573,29 +679,23 @@ vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Ve
             if (is_safe){
                 continue;
             }
-            // else{
-            //     end_idx = i;
-            //     cut_start = path[end_idx-1];
-            //     simple_path.push_back(cut_start);
-            // }
+
             else {
-                if (i == end_idx) {              // (= s+1)
-                    // 바로 다음 점도 막히면 '강제 한 칸 전진'
-                    cut_start = path[i];         // (= path[s+1])
+                if (i == end_idx) {
+
+                    cut_start = path[i];
                     simple_path.push_back(cut_start);
-                    end_idx = i + 1;             // 다음 턴은 i+1부터
+                    end_idx = i + 1;
                 } else {
-                    // i-1까지는 안전
                     cut_start = path[i - 1];
                     simple_path.push_back(cut_start);
-                    end_idx = i;                 // 다음 턴은 i부터
+                    end_idx = i;
                 }
-                break; // ★ 충돌을 만났으니 이 for 루프는 즉시 종료하고 while 다음 턴으로
+                break;
             }
         }
     }
 
-    // 디버그 출력
     if (is_show_debug){
         cout << "[2D simple A* path] : --------- " << endl;
         int n1 = simple_path.size();
@@ -604,7 +704,6 @@ vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Ve
             cout << simple_path[i].transpose() << endl;
     }
 
-    // 근접한 점들 제거
     bool near_flag;
     do
     {
@@ -616,7 +715,6 @@ vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Ve
 
         int num_same_check = simple_path.size();
         for (int i=0; i<num_same_check-1; i++){
-            // 2D 거리만 계산 (x, y만 고려)
             double len = sqrt(pow(simple_path[i+1](0) - simple_path[i](0), 2) + 
                              pow(simple_path[i+1](1) - simple_path[i](1), 2));
             if (len < 0.3){
@@ -628,7 +726,6 @@ vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Ve
         
     } while (near_flag);
 
-    // 너무 긴 세그먼트 분할
     bool too_long_flag;
     const double length_threshold = 3.0;
     int debug_num = 0;
@@ -638,7 +735,6 @@ vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Ve
         too_long_flag = false;
         int num = simple_path.size();
         for (int i=0; i<num-1; i++){
-            // 2D 거리 계산
             double leng = sqrt(pow(simple_path[i+1](0) - simple_path[i](0), 2) + 
                               pow(simple_path[i+1](1) - simple_path[i](1), 2));
             if (leng > length_threshold){
@@ -650,13 +746,16 @@ vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Ve
         }
     } while (too_long_flag && debug_num < 10);
 
-    // 최종 디버그 출력
     if (is_show_debug){
         cout << "[final 2D simple path] : --------- " << endl;
         int n3 = simple_path.size();
         cout << "final 2D simple path size : " << n3 << endl;
         for (int i=0; i<n3; i++)
             cout << simple_path[i].transpose() << endl;
+    }
+    
+    if (log_manager_) {
+        log_manager_->infof("드론 %d: 2D 경로 단순화 완료 - 최종 경로 점 개수: %zu", drone_id, simple_path.size());
     }
     
     return simple_path;    

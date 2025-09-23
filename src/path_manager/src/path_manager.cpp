@@ -219,8 +219,7 @@ namespace path_manager
         }
         else
         {
-            traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(),
-                            rclcpp::Clock(RCL_ROS_TIME).now().seconds(), traj_.local_traj.drone_id);
+            traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(), rclcpp::Clock(RCL_ROS_TIME).now().seconds(), traj_.local_traj.drone_id);
         }
         
         if (enable_debug_logs_) {

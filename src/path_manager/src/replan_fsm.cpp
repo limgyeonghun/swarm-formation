@@ -292,26 +292,21 @@ void ReplanFSM::computeAndPublishPaths() {
 
         case EXEC_TRAJ:
         {
-            log_manager_->infof("EXEC_TRAJ");
             if (!path_manager_) {
                 RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
                 log_manager_->errorf("PathManager is not initialized!");
                 changeFSMExecState(EMERGENCY_STOP, "FSM");
                 break;
             }
-            log_manager_->infof("EXEC_TRAJ1");
             auto local_traj = &path_manager_->traj_.local_traj;
             double t_cur = current_time_ - local_traj->start_time;
             t_cur = std::min(local_traj->duration, t_cur);
-            log_manager_->infof("EXEC_TRAJ2");
 
 	        //RCLCPP_INFO(node_->get_logger(), "t_cur: %.2f, duration: %.2f", t_cur, local_traj->duration);
             Eigen::Vector3d pos = local_traj->traj.getPos(t_cur);
-            log_manager_->infof("EXEC_TRAJ3");
 
             if ((local_target_pt_ - end_pt_).norm() < 0.1)
             {
-                log_manager_->infof("EXEC_TRAJ4");
                 if (t_cur > local_traj->duration - 0.2)
                 {
                     have_target_ = false;
@@ -433,6 +428,7 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
         changeFSMExecState(REPLAN_TRAJ, "SWARM_CHECK");
     }
 
+    RCLCPP_INFO(node_->get_logger(), "Recv agent %d, pieces=%d", recv_id, piece_nums);
     /* Check if receive agents have lower drone id */
     if (!have_recv_pre_agent_) {
         if (static_cast<int>(path_manager_->traj_.swarm_traj.size()) >= drone_id_) {

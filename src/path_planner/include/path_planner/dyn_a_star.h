@@ -6,6 +6,7 @@
 
 #include <Eigen/Eigen>
 #include "path_planner/grid_map.h"
+#include "../../common/log_manager.hpp"
 #include <queue>
 
 constexpr double inf = 1e20; 
@@ -46,6 +47,7 @@ class AStar
 {
 private:
     GridMap::Ptr grid_map_;
+    swarm_formation::LogManager::Ptr log_manager_;
 
     inline void coord2gridIndexFast(const double x, const double y, const double z, int &id_x, int &id_y, int &id_z);
 
@@ -67,11 +69,11 @@ private:
     
     inline bool checkOccupancy(const Eigen::Vector3d &pos) { 
         int occ = grid_map_->getInflateOccupancy(pos);
-        return (occ > 0);  // -1(맵 밖)은 false, 1(장애물)은 true, 0(자유공간)은 false
+        return (occ > 0);  // -1(out of map) is false, 1(obstacle) is true, 0(free space) is false
     }
     inline bool checkOccupancy2D(const Eigen::Vector3d &pos) { 
         int occ = grid_map_->getInflateOccupancy2D(pos);
-        return (occ > 0);  // -1(맵 밖)은 false, 1(장애물)은 true, 0(자유공간)은 false
+        return (occ > 0);
     }
     inline bool checkOccupancy_esdf(const Eigen::Vector3d &pos){
         const double dist = 0.2;
@@ -97,25 +99,17 @@ private:
     // }
 
     std::vector<GridNodePtr> retrievePath(GridNodePtr current);
-    // std::vector<GridNodePtr> retrieveBidirectionalPath(GridNodePtr meetNode, GridNodePtr startPtr, GridNodePtr endPtr);
-    
-    // Jump Point Search helper functions (currently unused)
-    // GridNodePtr jump(GridNodePtr current, int dx, int dy, int dz, GridNodePtr goal);
-    // bool isForced(GridNodePtr node, int dx, int dy, int dz);
-    // std::vector<std::pair<int,int>> getJumpSuccessors(GridNodePtr current, GridNodePtr goal);
 
     double step_size_, inv_step_size_;
     Eigen::Vector3d center_;
     Eigen::Vector3i CENTER_IDX_, POOL_SIZE_;
-    const double tie_breaker_ = 1.0 + 1.0 / 10000;  // tie-breaker 최적화
-    const int max_iterations_ = 50000;  // 최대 반복 횟수 제한
+    const double tie_breaker_ = 1.0 + 1.0 / 10000;
+    const int max_iterations_ = 50000;
 
     std::vector<GridNodePtr> gridPath_;
 
     GridNodePtr ***GridNodeMap_;
     std::priority_queue<GridNodePtr, std::vector<GridNodePtr>, NodeComparator> openSet_;
-    // std::priority_queue<GridNodePtr, std::vector<GridNodePtr>, NodeComparator> openSetReverse_;
-
     int rounds_{0};
 
 public:
@@ -123,24 +117,17 @@ public:
 
     AStar(){};
     ~AStar();
+    
+    void setLogManager(swarm_formation::LogManager::Ptr log_manager);
 
     void initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size);
 
     bool AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check);
-    
-    // 2D optimized A* search for rover pathfinding
-    bool AstarSearch2D(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check);
-    
-    // Enhanced search algorithms for better pathfinding (currently unused)
-    // bool BidirectionalAstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check);
-    // bool JumpPointSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check);
-    
-    std::vector<Eigen::Vector3d> getPath();
 
-    // Main path planning function - uses 2D A* search by default
+    bool AstarSearch2D(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check);
+
+    std::vector<Eigen::Vector3d> getPath();
     std::vector<Eigen::Vector3d> astarSearchAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, int drone_id);
-    
-    // 2D optimized path planning with simplification for rovers
     std::vector<Eigen::Vector3d> astarSearch2DAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, int drone_id);
     
     Eigen::Vector3d getOrigin() const { return grid_map_->getOrigin(); }
