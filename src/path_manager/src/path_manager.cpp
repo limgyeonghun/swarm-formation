@@ -62,7 +62,7 @@ namespace path_manager
             Eigen::Vector3i idx;
             grid_map_->posToIndex(obs, idx);
             grid_map_->setOccupancy(idx, 1.0);
-            grid_map_->inflatePoint(idx, 5.0);
+            grid_map_->inflatePoint(idx, 10.0);
         }
         grid_map_->updateESDF3d(); // not used? -> esdf_timer
 

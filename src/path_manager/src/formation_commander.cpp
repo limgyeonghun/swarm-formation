@@ -47,38 +47,39 @@ public:
 private:
     void publishFormationCommand()
     {
+        if (command_count_ >= 3) {
+            RCLCPP_INFO(this->get_logger(), "Formation command sequence completed. Stopping periodic timer.");
+            if (periodic_timer_) {
+                periodic_timer_->cancel();
+            }
+            return;
+        }
+
         path_manager::msg::FormationCommand msg;
         msg.header.stamp = this->now();
         msg.header.frame_id = "world";
 
-        switch (command_count_ % 4) {
+        switch (command_count_) {
             case 0:
-                msg.formation_center.x = 80.0;
-                msg.formation_center.y = -12.5;
+                msg.formation_center.x = 88.75;
+                msg.formation_center.y = -14.31;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "square";
-                msg.formation_scale = 3.0;
+                msg.formation_scale = 4.0;
                 break;
             case 1:
-                msg.formation_center.x = 80.0;
-                msg.formation_center.y = -12.5;
+                msg.formation_center.x = 88.75;
+                msg.formation_center.y = -14.31;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "triangle";
-                msg.formation_scale = 2.5;
-                break;
-            case 2:
-                msg.formation_center.x = 85.0;
-                msg.formation_center.y = -12.5;
-                msg.formation_center.z = 0.0;
-                msg.formation_type = "square";
                 msg.formation_scale = 3.0;
                 break;
-            case 3:
-                msg.formation_center.x = 80.0;
-                msg.formation_center.y = -12.5;
+            case 2:
+                msg.formation_center.x = 88.75;
+                msg.formation_center.y = -14.31;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "square";
-                msg.formation_scale = 2.0;
+                msg.formation_scale = 4.0;
                 break;
         }
 

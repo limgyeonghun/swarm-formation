@@ -551,7 +551,7 @@ void PathVisualization::publishObstacles()
   
   for (size_t i = 0; i < obstacle_centers_.size(); ++i)
   {
-    auto marker = createMarker("obstacle", i, visualization_msgs::msg::Marker::SPHERE, 0.8, 0.0, 1.0, 0.0, 0.5);
+    auto marker = createMarker("obstacle", i, visualization_msgs::msg::Marker::SPHERE, 1.6, 0.0, 1.0, 0.0, 0.5);
     marker.pose.position.x = obstacle_centers_[i].x();
     marker.pose.position.y = obstacle_centers_[i].y();
     marker.pose.position.z = obstacle_centers_[i].z();

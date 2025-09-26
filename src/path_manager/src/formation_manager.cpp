@@ -186,22 +186,20 @@ std::vector<Eigen::Vector3d> FormationManager::generateFormationPattern(
 
   if (formation_type == "square" && num_drones == 4) {
     // Square formation for 4 drones
-    pattern.push_back(Eigen::Vector3d( scale/2,  scale/2, 0.0));
-    pattern.push_back(Eigen::Vector3d( scale/2, -scale/2, 0.0));
-    pattern.push_back(Eigen::Vector3d( -scale/2,  scale/2, 0.0));
-    pattern.push_back(Eigen::Vector3d( -scale/2, -scale/2, 0.0));
+    pattern.push_back(Eigen::Vector3d( scale/2,  -scale/2, 0.0));
+    pattern.push_back(Eigen::Vector3d( scale/2, scale/2, 0.0));
+    pattern.push_back(Eigen::Vector3d( -scale/2,  -scale/2, 0.0));
+    pattern.push_back(Eigen::Vector3d( -scale/2, scale/2, 0.0));
   }
   else if (formation_type == "triangle" && num_drones >= 3) {
     pattern.push_back(Eigen::Vector3d( 2.0 * scale/2.0,   0.0, 0.0));
     pattern.push_back(Eigen::Vector3d( 0.0,   0.0, 0.0));
-    pattern.push_back(Eigen::Vector3d(-1.0 * scale/2.0,  1.732 * scale/2.0, 0.0));
     pattern.push_back(Eigen::Vector3d(-1.0 * scale/2.0, -1.732 * scale/2.0, 0.0));
+    pattern.push_back(Eigen::Vector3d(-1.0 * scale/2.0, 1.732 * scale/2.0, 0.0));
   }
   else if (formation_type == "line") {
-    // Line formation optimized for road following
-    // Road width: 6m, safe area: 4m (1m margin each side)
-    double road_width = 6.0;  // From road_segments configuration
-    double safe_width = 4.0;  // Safe driving width with margins
+    double road_width = 6.0;
+    double safe_width = 4.0;
     double spacing = (num_drones > 1) ? safe_width / (num_drones - 1) : 0.0;
     
     for (int i = 0; i < num_drones; ++i) {

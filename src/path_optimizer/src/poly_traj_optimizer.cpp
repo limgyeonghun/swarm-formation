@@ -244,6 +244,24 @@ namespace ego_planner
           opt->iter_num_, traj_gen_time, smoothness_time, pva_cost_time, grad_time, time_cost_time, total_callback_time);
     }
 
+    // Detailed L-BFGS cost debugging
+    if (opt->enable_lbfgs_detail_logs_ && opt->log_manager_ && opt->iter_num_ % 10 == 0) {
+        double total_cost = smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost;
+        opt->log_manager_->infof("[L-BFGS DETAIL] iter=%d, total_cost=%.6f", opt->iter_num_, total_cost);
+        opt->log_manager_->infof("  smoothness_cost=%.6f (weight=implicit)", smoo_cost);
+        opt->log_manager_->infof("  obstacle_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(0), opt->wei_obs_);
+        opt->log_manager_->infof("  swarm_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(1), opt->wei_swarm_);
+        opt->log_manager_->infof("  formation_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(2), opt->wei_formation_);
+        opt->log_manager_->infof("  feasibility_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(4), opt->wei_feas_);
+        opt->log_manager_->infof("  time_cost=%.6f (weight=%.3f)", time_cost, opt->wei_time_);
+        
+        // Store formation cost for final logging
+        opt->dbg_cost_formation_ = obs_swarm_feas_qvar_costs(2);
+    } else if (!opt->enable_lbfgs_detail_logs_ && opt->use_formation_) {
+        // Store formation cost for final logging even when detail logs are disabled
+        opt->dbg_cost_formation_ = obs_swarm_feas_qvar_costs(2);
+    }
+
     return smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost;
   }
 
@@ -502,6 +520,8 @@ namespace ego_planner
 
     double similarity_error;
     swarm_graph_->calcFNorm2(similarity_error);
+
+    debug_similarity_ = similarity_error;
 
     if (similarity_error > 0)
     {
@@ -808,6 +828,9 @@ namespace ego_planner
     // Get enable_debug_logs parameter (declared in replan_fsm)
     node_->get_parameter("enable_debug_logs", enable_debug_logs_);
     
+    // Get enable_lbfgs_detail_logs parameter
+    node_->get_parameter("enable_lbfgs_detail_logs", enable_lbfgs_detail_logs_);
+    
     // Use conditional logging - only RCLCPP when debug logs disabled, only LogManager when enabled
     if (!enable_debug_logs_) {
         RCLCPP_INFO(node_->get_logger(), "Obstacle avoidance: %s", enable_obstacles_ ? "enabled" : "disabled");
@@ -841,6 +864,7 @@ namespace ego_planner
             log_manager_->infof("PolyTrajOptimizer parameters initialized");
             log_manager_->infof("Obstacle avoidance: %s", enable_obstacles_ ? "enabled" : "disabled");
             log_manager_->infof("Debug logging: enabled (using LogManager)");
+            log_manager_->infof("L-BFGS detail logging: %s", enable_lbfgs_detail_logs_ ? "enabled" : "disabled");
         }
     }
 

@@ -30,6 +30,9 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     node_->declare_parameter("enable_debug_logs", false);
     node_->get_parameter("enable_debug_logs", enable_debug_logs_);
     
+    node_->declare_parameter("enable_lbfgs_detail_logs", false);
+    // Note: enable_lbfgs_detail_logs will be read by PolyTrajOptimizer::setParam()
+    
     node_->declare_parameter("drone_id", 0);
     node_->get_parameter("drone_id", drone_id_);
     FSM_LOG_INFO("Starting ReplanFSM for drone_id: %d", drone_id_);
@@ -108,7 +111,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     {
         std::string px4_position_topic = "/vehicle" + std::to_string(drone_id_ + 1) + "/fmu/out/vehicle_local_position_v1";
         px4_position_sub_ = node_->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-            px4_position_topic, sensor_qos, std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1));
+        px4_position_topic, sensor_qos, std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1));
     }
 
     broadcast_traj_sub_ = node_->create_subscription<path_manager::msg::PolyTraj>(
@@ -311,8 +314,6 @@ void ReplanFSM::computeAndPublishPaths() {
 
 void ReplanFSM::targetPositionCallback(const path_manager::msg::PositionCommand::SharedPtr msg) {
     current_pos_ = Eigen::Vector3d(msg->position.x, msg->position.y, msg->position.z);
-    current_vel_ = Eigen::Vector3d(msg->velocity.x, msg->velocity.y, msg->velocity.z);
-    
     // Debug log to show position updates
     RCLCPP_DEBUG(node_->get_logger(), "Updated position from traj_server: (%.2f, %.2f, %.2f)", 
                 current_pos_(0), current_pos_(1), current_pos_(2));
@@ -322,10 +323,6 @@ void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::S
     current_pos_(0) = msg->x + offset_pt_(0);
     current_pos_(1) = msg->y + offset_pt_(1);
     current_pos_(2) = offset_pt_(2);
-
-    current_vel_(0) = msg->vx;
-    current_vel_(1) = msg->vy;
-    current_vel_(2) = 0.0;
     have_position_ = true;
 }
 
@@ -534,7 +531,7 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
 
 bool ReplanFSM::planFromGlobalTraj(int trial_times) {
     start_pt_ = current_pos_;
-    start_vel_ = current_vel_;
+    start_vel_.setZero();
     start_acc_.setZero();
 
     for (int i = 0; i < trial_times; i++) {
@@ -619,7 +616,7 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         msg->target_position.z);
 
     success = path_manager_->planGlobalTraj(
-        current_pos_, current_vel_, Eigen::Vector3d::Zero(),
+        current_pos_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
         {end_pt_}, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
 

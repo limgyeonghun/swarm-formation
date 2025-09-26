@@ -119,6 +119,7 @@ namespace ego_planner
     double t_now_;
     bool enable_obstacles_;
     bool enable_debug_logs_;
+    bool enable_lbfgs_detail_logs_;
 
     rclcpp::Node::SharedPtr node_;
 

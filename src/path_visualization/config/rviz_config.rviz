@@ -6,7 +6,7 @@ Visualization Manager:
       Name: Path and Obstacles
       Topic:
         Value: /path_markers
-        Depth: 5
+        Depth: 20
         History Policy: Keep Last
         Reliability Policy: Best Effort
         Durability Policy: Volatile
