@@ -42,7 +42,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 add_library(${PROJECT_NAME}_lib
   src/path_manager.cpp
   src/replan_fsm.cpp
-  src/formation_manager.cpp
   ../common/log_manager.cpp
 )
 
@@ -100,23 +99,6 @@ ament_target_dependencies(traj_server
   rosidl_default_runtime
 )
 
-add_executable(formation_manager
-  src/formation_manager_node.cpp
-)
-target_link_libraries(formation_manager
-  ${PROJECT_NAME}_lib
-)
-ament_target_dependencies(formation_manager
-  rclcpp
-  std_msgs
-  px4_msgs
-  nav_msgs
-  path_optimizer
-  path_planner
-  geometry_msgs
-  swarm_graph
-  rosidl_default_runtime
-)
 
 add_executable(formation_commander
   src/formation_commander.cpp
@@ -125,7 +107,11 @@ ament_target_dependencies(formation_commander
   rclcpp
   std_msgs
   geometry_msgs
+  Eigen3
   rosidl_default_runtime
+)
+target_include_directories(formation_commander PUBLIC
+  ${EIGEN3_INCLUDE_DIRS}
 )
 
 rosidl_target_interfaces(${PROJECT_NAME}_lib
@@ -139,9 +125,6 @@ rosidl_target_interfaces(traj_server
   ${PROJECT_NAME} "rosidl_typesupport_cpp"
 )
 
-rosidl_target_interfaces(formation_manager
-  ${PROJECT_NAME} "rosidl_typesupport_cpp"
-)
 
 rosidl_target_interfaces(formation_commander
   ${PROJECT_NAME} "rosidl_typesupport_cpp"
@@ -162,9 +145,6 @@ install(TARGETS traj_server
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(TARGETS formation_manager
-  DESTINATION lib/${PROJECT_NAME}
-)
 
 install(TARGETS formation_commander
   DESTINATION lib/${PROJECT_NAME}

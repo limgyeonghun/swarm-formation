@@ -22,7 +22,11 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
       last_start_time_(0.0),
       n_seconds_ahead_(0.0), 
       rviz_simulation_ (false),
-      flag_escape_emergency_(false)
+      flag_escape_emergency_(false),
+      num_drones_(4),
+      current_formation_type_("square"),
+      current_formation_scale_(2.0),
+      has_formation_command_(false)
     {
         log_manager_ = std::make_unique<swarm_formation::LogManager>(
             node->get_name(), "./logs/runtime", swarm_formation::LogManager::INFO);
@@ -36,6 +40,24 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     node_->declare_parameter("drone_id", 0);
     node_->get_parameter("drone_id", drone_id_);
     FSM_LOG_INFO("Starting ReplanFSM for drone_id: %d", drone_id_);
+
+    // Formation manager parameters
+    node_->declare_parameter("num_drones", 4);
+    node_->declare_parameter("formation_type", "square");
+    node_->declare_parameter("formation_scale", 2.0);
+    node_->declare_parameter("formation_center_x", 80.0);
+    node_->declare_parameter("formation_center_y", -1.5);
+    node_->declare_parameter("formation_center_z", 0.0);
+    
+    node_->get_parameter("num_drones", num_drones_);
+    node_->get_parameter("formation_type", current_formation_type_);
+    node_->get_parameter("formation_scale", current_formation_scale_);
+    
+    double center_x, center_y, center_z;
+    node_->get_parameter("formation_center_x", center_x);
+    node_->get_parameter("formation_center_y", center_y);
+    node_->get_parameter("formation_center_z", center_z);
+    current_formation_center_ = Eigen::Vector3d(center_x, center_y, center_z);
 
     node_->declare_parameter("rviz_simulation", false);
     node_->get_parameter("rviz_simulation", rviz_simulation_);
@@ -84,6 +106,9 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     // Initialize PathManager in constructor to avoid nullptr access
     path_manager_ = std::make_shared<PathManager>(node_);
     
+    // Initialize SwarmGraph for formation management
+    swarm_graph_ = std::make_unique<SwarmGraph>();
+    
     RCLCPP_INFO(node_->get_logger(), "PathManager initialized, waiting for formation command from formation_commander");
     log_manager_->infof("PathManager initialized, waiting for formation command from formation_commander");
 
@@ -121,6 +146,13 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     formation_target_sub_ = node_->create_subscription<path_manager::msg::FormationTarget>(
         "formation_targets", sensor_qos,
         std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1));
+
+    formation_cmd_sub_ = node_->create_subscription<path_manager::msg::FormationCommand>(
+        "formation_command", sensor_qos,
+        std::bind(&ReplanFSM::formationCommandCallback, this, std::placeholders::_1));
+
+    formation_target_pub_ = node_->create_publisher<path_manager::msg::FormationTarget>(
+        "formation_targets", sensor_qos);
 
     timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this), timer_callback_group_);
 }
@@ -666,6 +698,165 @@ bool ReplanFSM::isMapReady(const Eigen::Vector3d& start_pos) {
     }
     
     return map_ready;
+}
+
+void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationCommand::SharedPtr msg) {
+    RCLCPP_INFO(node_->get_logger(),
+                "Received formation command: %s, scale: %.2f, center: (%.2f, %.2f, %.2f)",
+                msg->formation_type.c_str(),
+                msg->formation_scale,
+                msg->formation_center.x,
+                msg->formation_center.y,
+                msg->formation_center.z);
+
+    // Update formation parameters
+    current_formation_type_ = msg->formation_type;
+    current_formation_scale_ = msg->formation_scale;
+    current_formation_center_ = Eigen::Vector3d(
+        msg->formation_center.x, 
+        msg->formation_center.y, 
+        msg->formation_center.z
+    );
+    
+    has_formation_command_ = true;
+
+    // Generate and publish new formation target for this drone
+    generateFormationTargets(current_formation_center_,
+                             current_formation_type_,
+                             current_formation_scale_);
+}
+
+void ReplanFSM::generateFormationTargets(
+    const Eigen::Vector3d& center, 
+    const std::string& formation_type, 
+    double scale)
+{
+    // Generate formation pattern
+    std::vector<Eigen::Vector3d> formation_pattern =
+        generateFormationPattern(formation_type, num_drones_, scale);
+
+    // Translate pattern to center position
+    std::vector<Eigen::Vector3d> targets;
+    targets.reserve(num_drones_);
+
+    for (const auto& pattern_point : formation_pattern) {
+        targets.push_back(center + pattern_point);
+    }
+
+    // Set desired formation in SwarmGraph
+    if (swarm_graph_) {
+        swarm_graph_->setDesiredForm(targets);
+        RCLCPP_INFO(node_->get_logger(), "Set desired formation in SwarmGraph: %s", formation_type.c_str());
+    }
+
+    // Process formation target directly for this specific drone
+    if (drone_id_ >= 0 && drone_id_ < static_cast<int>(targets.size())) {
+        publishFormationTarget(targets[drone_id_]);
+    }
+}
+
+std::vector<Eigen::Vector3d> ReplanFSM::generateFormationPattern(
+    const std::string& formation_type, int num_drones, double scale)
+{
+    std::vector<Eigen::Vector3d> pattern;
+    pattern.reserve(num_drones);
+
+    if (formation_type == "square" && num_drones == 4) {
+        // Square formation for 4 drones
+        pattern.push_back(Eigen::Vector3d( scale/2,  -scale/2, 0.0));
+        pattern.push_back(Eigen::Vector3d( scale/2, scale/2, 0.0));
+        pattern.push_back(Eigen::Vector3d( -scale/2,  -scale/2, 0.0));
+        pattern.push_back(Eigen::Vector3d( -scale/2, scale/2, 0.0));
+    }
+    else if (formation_type == "triangle" && num_drones >= 3) {
+        pattern.push_back(Eigen::Vector3d( 2.0 * scale/2.0,   0.0, 0.0));
+        pattern.push_back(Eigen::Vector3d( 0.0,   0.0, 0.0));
+        pattern.push_back(Eigen::Vector3d(-1.0 * scale/2.0, -1.732 * scale/2.0, 0.0));
+        pattern.push_back(Eigen::Vector3d(-1.0 * scale/2.0, 1.732 * scale/2.0, 0.0));
+    }
+    else if (formation_type == "line") {
+        double road_width = 6.0;
+        double safe_width = 4.0;
+        double spacing = (num_drones > 1) ? safe_width / (num_drones - 1) : 0.0;
+        
+        for (int i = 0; i < num_drones; ++i) {
+            pattern.push_back(Eigen::Vector3d(
+                0,  // Range: [-2.0, 2.0] for 4 drones
+                -safe_width/2 + i * spacing, 
+                0.0
+            ));
+        }
+        
+        RCLCPP_INFO(node_->get_logger(), 
+                    "Line formation pattern: safe_width=%.1f, spacing=%.2f", 
+                    safe_width, spacing);
+    }
+    else if (formation_type == "circle") {
+        // Circle formation
+        double angle_step = 2.0 * M_PI / num_drones;
+        for (int i = 0; i < num_drones; ++i) {
+            double angle = i * angle_step;
+            pattern.push_back(Eigen::Vector3d(
+                scale * cos(angle), 
+                scale * sin(angle), 
+                0.0
+            ));
+        }
+    }
+    else {
+        // Default: square formation (fallback)
+        RCLCPP_INFO(node_->get_logger(),
+                    "Unknown formation type '%s', using square formation",
+                    formation_type.c_str());
+
+        if (num_drones <= 4) {
+            pattern.push_back(Eigen::Vector3d(-scale/2, -scale/2, 0.0));
+            if (num_drones > 1) pattern.push_back(Eigen::Vector3d( scale/2, -scale/2, 0.0));
+            if (num_drones > 2) pattern.push_back(Eigen::Vector3d( scale/2,  scale/2, 0.0));
+            if (num_drones > 3) pattern.push_back(Eigen::Vector3d(-scale/2,  scale/2, 0.0));
+        } else {
+            double angle_step = 2.0 * M_PI / num_drones;
+            for (int i = 0; i < num_drones; ++i) {
+                double angle = i * angle_step;
+                pattern.push_back(Eigen::Vector3d(
+                    scale * cos(angle), 
+                    scale * sin(angle), 
+                    0.0
+                ));
+            }
+        }
+    }
+
+    return pattern;
+}
+
+void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target) {
+    path_manager::msg::FormationTarget target_msg;
+
+    target_msg.header.stamp = node_->now();
+    target_msg.header.frame_id = "world";
+    target_msg.drone_id = drone_id_;
+
+    target_msg.target_position.x = target.x();
+    target_msg.target_position.y = target.y();
+    target_msg.target_position.z = target.z();
+
+    target_msg.target_velocity.x = 0.0;
+    target_msg.target_velocity.y = 0.0;
+    target_msg.target_velocity.z = 0.0;
+
+    // Add formation information
+    target_msg.formation_type = current_formation_type_;
+    target_msg.formation_scale = current_formation_scale_;
+    
+    formation_target_pub_->publish(target_msg);
+
+    RCLCPP_INFO(node_->get_logger(),
+                 "Published formation target for drone %d: (%.2f, %.2f, %.2f)", 
+                 drone_id_,
+                 target.x(),
+                 target.y(),
+                 target.z());
 }
 
 

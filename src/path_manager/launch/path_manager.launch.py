@@ -197,14 +197,7 @@ def create_drone_nodes(context, *args, **kwargs):
         condition=IfCondition(LaunchConfiguration('rviz_simulation'))
     )
 
-    formation_manager = Node(
-        package='path_manager',
-        executable='formation_manager',
-        name='formation_manager',
-        output='screen',
-        parameters=[drones_file, {'num_drones': num_drones}],
-    )
-
+    # Formation commander - no remapping needed as it only publishes formation commands
     formation_commander = Node(
         package='path_manager',
         executable='formation_commander',
@@ -213,11 +206,6 @@ def create_drone_nodes(context, *args, **kwargs):
     )
 
     immediate_actions = [visualization] + rover_nodes + jfi_nodes
-
-    formation_manager_delayed = TimerAction(
-        period=0.0,
-        actions=[formation_manager],
-    )
 
     traj_nodes_delayed = TimerAction(
         period=0.0,
@@ -234,7 +222,7 @@ def create_drone_nodes(context, *args, **kwargs):
         actions=[formation_commander],
     )
 
-    return immediate_actions + [formation_manager_delayed, traj_nodes_delayed, replan_nodes_delayed, formation_commander_delayed]
+    return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed, formation_commander_delayed]
 
 def generate_launch_description():
     return LaunchDescription([

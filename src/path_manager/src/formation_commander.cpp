@@ -9,7 +9,8 @@ class FormationCommander : public rclcpp::Node
 {
 public:
     FormationCommander() 
-    : Node("formation_commander"), command_count_(0)
+    : Node("formation_commander"), 
+      command_count_(0)
     {
         // QoS
         rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
@@ -48,9 +49,9 @@ private:
     void publishFormationCommand()
     {
         if (command_count_ >= 3) {
-            RCLCPP_INFO(this->get_logger(), "Formation command sequence completed. Stopping periodic timer.");
-            if (periodic_timer_) {
-                periodic_timer_->cancel();
+            RCLCPP_INFO(this->get_logger(), "Formation command sequence completed. Stopping sequence timer.");
+            if (sequence_timer_) {
+                sequence_timer_->cancel();
             }
             return;
         }
@@ -61,17 +62,17 @@ private:
 
         switch (command_count_) {
             case 0:
-                msg.formation_center.x = 88.75;
-                msg.formation_center.y = -14.31;
+                msg.formation_center.x = -9.83;
+                msg.formation_center.y = -67;
                 msg.formation_center.z = 0.0;
-                msg.formation_type = "square";
-                msg.formation_scale = 4.0;
+                msg.formation_type = "line";
+                msg.formation_scale = 3.0;
                 break;
             case 1:
-                msg.formation_center.x = 88.75;
-                msg.formation_center.y = -14.31;
+                msg.formation_center.x = 33.66;
+                msg.formation_center.y = -73;
                 msg.formation_center.z = 0.0;
-                msg.formation_type = "triangle";
+                msg.formation_type = "square";
                 msg.formation_scale = 3.0;
                 break;
             case 2:
@@ -101,7 +102,8 @@ private:
 
     rclcpp::Publisher<path_manager::msg::FormationCommand>::SharedPtr formation_cmd_pub_;
     rclcpp::TimerBase::SharedPtr initial_timer_;
-    rclcpp::TimerBase::SharedPtr periodic_timer_;
+    rclcpp::TimerBase::SharedPtr sequence_timer_;
+
     int command_count_;
 };
 

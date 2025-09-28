@@ -7,9 +7,11 @@
 #include <Eigen/Dense>
 #include "path_manager/msg/poly_traj.hpp"
 #include "path_manager/msg/formation_target.hpp"
+#include "path_manager/msg/formation_command.hpp"
 #include "path_manager/msg/position_command.hpp"
 #include "path_manager/path_manager.h"
 #include "path_optimizer/plan_container.hpp"
+#include "swarm_graph/swarm_graph.hpp"
 #include "../../common/log_manager.hpp"
 
 // Conditional logging macros to avoid code duplication
@@ -60,6 +62,7 @@ public:
     void PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
     void recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg);
     void formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg);
+    void formationCommandCallback(const path_manager::msg::FormationCommand::SharedPtr msg);
     void polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     void globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     rclcpp::CallbackGroup::SharedPtr odom_callback_group_;
@@ -72,6 +75,11 @@ private:
     bool planFromLocalTraj(bool flag_use_poly_init, bool use_formation);
     void changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_call);
     bool isMapReady(const Eigen::Vector3d& start_pos);
+    
+    // Formation manager functions
+    void generateFormationTargets(const Eigen::Vector3d& center, const std::string& formation_type, double scale);
+    std::vector<Eigen::Vector3d> generateFormationPattern(const std::string& formation_type, int num_drones, double scale);
+    void publishFormationTarget(const Eigen::Vector3d& target);
 
     std::shared_ptr<PathManager> path_manager_;
 
@@ -82,6 +90,8 @@ private:
     rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr broadcast_traj_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr px4_position_sub_;
     rclcpp::Subscription<path_manager::msg::FormationTarget>::SharedPtr formation_target_sub_;
+    rclcpp::Subscription<path_manager::msg::FormationCommand>::SharedPtr formation_cmd_sub_;
+    rclcpp::Publisher<path_manager::msg::FormationTarget>::SharedPtr formation_target_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::TimerBase::SharedPtr odom_timer_;
 
@@ -111,6 +121,14 @@ private:
     bool rviz_simulation_;
     bool flag_escape_emergency_;
     bool enable_debug_logs_;
+
+    // Formation manager variables
+    int num_drones_;
+    std::string current_formation_type_;
+    double current_formation_scale_;
+    Eigen::Vector3d current_formation_center_;
+    bool has_formation_command_;
+    SwarmGraph::Ptr swarm_graph_;
 
     std::unique_ptr<swarm_formation::LogManager> log_manager_;
 };
