@@ -197,12 +197,21 @@ def create_drone_nodes(context, *args, **kwargs):
         condition=IfCondition(LaunchConfiguration('rviz_simulation'))
     )
 
-    # Formation commander - no remapping needed as it only publishes formation commands
+    formation_remaps = []
+    if not real_mode:
+        for vid in range(1, num_drones + 1):
+            formation_remaps += [
+                (f'/V{vid}/planning/broadcast_traj_send', '/planning/broadcast_traj_recv'),
+                (f'/V{vid}/j_fi/broadcast_traj_recv',     '/planning/broadcast_traj_recv'),
+            ]
+
     formation_commander = Node(
         package='path_manager',
         executable='formation_commander',
         name='formation_commander',
         output='screen',
+        parameters=[drones_file],
+        remappings=formation_remaps,
     )
 
     immediate_actions = [visualization] + rover_nodes + jfi_nodes

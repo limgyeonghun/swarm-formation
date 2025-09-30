@@ -38,6 +38,7 @@ namespace path_manager
     bool planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel,
                         const Eigen::Vector3d &start_acc, const std::vector<Eigen::Vector3d> &waypoints,
                         const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
+    std::vector<Eigen::VectorXd> playground_bspline(const std::vector<Eigen::VectorXd> &pts);
     bool checkCollision(int drone_id);
 
     void deliverTrajToOptimizer(void) { 

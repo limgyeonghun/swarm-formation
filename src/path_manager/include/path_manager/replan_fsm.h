@@ -77,9 +77,9 @@ private:
     bool isMapReady(const Eigen::Vector3d& start_pos);
     
     // Formation manager functions
-    void generateFormationTargets(const Eigen::Vector3d& center, const std::string& formation_type, double scale);
+    void generateFormationTargets(const Eigen::Vector3d& center, const std::string& formation_type, double scale, const std::vector<Eigen::Vector3d>& waypoints = {});
     std::vector<Eigen::Vector3d> generateFormationPattern(const std::string& formation_type, int num_drones, double scale);
-    void publishFormationTarget(const Eigen::Vector3d& target);
+    void publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints = {});
 
     std::shared_ptr<PathManager> path_manager_;
 

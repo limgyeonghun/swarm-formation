@@ -1,4 +1,6 @@
 #include "path_manager/path_manager.h"
+#include "path_manager/uniform_bspline.h"
+#include "path_manager/polynomial_traj.h"
 
 namespace path_manager
 {
@@ -314,53 +316,121 @@ namespace path_manager
         return true;
     }
 
+    std::vector<Eigen::VectorXd> PathManager::playground_bspline(const std::vector<Eigen::VectorXd> &pts)
+    {
+        std::vector<Eigen::VectorXd> b_pts;
+
+        double interval = 1.0;
+        int num_samples = 300;
+
+        Eigen::MatrixXd ctl_pts(pts[0].size(), pts.size());
+        for (size_t i = 0; i < pts.size(); ++i)
+        {
+            ctl_pts.col(i) = pts[i];
+        }
+
+        // B Spline
+        ego_planner::UniformBspline bspline = ego_planner::UniformBspline(ctl_pts, 3, interval);
+        double ts, te;
+        bspline.getTimeSpan(ts, te);
+        double gap = (te - ts) / num_samples;
+        Eigen::VectorXd pos;
+        for (double t = ts; t < te; t += gap)
+        {
+            pos = bspline.evaluateDeBoorT(t);
+            b_pts.push_back(pos);
+        }
+
+        return b_pts;
+    }
+
     bool PathManager::planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel,
                                      const Eigen::Vector3d &start_acc, const std::vector<Eigen::Vector3d> &waypoints,
                                      const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
     {
+        RCLCPP_INFO(node_->get_logger(), "Planning global trajectory using playground B-spline with %zu waypoints", waypoints.size());
+
+        // Step 1: Prepare waypoints for B-spline generation
+        std::vector<Eigen::Vector3d> all_points;
+        all_points.push_back(start_pos);
+        for (const auto& wp : waypoints) {
+            all_points.push_back(wp);
+        }
+
+        // Step 2: Convert Vector3d to VectorXd for playground_bspline
+        std::vector<Eigen::VectorXd> pts_vectorxd;
+        if (!all_points.empty()) {
+            for (int i = 0; i < 3; ++i) {
+                Eigen::VectorXd pt_vectorxd(3);
+                pt_vectorxd << all_points.front().x(), all_points.front().y(), all_points.front().z();
+                pts_vectorxd.push_back(pt_vectorxd);
+            }
+            for (size_t i = 1; i < all_points.size() - 1; ++i) {
+                Eigen::VectorXd pt_vectorxd(3);
+                pt_vectorxd << all_points[i].x(), all_points[i].y(), all_points[i].z();
+                pts_vectorxd.push_back(pt_vectorxd);
+            }
+            for (int i = 0; i < 3; ++i) {
+                Eigen::VectorXd pt_vectorxd(3);
+                pt_vectorxd << all_points.back().x(), all_points.back().y(), all_points.back().z();
+                pts_vectorxd.push_back(pt_vectorxd);
+            }
+        }
+
+        // Step 3: Generate B-spline trajectory using playground_bspline
+        std::vector<Eigen::VectorXd> b_pts = playground_bspline(pts_vectorxd);
+        
+        RCLCPP_INFO(node_->get_logger(), "Generated %zu B-spline points", b_pts.size());
+
+        // Step 4: Convert back to Vector3d for trajectory generation
+        std::vector<Eigen::Vector3d> sampled_points;
+        for (const auto& b_pt : b_pts) {
+            sampled_points.push_back(Eigen::Vector3d(b_pt.x(), b_pt.y(), b_pt.z()));
+        }
+
+        // Step 5: Convert to MINCO trajectory
         poly_traj::MinJerkOpt globalMJO;
+        
+        // Create waypoint trajectory using the sampled points
         Eigen::Matrix<double, 3, 3> headState, tailState;
         headState << start_pos, start_vel, start_acc;
         tailState << waypoints.back(), end_vel, end_acc;
+        
         Eigen::MatrixXd innerPts;
-
-        if (waypoints.size() > 1)
-        {
-            innerPts.resize(3, waypoints.size() - 1);
-            for (int i = 0; i < waypoints.size() - 1; i++)
-                innerPts.col(i) = waypoints[i];
-        }
-        else
-        {
-            if (innerPts.size() != 0)
-            {
-                RCLCPP_ERROR(node_->get_logger(), "innerPts.size() != 0");
+        if (sampled_points.size() > 2) {
+            innerPts.resize(3, sampled_points.size() - 2);
+            for (size_t i = 1; i < sampled_points.size() - 1; ++i) {
+                innerPts.col(i-1) = sampled_points[i];
             }
         }
-        globalMJO.reset(headState, tailState, waypoints.size());
-
+        
+        globalMJO.reset(headState, tailState, sampled_points.size() - 1);
+        
+        // Optimize time allocation to ensure velocity constraints
         double des_vel = max_vel_;
-        Eigen::VectorXd time_vec(waypoints.size());
+        Eigen::VectorXd optimized_time_vec(sampled_points.size() - 1);
         int try_num = 0;
-        do
-        {
-            for (size_t i = 0; i < waypoints.size(); ++i)
-            {
-                time_vec(i) = (i == 0) ? (waypoints[0] - start_pos).norm() / des_vel
-                                       : (waypoints[i] - waypoints[i - 1]).norm() / des_vel;
+        
+        do {
+            for (size_t i = 0; i < sampled_points.size() - 1; ++i) {
+                double segment_length = (sampled_points[i+1] - sampled_points[i]).norm();
+                optimized_time_vec(i) = std::max(0.1, segment_length / des_vel);
             }
-            globalMJO.generate(innerPts, time_vec);
-            // cout << "try_num : " << try_num << endl;
-            // cout << "max vel : " << globalMJO.getTraj().getMaxVelRate() << endl;
-            // cout << "time_vec : " << time_vec.transpose() << endl;
-
+            
+            globalMJO.generate(innerPts, optimized_time_vec);
+            
             des_vel /= 1.2;
             try_num++;
         } while (globalMJO.getTraj().getMaxVelRate() > max_vel_ && try_num <= 5);
-
+        
         auto time_now = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
         traj_.setGlobalTraj(globalMJO.getTraj(), time_now);
-
+        
+        RCLCPP_INFO(node_->get_logger(), "Successfully generated global trajectory with B-spline -> MINCO conversion");
+        RCLCPP_INFO(node_->get_logger(), "Final trajectory: %d segments, duration: %.3f, max_vel: %.3f", 
+                   globalMJO.getTraj().getPieceNum(), globalMJO.getTraj().getTotalDuration(), 
+                   globalMJO.getTraj().getMaxVelRate());
+        
         return true;
     }
 

@@ -42,6 +42,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 add_library(${PROJECT_NAME}_lib
   src/path_manager.cpp
   src/replan_fsm.cpp
+  src/uniform_bspline.cpp
+  src/polynomial_traj.cpp
   ../common/log_manager.cpp
 )
 
@@ -108,6 +110,7 @@ ament_target_dependencies(formation_commander
   std_msgs
   geometry_msgs
   Eigen3
+  path_optimizer
   rosidl_default_runtime
 )
 target_include_directories(formation_commander PUBLIC
