@@ -367,7 +367,7 @@ void PathVisualization::globalPathCallback(const path_manager::msg::PolyTraj::Sh
   }
 
   auto [r, g, b] = getDroneColor(msg->drone_id);
-  // publishPath(global_path, msg->drone_id, r, g, b, 0.8, global_traj_pub_);
+  publishPath(global_path, msg->drone_id, r, g, b, 0.8, global_traj_pub_);
 }
 
 void PathVisualization::updatePosition()

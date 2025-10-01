@@ -312,10 +312,8 @@ void ReplanFSM::computeAndPublishPaths() {
 
             if ((local_target_pt_ - end_pt_).norm() < 0.1)
             {
-                RCLCPP_INFO(node_->get_logger(), "CHECKPOINT 1");
                 if (t_cur > local_traj->duration - 0.2)
                 {
-                    RCLCPP_INFO(node_->get_logger(), "CHECKPOINT 2");
                     have_target_ = false;
                     have_local_traj_ = false;
                     changeFSMExecState(WAIT_POSITION, "FSM");
@@ -325,7 +323,6 @@ void ReplanFSM::computeAndPublishPaths() {
                 }
                 else if ((end_pt_ - pos).norm() > no_replan_thresh_ && t_cur > replan_thresh_)
                 {
-                    RCLCPP_INFO(node_->get_logger(), "CHECKPOINT 3");
                     RCLCPP_ERROR(node_->get_logger(), "No Replan Thresh");
                     log_manager_->errorf("No Replan Thresh");
                     changeFSMExecState(REPLAN_TRAJ, "FSM");
@@ -333,7 +330,6 @@ void ReplanFSM::computeAndPublishPaths() {
             }
             else if (t_cur > replan_thresh_)
             {
-                RCLCPP_INFO(node_->get_logger(), "CHECKPOINT 4");
                 changeFSMExecState(REPLAN_TRAJ, "FSM");
             }
             break;
@@ -802,11 +798,44 @@ std::vector<Eigen::Vector3d> ReplanFSM::generateFormationPattern(
         pattern.push_back(Eigen::Vector3d( -scale/2, scale/2, 0.0));
     }
     else if (formation_type == "triangle" && num_drones >= 3) {
-        pattern.push_back(Eigen::Vector3d(-1.0 * scale/2.0, -1.732 * scale/2.0, 0.0));
-        pattern.push_back(Eigen::Vector3d( 0.0,   0.0, 0.0));
-        pattern.push_back(Eigen::Vector3d( 2.0 * scale/2.0,   0.0, 0.0));
-        pattern.push_back(Eigen::Vector3d(-1.0 * scale/2.0, 1.732 * scale/2.0, 0.0));
+        double h = scale * std::sqrt(3) / 2.0;
+    
+        pattern.clear();
+        pattern.push_back(Eigen::Vector3d(0.0, -2.0*h/3.0, 0.0));
+        pattern.push_back(Eigen::Vector3d(-scale/2.0, +h/3.0, 0.0));
+        pattern.push_back(Eigen::Vector3d( scale/2.0, +h/3.0, 0.0));
+    
+        if (num_drones > 3) {
+            pattern.push_back(Eigen::Vector3d(0.0, +h/3.0, 0.0));
+        }
     }
+    
+    // TODO: Add other formation types
+    
+    // else if (formation_type == "Echelon" && num_drones >= 2) {
+    //     int sign = +1; 
+    //     double dx = 0.5 * scale;
+    //     double dy = 0.6 * scale;
+    
+    //     pattern.clear();
+    //     for (int i = 0; i < num_drones; ++i) {
+    //         double x = sign * i * dx;
+    //         double y = - i * dy;
+    //         pattern.push_back(Eigen::Vector3d(x, y, 0.0));
+    //     }
+    // }
+    // else if (formation_type == "Staggered" && num_drones >= 2) {
+    //     double dx = 0.5 * scale;
+    //     double dy = 0.6 * scale;
+    
+    //     pattern.clear();
+    //     for (int i = 0; i < num_drones; ++i) {
+    //         int side = (i % 2 == 0) ? -1 : +1;
+    //         double x = side * dx;
+    //         double y = - (i/2) * dy;
+    //         pattern.push_back(Eigen::Vector3d(x, y, 0.0));
+    //     }
+    // }
     else if (formation_type == "line_first") {
         double spacing = (num_drones > 1) ? scale / (num_drones - 1) : 0.0;
         double line_angle = 83.0 * M_PI / 180.0;
