@@ -347,8 +347,12 @@ void ReplanFSM::computeAndPublishPaths() {
 void ReplanFSM::targetPositionCallback(const path_manager::msg::PositionCommand::SharedPtr msg) {
     current_pos_ = Eigen::Vector3d(msg->position.x, msg->position.y, msg->position.z);
     // Debug log to show position updates
-    RCLCPP_DEBUG(node_->get_logger(), "Updated position from traj_server: (%.2f, %.2f, %.2f)", 
-                current_pos_(0), current_pos_(1), current_pos_(2));
+    if (enable_debug_logs_) {
+        RCLCPP_DEBUG(node_->get_logger(), "Updated position from traj_server: (%.3f, %.3f, %.3f)", 
+                    current_pos_(0), current_pos_(1), current_pos_(2));
+        log_manager_->infof("Updated position from traj_server: (%.3f, %.3f, %.3f)", 
+                    current_pos_(0), current_pos_(1), current_pos_(2));
+    }
 }
 
 void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
@@ -801,12 +805,12 @@ std::vector<Eigen::Vector3d> ReplanFSM::generateFormationPattern(
         double h = scale * std::sqrt(3) / 2.0;
     
         pattern.clear();
-        pattern.push_back(Eigen::Vector3d(0.0, -2.0*h/3.0, 0.0));
         pattern.push_back(Eigen::Vector3d(-scale/2.0, +h/3.0, 0.0));
-        pattern.push_back(Eigen::Vector3d( scale/2.0, +h/3.0, 0.0));
+        pattern.push_back(Eigen::Vector3d(0.0, -2.0*h/3.0, 0.0));
+        pattern.push_back(Eigen::Vector3d(0.0, +h/3.0, 0.0));
     
         if (num_drones > 3) {
-            pattern.push_back(Eigen::Vector3d(0.0, +h/3.0, 0.0));
+            pattern.push_back(Eigen::Vector3d( scale/2.0, +h/3.0, 0.0));
         }
     }
     

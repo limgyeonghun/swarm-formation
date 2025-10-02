@@ -7,6 +7,7 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <cmath>
 
 using namespace std;
 
@@ -77,6 +78,7 @@ public:
   void setStaticMap(const std::vector<double>& static_occupancy);
   void setOccupancy(const Eigen::Vector3i& id, double occ);
   void inflatePoint(const Eigen::Vector3i& pt, int step);
+  void inflatePoint(const Eigen::Vector3i& pt, int step, std::vector<Eigen::Vector3i>& pts);
 
   void updateESDF3d();
   void updateESDF3d(const Eigen::Vector3i& min_esdf, const Eigen::Vector3i& max_esdf);
@@ -105,6 +107,7 @@ public:
   inline int getInflateOccupancy(const Eigen::Vector3d& pos);
   inline int getInflateOccupancy2D(const Eigen::Vector3d& pos);  // 2D optimized version
   inline double getResolution();
+  inline double getObstaclesInflation();
 
   Eigen::Vector3i getVoxelNum() const { return mp_.map_voxel_num_; }
   Eigen::Vector3d getMapMinBoundary() const { return mp_.map_min_boundary_; }
@@ -294,4 +297,7 @@ inline bool GridMap::isInRoadBoundary(const Eigen::Vector3d& pos) {
   return false;
 }
 
+inline double GridMap::getObstaclesInflation() {
+  return mp_.obstacles_inflation_;
+}
 #endif

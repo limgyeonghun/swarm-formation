@@ -83,7 +83,7 @@ private:
             return false;
     }
     inline bool checkOccupancy_esdf2D(const Eigen::Vector3d &pos){
-        const double dist = 0.2;
+        const double dist = 0.15;
         if (grid_map_->getDistance(pos) < dist ) 
             return true;
         else

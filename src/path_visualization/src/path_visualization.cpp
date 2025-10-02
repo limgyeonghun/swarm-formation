@@ -95,7 +95,9 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   // Only publish obstacles if obstacle avoidance is enabled
   if (enable_obstacles_)
   {
-    publishObstacles();
+    // Create a timer to periodically publish obstacles to ensure they remain visible
+    obstacle_timer_ = this->create_wall_timer(1000ms, std::bind(&PathVisualization::publishObstacles, this));
+    publishObstacles(); // Initial publish
   }
   
   // Publish road boundaries if enabled
@@ -199,6 +201,8 @@ void PathVisualization::loadObstacleParameters()
         Eigen::Vector3d(0.0, 1.0, 0.5),
         Eigen::Vector3d(3.0, 3.0, 0.5)};
   }
+  
+  RCLCPP_INFO(this->get_logger(), "Loaded %zu obstacles for visualization", obstacle_centers_.size());
 }
 
 void PathVisualization::logPositions()
@@ -367,7 +371,7 @@ void PathVisualization::globalPathCallback(const path_manager::msg::PolyTraj::Sh
   }
 
   auto [r, g, b] = getDroneColor(msg->drone_id);
-  publishPath(global_path, msg->drone_id, r, g, b, 0.8, global_traj_pub_);
+  // publishPath(global_path, msg->drone_id, r, g, b, 0.8, global_traj_pub_);
 }
 
 void PathVisualization::updatePosition()
@@ -476,14 +480,26 @@ void PathVisualization::publishObstacles()
     return;
   }
   
+  // Create a single marker array for all obstacles to improve performance
+  auto marker = createMarker("obstacles", 0, visualization_msgs::msg::Marker::CUBE_LIST, 1.6, 0.0, 1.0, 0.0, 0.7);
+  
+  // Set lifetime to ensure markers don't disappear
+  marker.lifetime = rclcpp::Duration::from_seconds(2.0);
+  
+  // Add all obstacle positions to the marker
   for (size_t i = 0; i < obstacle_centers_.size(); ++i)
   {
-    auto marker = createMarker("obstacle", i, visualization_msgs::msg::Marker::SPHERE, 1.6, 0.0, 1.0, 0.0, 0.5);
-    marker.pose.position.x = obstacle_centers_[i].x();
-    marker.pose.position.y = obstacle_centers_[i].y();
-    marker.pose.position.z = obstacle_centers_[i].z();
-    marker_pub_->publish(marker);
+    geometry_msgs::msg::Point point;
+    point.x = obstacle_centers_[i].x();
+    point.y = obstacle_centers_[i].y();
+    point.z = obstacle_centers_[i].z();
+    marker.points.push_back(point);
   }
+  
+  // Publish the single marker containing all obstacles
+  marker_pub_->publish(marker);
+  
+  RCLCPP_DEBUG(this->get_logger(), "Published %zu obstacles", obstacle_centers_.size());
 }
 
 void PathVisualization::loadRoadParameters()

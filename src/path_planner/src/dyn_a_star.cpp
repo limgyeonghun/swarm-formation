@@ -164,13 +164,9 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
             log_manager_->warnf("시작점이 장애물 내부에 위치 - Idx: (%d,%d,%d), Coord: (%.2f,%.2f,%.2f)", 
                                start_idx(0), start_idx(1), start_idx(2), start_pt(0), start_pt(1), start_pt(2));
         }
-        RCLCPP_INFO(rclcpp::get_logger("astar"), "Start idx %d %d %d", start_idx(0), start_idx(1), start_idx(2));
-        RCLCPP_INFO(rclcpp::get_logger("astar"), "Start point %f %f %f", start_pt(0), start_pt(1), start_pt(2));
-        RCLCPP_WARN(rclcpp::get_logger("astar"), "Start point is inside an obstacle.");
-        RCLCPP_WARN(rclcpp::get_logger("astar"), "Start point: (%f,%f,%f)", start_pt(0), start_pt(1), start_pt(2));
         do
         {
-            start_pt = (end_pt - start_pt).normalized() * step_size_ + start_pt;
+            start_pt = (start_pt - end_pt).normalized() * step_size_ + start_pt;
             if (!Coord2Index(start_pt, start_idx))
                 return false;
         } while (checkOccupancy(Index2Coord(start_idx)));
@@ -185,11 +181,9 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
         if (log_manager_) {
             log_manager_->warnf("도착점이 장애물 내부에 위치 - Coord: (%.2f,%.2f,%.2f)", end_pt(0), end_pt(1), end_pt(2));
         }
-        RCLCPP_WARN(rclcpp::get_logger("astar"), "End point is inside an obstacle.");
-        RCLCPP_WARN(rclcpp::get_logger("astar"), "End point: (%f,%f,%f)", end_pt(0), end_pt(1), end_pt(2));
         do
         {
-            end_pt = (start_pt - end_pt).normalized() * step_size_ + end_pt;
+            end_pt = (end_pt - start_pt).normalized() * step_size_ + end_pt;
             if (!Coord2Index(end_pt, end_idx))
                 return false;
         } while (checkOccupancy(Index2Coord(end_idx)));
@@ -530,12 +524,12 @@ bool AStar::AstarSearch2D(const double step_size, Vector3d start_pt, Vector3d en
         
         auto time_2 = rclcpp::Clock().now();
         auto elapsed = time_2 - time_1;
-        if (elapsed.seconds() > 0.2)
+        if (elapsed.seconds() > 0.3)
         {
             if (log_manager_) {
                 log_manager_->warnf("2D A* 검색 시간 초과 - %.3fms 경과, 반복: %d회", elapsed.seconds()*1000, num_iter);
             }
-            RCLCPP_WARN(rclcpp::get_logger("astar"), "Failed in 2D A star path searching !!! 0.2 seconds time limit exceeded.");
+            RCLCPP_WARN(rclcpp::get_logger("astar"), "Failed in 2D A star path searching !!! 0.3 seconds time limit exceeded.");
             return false;
         }
     }

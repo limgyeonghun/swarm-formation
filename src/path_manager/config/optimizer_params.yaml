@@ -8,28 +8,28 @@
     
     # Debug Logging Control
     enable_debug_logs: true  # Set to true to enable detailed timing logs
-    enable_lbfgs_detail_logs: false  # Set to true to enable detailed L-BFGS cost debugging
+    enable_lbfgs_detail_logs: true  # Set to true to enable detailed L-BFGS cost debugging
     
     # Cost Function Weights
     optimization/weight_obstacle: 50000.0
-    optimization/weight_swarm: 50000.0
-    optimization/weight_feasibility: 10000.0
-    optimization/weight_sqrvariance: 10000.0
+    optimization/weight_swarm: 80000.0
+    optimization/weight_feasibility: 25000.0
+    optimization/weight_sqrvariance: 25000.0
     optimization/weight_time: 80.0
-    optimization/weight_formation: 15000.0
+    optimization/weight_formation: 10000.0
     
     # Safety Distance Settings
-    optimization/obstacle_clearance: 0.8  # Further increased safety distance from obstacles
+    optimization/obstacle_clearance: 0.5  # Further increased safety distance from obstacles
     optimization/swarm_clearance: 0.8
     
     # Formation and Dynamics Constraints
     optimization/formation_type: 2
     optimization/max_vel: 1.5
-    optimization/max_acc: 8.0
+    optimization/max_acc: 3.0
 
     # Path Manager Parameters
     manager/max_vel: 1.5
-    manager/max_acc: 8.0
+    manager/max_acc: 3.0
     manager/polyTraj_piece_length: 2.0
     manager/planning_horizon: 7.5
     

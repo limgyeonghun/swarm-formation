@@ -65,6 +65,7 @@ private:
   std::vector<rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr> simple_path_subs_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr log_timer_;
+  rclcpp::TimerBase::SharedPtr obstacle_timer_;
 };
 
 #endif // PATH_VISUALIZATION_H

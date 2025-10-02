@@ -173,17 +173,15 @@ void GridMap::setOccupancy(const Eigen::Vector3i& id, double occ) {
 // }
 
 void GridMap::inflatePoint(const Eigen::Vector3i& pt, int step) {
-    const int z_idx = std::max(pt.z() - step, 0);
-    const int x_min = std::max(pt.x() - step, 0);
-    const int x_max = std::min(pt.x() + step, mp_.map_voxel_num_(0) - 1);
-    const int y_min = std::max(pt.y() - step, 0);
-    const int y_max = std::min(pt.y() + step, mp_.map_voxel_num_(1) - 1);
-
-    // Memory access optimization: access contiguous memory regions
-    for (int x = x_min; x <= x_max; ++x) {
-        for (int y = y_min; y <= y_max; ++y) {
-            Eigen::Vector3i inf_pt(x, y, z_idx);
-            
+    // Create a vector to store inflation points
+    std::vector<Eigen::Vector3i> inf_pts(pow(2 * step + 1, 3));
+    
+    // Use the overloaded function to get inflation points
+    inflatePoint(pt, step, inf_pts);
+    
+    // Apply inflation to occupancy buffer
+    for (const auto& inf_pt : inf_pts) {
+        if (isInMap(inf_pt)) {
             // Check if point is within road boundary before inflating
             if (mp_.use_road_boundary_) {
                 Eigen::Vector3d pos;
@@ -195,6 +193,21 @@ void GridMap::inflatePoint(const Eigen::Vector3i& pt, int step) {
             }
             
             md_.occupancy_buffer_inflate_[toAddress(inf_pt)] = 1;
+        }
+    }
+}
+
+void GridMap::inflatePoint(const Eigen::Vector3i& pt, int step, std::vector<Eigen::Vector3i>& pts) {
+    int num = 0;
+    
+    // All inflate - create 3D cube box for obstacle inflation
+    for (int x = -step; x <= step; ++x) {
+        for (int y = -step; y <= step; ++y) {
+            for (int z = -step; z <= step; ++z) {
+                if (num < (int)pts.size()) {
+                    pts[num++] = Eigen::Vector3i(pt(0) + x, pt(1) + y, pt(2) + z);
+                }
+            }
         }
     }
 }
@@ -557,13 +570,26 @@ void GridMap::clearAndInflateLocalMap() {
     }
   }
 
-  // Inflate obstacles
+  // Inflate obstacles using obstacles_inflation parameter
   int inf_step = ceil(mp_.obstacles_inflation_ / mp_.resolution_);
+  std::vector<Eigen::Vector3i> inf_pts(pow(2 * inf_step + 1, 3));
+  
   for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x) {
     for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y) {
       for (int z = md_.local_bound_min_(2); z <= md_.local_bound_max_(2); ++z) {
         if (md_.occupancy_buffer_[toAddress(x, y, z)] > mp_.min_occupancy_log_) {
-          inflatePoint(Eigen::Vector3i(x, y, z), inf_step);
+          inflatePoint(Eigen::Vector3i(x, y, z), inf_step, inf_pts);
+          
+          // Apply inflation points to occupancy buffer
+          for (int k = 0; k < (int)inf_pts.size(); ++k) {
+            Eigen::Vector3i inf_pt = inf_pts[k];
+            int idx_inf = toAddress(inf_pt);
+            if (idx_inf < 0 || 
+                idx_inf >= mp_.map_voxel_num_(0) * mp_.map_voxel_num_(1) * mp_.map_voxel_num_(2)) {
+              continue;
+            }
+            md_.occupancy_buffer_inflate_[idx_inf] = 1;
+          }
         }
       }
     }

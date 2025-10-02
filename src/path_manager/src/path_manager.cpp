@@ -59,12 +59,15 @@ namespace path_manager
         }
         std::cout << std::endl;
 
+        // Calculate inflation step from obstacles_inflation parameter
+        int inf_step = ceil(grid_map_->getObstaclesInflation() / grid_map_->getResolution());
+        
         for (const auto &obs : obstacle_centers_)
         {
             Eigen::Vector3i idx;
             grid_map_->posToIndex(obs, idx);
             grid_map_->setOccupancy(idx, 1.0);
-            grid_map_->inflatePoint(idx, 10.0);
+            grid_map_->inflatePoint(idx, inf_step);
         }
         grid_map_->updateESDF3d(); // not used? -> esdf_timer
 
