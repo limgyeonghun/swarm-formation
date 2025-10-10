@@ -218,7 +218,7 @@ private:
                 msg.formation_type = "square";
                 msg.formation_scale = 2.0;
                 
-                msg.waypoints.resize(6);
+                msg.waypoints.resize(7);
                 msg.waypoints[0].x = 32.47298; msg.waypoints[0].y = -93.42377; msg.waypoints[0].z = 0.0;
                 msg.waypoints[1].x = 27.85286; msg.waypoints[1].y = -116.42038; msg.waypoints[1].z = 0.0;
                 msg.waypoints[2].x = 29.01373; msg.waypoints[2].y = -121.56232; msg.waypoints[2].z = 0.0;
@@ -232,7 +232,7 @@ private:
                 msg.formation_center.y = -138.76;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "line_second";
-                msg.formation_scale = 5.0;
+                msg.formation_scale = 2.0;
                 
                 msg.waypoints.resize(1);
                 msg.waypoints[0].x = 107.0; msg.waypoints[0].y = -138.76; msg.waypoints[0].z = 0.0;

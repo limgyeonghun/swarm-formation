@@ -2,8 +2,8 @@
   ros__parameters:
     # Grid Map Basic Settings (2D for Rover) - Extended for long path
     grid_map/resolution: 0.1
-    grid_map/map_size_x: 200.0  # Extended to support x=80m movement
-    grid_map/map_size_y: 200.0  # Extended to 120m for (0,0) -> (-1,100) path
+    grid_map/map_size_x: 250.0  # Extended to support x=107m movement  
+    grid_map/map_size_y: 300.0  # Extended to support y=-138.76m movement
     grid_map/map_size_z: 1.0   # Minimal height for 2D operation
     grid_map/frame_id: "world"
     

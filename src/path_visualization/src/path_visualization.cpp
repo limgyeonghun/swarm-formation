@@ -371,7 +371,7 @@ void PathVisualization::globalPathCallback(const path_manager::msg::PolyTraj::Sh
   }
 
   auto [r, g, b] = getDroneColor(msg->drone_id);
-  // publishPath(global_path, msg->drone_id, r, g, b, 0.8, global_traj_pub_);
+  publishPath(global_path, msg->drone_id, r, g, b, 0.8, global_traj_pub_);
 }
 
 void PathVisualization::updatePosition()
@@ -481,7 +481,7 @@ void PathVisualization::publishObstacles()
   }
   
   // Create a single marker array for all obstacles to improve performance
-  auto marker = createMarker("obstacles", 0, visualization_msgs::msg::Marker::CUBE_LIST, 1.6, 0.0, 1.0, 0.0, 0.7);
+  auto marker = createMarker("obstacles", 0, visualization_msgs::msg::Marker::CUBE_LIST, 1.5, 0.0, 1.0, 0.0, 0.7);
   
   // Set lifetime to ensure markers don't disappear
   marker.lifetime = rclcpp::Duration::from_seconds(2.0);

@@ -797,16 +797,16 @@ std::vector<Eigen::Vector3d> ReplanFSM::generateFormationPattern(
 
     if (formation_type == "square" && num_drones == 4) {
         pattern.push_back(Eigen::Vector3d( -scale/2,  -scale/2, 0.0));
-        pattern.push_back(Eigen::Vector3d( scale/2,  -scale/2, 0.0));
+        pattern.push_back(Eigen::Vector3d( -scale/2,  scale/2, 0.0));
         pattern.push_back(Eigen::Vector3d( scale/2, scale/2, 0.0));
-        pattern.push_back(Eigen::Vector3d( -scale/2, scale/2, 0.0));
+        pattern.push_back(Eigen::Vector3d( scale/2, -scale/2, 0.0));
     }
     else if (formation_type == "triangle" && num_drones >= 3) {
         double h = scale * std::sqrt(3) / 2.0;
     
         pattern.clear();
-        pattern.push_back(Eigen::Vector3d(-scale/2.0, +h/3.0, 0.0));
         pattern.push_back(Eigen::Vector3d(0.0, -2.0*h/3.0, 0.0));
+        pattern.push_back(Eigen::Vector3d(-scale/2.0, +h/3.0, 0.0));
         pattern.push_back(Eigen::Vector3d(0.0, +h/3.0, 0.0));
     
         if (num_drones > 3) {
