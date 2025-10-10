@@ -16,7 +16,7 @@
     optimization/weight_feasibility: 25000.0
     optimization/weight_sqrvariance: 25000.0
     optimization/weight_time: 80.0
-    optimization/weight_formation: 10000.0
+    optimization/weight_formation: 20000.0
     
     # Safety Distance Settings
     optimization/obstacle_clearance: 0.8  # Further increased safety distance from obstacles

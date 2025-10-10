@@ -44,6 +44,7 @@ add_library(${PROJECT_NAME}_lib
   src/replan_fsm.cpp
   src/uniform_bspline.cpp
   src/polynomial_traj.cpp
+  src/hungarian_algorithm.cpp
   ../common/log_manager.cpp
 )
 
@@ -114,6 +115,8 @@ ament_target_dependencies(formation_commander
   rosidl_default_runtime
 )
 target_include_directories(formation_commander PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_cpp>
   ${EIGEN3_INCLUDE_DIRS}
 )
 

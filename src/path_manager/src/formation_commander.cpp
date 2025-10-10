@@ -9,11 +9,16 @@
 
 using namespace std::chrono_literals;
 
+/**
+ * @brief Lightweight FormationCommander - only publishes formation commands
+ *
+ * Task assignment is now handled in a distributed manner by each drone's replan_fsm
+ */
 class FormationCommander : public rclcpp::Node
 {
 public:
-    FormationCommander() 
-    : Node("formation_commander"), 
+    FormationCommander()
+    : Node("formation_commander"),
       command_count_(0),
       current_formation_center_(0.0, 0.0, 0.0),
       have_initial_command_(false)
@@ -21,15 +26,17 @@ public:
         // Declare parameters
         this->declare_parameter("num_drones", 4);
         this->declare_parameter("distance_threshold", 3.0);
-        
+
         // Get parameters
         num_drones_ = this->get_parameter("num_drones").as_int();
         distance_threshold_ = this->get_parameter("distance_threshold").as_double();
 
-        RCLCPP_INFO(this->get_logger(), "FormationCommander started - num_drones: %d, distance_threshold: %.1f", num_drones_, distance_threshold_);
+        RCLCPP_INFO(this->get_logger(), "FormationCommander started - num_drones: %d, distance_threshold: %.1f",
+                   num_drones_, distance_threshold_);
+
         rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
         auto sensor_qos = rclcpp::QoS(
-            rclcpp::QoSInitialization(qos_profile.history, 10), 
+            rclcpp::QoSInitialization(qos_profile.history, 10),
             qos_profile
         );
 
@@ -37,6 +44,7 @@ public:
             "formation_command", sensor_qos
         );
 
+        // Subscribe to trajectories for distance checking
         for (int i = 0; i < num_drones_; ++i) {
             std::string topic_prefix = "/V" + std::to_string(i + 1);
             auto traj_sub = this->create_subscription<path_manager::msg::PolyTraj>(
@@ -50,7 +58,7 @@ public:
 
         drone_trajectories_.resize(num_drones_);
 
-        // (First, operate by time (2s), then by distance)
+        // Publish first command after 2 seconds, then switch to distance-based
         initial_timer_ = this->create_wall_timer(
             2000ms,
             [this]() {
@@ -69,7 +77,7 @@ public:
         );
 
         RCLCPP_INFO(
-            this->get_logger(), 
+            this->get_logger(),
             "FormationCommander started - will publish first command in ~2s, then distance-based"
         );
     }
@@ -81,19 +89,19 @@ private:
         double duration;
         int drone_id;
         bool valid;
-        
+
         TrajectoryData() : start_time(0.0), duration(0.0), drone_id(-1), valid(false) {}
     };
 
     void trajectoryCallback(const path_manager::msg::PolyTraj::SharedPtr msg, int drone_idx) {
         if (drone_idx < 0 || drone_idx >= num_drones_) return;
-        
+
         if (msg->drone_id != drone_idx) {
-            RCLCPP_DEBUG(this->get_logger(), "Ignoring trajectory: expected drone_id=%d, got drone_id=%d", 
+            RCLCPP_DEBUG(this->get_logger(), "Ignoring trajectory: expected drone_id=%d, got drone_id=%d",
                         drone_idx, msg->drone_id);
             return;
         }
-        
+
         auto& traj_data = drone_trajectories_[drone_idx];
         traj_data.drone_id = msg->drone_id;
         traj_data.start_time = rclcpp::Time(msg->start_time).seconds();
@@ -115,25 +123,20 @@ private:
 
         traj_data.traj = poly_traj::Trajectory(dura, cMats);
         traj_data.duration = traj_data.traj.getTotalDuration();
-
-        double now_time = this->now().seconds();
-        double t_rel = now_time - traj_data.start_time;
-        t_rel = std::min(traj_data.duration, std::max(0.0, t_rel));
-        Eigen::Vector3d pos = traj_data.traj.getPos(t_rel);
     }
 
     void checkDistanceAndPublish() {
         if (!have_initial_command_ || command_count_ >= 4) {
             return;
         }
-        
+
         Eigen::Vector3d current_swarm_center = getCurrentSwarmCenter();
         Eigen::Vector3d target_center = getTargetFormationCenter();
         double distance = (current_swarm_center - target_center).norm();
-        
+
         if (distance <= distance_threshold_) {
-            RCLCPP_INFO(this->get_logger(), 
-                       "Distance threshold reached (%.2f <= %.2f), publishing next formation command", 
+            RCLCPP_INFO(this->get_logger(),
+                       "Distance threshold reached (%.2f <= %.2f), publishing next formation command",
                        distance, distance_threshold_);
             publishFormationCommand();
         }
@@ -143,7 +146,7 @@ private:
         double current_time = this->now().seconds();
         Eigen::Vector3d center(0, 0, 0);
         int valid_drones = 0;
-        
+
         for (int i = 0; i < num_drones_; ++i) {
             const auto& traj = drone_trajectories_[i];
             if (traj.valid) {
@@ -154,7 +157,7 @@ private:
                 valid_drones++;
             }
         }
-        
+
         if (valid_drones > 0) {
             center /= valid_drones;
         }
@@ -180,6 +183,7 @@ private:
         msg.header.stamp = this->now();
         msg.header.frame_id = "world";
 
+        // Define formation sequences
         switch (command_count_) {
             case 0:
                 msg.formation_center.x = -8.75;
@@ -187,15 +191,15 @@ private:
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "line_first";
                 msg.formation_scale = 4.0;
-                
+
                 msg.waypoints.resize(5);
                 msg.waypoints[0].x = -8.75; msg.waypoints[0].y = -57.0; msg.waypoints[0].z = 0.0;
                 msg.waypoints[1].x = -8.53; msg.waypoints[1].y = -63.3; msg.waypoints[1].z = 0.0;
                 msg.waypoints[2].x = -3.92; msg.waypoints[2].y = -66.04; msg.waypoints[2].z = 0.0;
                 msg.waypoints[3].x = 2.11; msg.waypoints[3].y = -68.35; msg.waypoints[3].z = 0.0;
                 msg.waypoints[4].x = 7.87; msg.waypoints[4].y = -68.99; msg.waypoints[4].z = 0.0;
-            
                 break;
+
             case 1:
                 msg.formation_center.x = 22.88;
                 msg.formation_center.y = -71.87;
@@ -209,15 +213,15 @@ private:
                 msg.waypoints[2].x = 32.45039; msg.waypoints[2].y = -80.23940; msg.waypoints[2].z = 0.0;
                 msg.waypoints[3].x = 32.90863; msg.waypoints[3].y = -87.44061; msg.waypoints[3].z = 0.0;
                 msg.waypoints[4].x = 32.47298; msg.waypoints[4].y = -93.42377; msg.waypoints[4].z = 0.0;
-
                 break;
+
             case 2:
                 msg.formation_center.x = 32.47;
                 msg.formation_center.y = -93.42;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "square";
                 msg.formation_scale = 2.0;
-                
+
                 msg.waypoints.resize(7);
                 msg.waypoints[0].x = 32.47298; msg.waypoints[0].y = -93.42377; msg.waypoints[0].z = 0.0;
                 msg.waypoints[1].x = 27.85286; msg.waypoints[1].y = -116.42038; msg.waypoints[1].z = 0.0;
@@ -227,30 +231,26 @@ private:
                 msg.waypoints[5].x = 42.09200; msg.waypoints[5].y = -130.01768; msg.waypoints[5].z = 0.0;
                 msg.waypoints[6].x = 100.63176; msg.waypoints[6].y = -138.94522; msg.waypoints[6].z = 0.0;
                 break;
+
             case 3:
                 msg.formation_center.x = 107;
                 msg.formation_center.y = -138.76;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "line_second";
                 msg.formation_scale = 2.0;
-                
+
                 msg.waypoints.resize(1);
                 msg.waypoints[0].x = 107.0; msg.waypoints[0].y = -138.76; msg.waypoints[0].z = 0.0;
                 break;
         }
 
+        // Update current formation center
         if (!msg.waypoints.empty()) {
             const auto &last_wp = msg.waypoints.back();
-            current_formation_center_ = Eigen::Vector3d(
-                last_wp.x,
-                last_wp.y,
-                last_wp.z
-            );
+            current_formation_center_ = Eigen::Vector3d(last_wp.x, last_wp.y, last_wp.z);
         } else {
             current_formation_center_ = Eigen::Vector3d(
-                msg.formation_center.x,
-                msg.formation_center.y,
-                msg.formation_center.z
+                msg.formation_center.x, msg.formation_center.y, msg.formation_center.z
             );
         }
 
@@ -259,10 +259,10 @@ private:
         RCLCPP_INFO(
             this->get_logger(),
             "Published formation command #%d: %s at (%.1f, %.1f, %.1f) scale %.1f",
-            command_count_ + 1, 
+            command_count_ + 1,
             msg.formation_type.c_str(),
-            msg.formation_center.x, 
-            msg.formation_center.y, 
+            msg.formation_center.x,
+            msg.formation_center.y,
             msg.formation_center.z,
             msg.formation_scale
         );

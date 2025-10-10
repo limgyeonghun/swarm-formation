@@ -12,6 +12,7 @@
 #include "path_manager/path_manager.h"
 #include "path_optimizer/plan_container.hpp"
 #include "swarm_graph/swarm_graph.hpp"
+#include "path_manager/hungarian_algorithm.h"
 #include "../../common/log_manager.hpp"
 
 // Conditional logging macros to avoid code duplication
@@ -129,6 +130,12 @@ private:
     Eigen::Vector3d current_formation_center_;
     bool has_formation_command_;
     SwarmGraph::Ptr swarm_graph_;
+
+    // Task assignment variables (distributed)
+    std::vector<Eigen::Vector3d> swarm_positions_;  // Positions of all drones
+    std::vector<Eigen::Vector3d> swarm_headings_;   // Headings of all drones
+    std::vector<int> prev_assignment_;               // Previous assignment for hysteresis
+    path_manager::AssignmentCostParams assignment_params_;  // Cost function parameters
 
     std::unique_ptr<swarm_formation::LogManager> log_manager_;
 };

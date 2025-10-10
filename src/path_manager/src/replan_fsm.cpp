@@ -108,7 +108,34 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     
     // Initialize SwarmGraph for formation management
     swarm_graph_ = std::make_unique<SwarmGraph>();
-    
+
+    // Initialize assignment cost parameters
+    node_->declare_parameter("assignment/w_dist", 1.0);
+    node_->declare_parameter("assignment/w_head", 0.5);
+    node_->declare_parameter("assignment/w_switch", 2.0);
+    node_->declare_parameter("assignment/w_shape", 0.3);
+    node_->declare_parameter("assignment/min_turn_radius", 1.0);
+    node_->declare_parameter("assignment/tau_individual", 0.1);
+    node_->declare_parameter("assignment/tau_global", 0.5);
+
+    node_->get_parameter("assignment/w_dist", assignment_params_.w_dist);
+    node_->get_parameter("assignment/w_head", assignment_params_.w_head);
+    node_->get_parameter("assignment/w_switch", assignment_params_.w_switch);
+    node_->get_parameter("assignment/w_shape", assignment_params_.w_shape);
+    node_->get_parameter("assignment/min_turn_radius", assignment_params_.min_turn_radius);
+    node_->get_parameter("assignment/tau_individual", assignment_params_.tau_individual);
+    node_->get_parameter("assignment/tau_global", assignment_params_.tau_global);
+
+    RCLCPP_INFO(node_->get_logger(), "Assignment parameters: w_dist=%.2f, w_head=%.2f, w_switch=%.2f, w_shape=%.2f",
+               assignment_params_.w_dist, assignment_params_.w_head, assignment_params_.w_switch, assignment_params_.w_shape);
+    RCLCPP_INFO(node_->get_logger(), "  min_turn_radius=%.2f, tau_individual=%.2f, tau_global=%.2f",
+               assignment_params_.min_turn_radius, assignment_params_.tau_individual, assignment_params_.tau_global);
+
+    // Initialize swarm tracking
+    swarm_positions_.resize(num_drones_, Eigen::Vector3d::Zero());
+    swarm_headings_.resize(num_drones_, Eigen::Vector3d(1.0, 0.0, 0.0));  // Default heading: forward
+    prev_assignment_.resize(num_drones_, -1);  // No previous assignment
+
     RCLCPP_INFO(node_->get_logger(), "PathManager initialized, waiting for formation command from formation_commander");
     log_manager_->infof("PathManager initialized, waiting for formation command from formation_commander");
 
@@ -431,6 +458,19 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
     path_manager_->traj_.swarm_traj[recv_id].duration = trajectory.getTotalDuration();
     path_manager_->traj_.swarm_traj[recv_id].start_pos = trajectory.getPos(0.0);
 
+    // Update swarm position and heading for task assignment
+    if (recv_id < swarm_positions_.size()) {
+        double current_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
+        double t_rel = current_time - msg_time.seconds();
+        t_rel = std::min(trajectory.getTotalDuration(), std::max(0.0, t_rel));
+
+        swarm_positions_[recv_id] = trajectory.getPos(t_rel);
+        Eigen::Vector3d vel = trajectory.getVel(t_rel);
+        if (vel.norm() > 1e-3) {
+            swarm_headings_[recv_id] = vel.normalized();
+        }
+    }
+
     if (path_manager_->checkCollision(recv_id)) {
         changeFSMExecState(REPLAN_TRAJ, "SWARM_CHECK");
     }
@@ -744,11 +784,11 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
     current_formation_type_ = msg->formation_type;
     current_formation_scale_ = msg->formation_scale;
     current_formation_center_ = Eigen::Vector3d(
-        msg->formation_center.x, 
-        msg->formation_center.y, 
+        msg->formation_center.x,
+        msg->formation_center.y,
         msg->formation_center.z
     );
-    
+
     has_formation_command_ = true;
 
     std::vector<Eigen::Vector3d> waypoints;
@@ -756,11 +796,128 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
         waypoints.emplace_back(wp.x, wp.y, wp.z);
     }
 
-    // Generate and publish new formation target for this drone
-    generateFormationTargets(current_formation_center_,
-                             current_formation_type_,
-                             current_formation_scale_,
-                             waypoints);
+    // === DISTRIBUTED TASK ASSIGNMENT USING ADVANCED HUNGARIAN ALGORITHM ===
+
+    // Step 1: Generate formation pattern (target positions)
+    std::vector<Eigen::Vector3d> formation_pattern =
+        generateFormationPattern(current_formation_type_, num_drones_, current_formation_scale_);
+    std::vector<Eigen::Vector3d> target_positions;
+    target_positions.reserve(num_drones_);
+    for (const auto& pattern_point : formation_pattern) {
+        target_positions.push_back(current_formation_center_ + pattern_point);
+    }
+
+    // Step 2: Update current drone position and heading
+    swarm_positions_[drone_id_] = current_pos_;
+    if (current_vel_.norm() > 1e-3) {
+        swarm_headings_[drone_id_] = current_vel_.normalized();
+    }
+
+    // Step 3: Check if we have enough valid positions for assignment
+    int valid_positions = 0;
+    for (int i = 0; i < num_drones_; ++i) {
+        if (swarm_positions_[i].norm() > 1e-3) {  // Valid position
+            valid_positions++;
+        }
+    }
+
+    std::vector<int> assignment;
+    bool use_prev_assignment = false;
+
+    if (valid_positions < num_drones_) {
+        // Not all drone positions available - use previous assignment if available
+        RCLCPP_WARN(node_->get_logger(),
+                   "Only %d/%d drone positions available. Using previous assignment if available.",
+                   valid_positions, num_drones_);
+        if (!prev_assignment_.empty() && prev_assignment_[drone_id_] >= 0) {
+            assignment = prev_assignment_;
+            use_prev_assignment = true;
+        } else {
+            // No previous assignment - use default (drone_id -> target_id)
+            assignment.resize(num_drones_);
+            for (int i = 0; i < num_drones_; ++i) {
+                assignment[i] = i;
+            }
+        }
+    } else {
+        // All positions available - compute optimal assignment
+
+        // Step 4: For line formations, try order-preserving matching first
+        if (current_formation_type_.find("line") != std::string::npos) {
+            RCLCPP_INFO(node_->get_logger(), "Using order-preserving matching for line formation");
+
+            // Determine line direction
+            assignment_params_.formation_type = current_formation_type_;
+            if (current_formation_type_ == "line_first") {
+                double line_angle = 83.0 * M_PI / 180.0;
+                assignment_params_.formation_direction = Eigen::Vector3d(
+                    cos(line_angle), sin(line_angle), 0.0);
+            } else if (current_formation_type_ == "line_second") {
+                double line_angle = -8.63 * M_PI / 180.0;
+                assignment_params_.formation_direction = Eigen::Vector3d(
+                    cos(line_angle), sin(line_angle), 0.0);
+            }
+
+            assignment = HungarianAlgorithm::orderPreservingMatch(
+                swarm_positions_, target_positions, assignment_params_.formation_direction);
+
+        } else {
+            // Step 5: For non-line formations, use advanced cost-based Hungarian algorithm
+            RCLCPP_INFO(node_->get_logger(), "Using advanced Hungarian algorithm for %s formation",
+                       current_formation_type_.c_str());
+            log_manager_->infof("Using advanced Hungarian algorithm for %s formation",
+                               current_formation_type_.c_str());
+
+            assignment_params_.formation_type = current_formation_type_;
+            auto cost_matrix = HungarianAlgorithm::createAdvancedCostMatrix(
+                swarm_positions_, swarm_headings_, target_positions, prev_assignment_, assignment_params_);
+
+            assignment = HungarianAlgorithm::solve(cost_matrix);
+
+            // Step 6: Apply hysteresis check
+            if (!prev_assignment_.empty() && prev_assignment_[0] >= 0) {
+                double old_cost = HungarianAlgorithm::calculateTotalCost(prev_assignment_, cost_matrix);
+                double new_cost = HungarianAlgorithm::calculateTotalCost(assignment, cost_matrix);
+
+                std::vector<double> individual_improvements(num_drones_);
+                for (int i = 0; i < num_drones_; ++i) {
+                    double old_individual_cost = cost_matrix[i][prev_assignment_[i]];
+                    double new_individual_cost = cost_matrix[i][assignment[i]];
+                    individual_improvements[i] = old_individual_cost - new_individual_cost;
+                }
+
+                bool accept_new_assignment = HungarianAlgorithm::checkHysteresis(
+                    old_cost, new_cost, individual_improvements, assignment_params_);
+
+                if (!accept_new_assignment) {
+                    RCLCPP_INFO(node_->get_logger(),
+                               "Hysteresis check failed (old_cost=%.2f, new_cost=%.2f, delta=%.2f < %.2f). Keeping previous assignment.",
+                               old_cost, new_cost, old_cost - new_cost, assignment_params_.tau_global);
+                    assignment = prev_assignment_;
+                    use_prev_assignment = true;
+                } else {
+                    RCLCPP_INFO(node_->get_logger(),
+                               "Hysteresis check passed (old_cost=%.2f, new_cost=%.2f, delta=%.2f >= %.2f). Accepting new assignment.",
+                               old_cost, new_cost, old_cost - new_cost, assignment_params_.tau_global);
+                }
+            }
+        }
+
+        // Save assignment for next time
+        if (!use_prev_assignment) {
+            prev_assignment_ = assignment;
+        }
+    }
+
+    // Step 7: Get my assigned target position
+    Eigen::Vector3d my_target = target_positions[assignment[drone_id_]];
+
+    RCLCPP_INFO(node_->get_logger(),
+               "Drone %d assigned to target position %d: (%.2f, %.2f, %.2f)",
+               drone_id_, assignment[drone_id_], my_target.x(), my_target.y(), my_target.z());
+
+    // Step 8: Publish formation target
+    publishFormationTarget(my_target, waypoints);
 }
 
 void ReplanFSM::generateFormationTargets(
