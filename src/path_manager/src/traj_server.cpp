@@ -136,7 +136,11 @@ void TrajServer::publishPositionCommand() {
 
     msg.trajectory_id = local_traj_.traj_id;
 
-    msg.trajectory_flag = path_manager::msg::PositionCommand::TRAJECTORY_STATUS_READY;  // TRAJECTORY_STATUS_READY
+    // Check if we're at the end of the trajectory
+    bool is_trajectory_completed = (t_cur >= local_traj_.duration - 0.1);  // 0.1s threshold before end
+    msg.trajectory_flag = is_trajectory_completed ?
+        path_manager::msg::PositionCommand::TRAJECTORY_STATUS_COMPLETED :
+        path_manager::msg::PositionCommand::TRAJECTORY_STATUS_READY;
 
     pos_cmd_pub_->publish(msg);
 }

@@ -154,10 +154,15 @@ void RoverControl::timer_cb()
             double adjusted_tx = target_pos_.position.x - offset_x_pt_;
             double adjusted_ty = target_pos_.position.y - offset_y_pt_;
             double dist = std::hypot(curr_pos_.x - adjusted_tx, curr_pos_.y - adjusted_ty);
-            if (dist <= arrival_distance_threshold_ && status_.arming_state == VehicleStatus::ARMING_STATE_ARMED) {
+
+            // Only disarm if: (1) trajectory is marked as completed AND (2) we're close to target
+            bool is_trajectory_completed = (target_pos_.trajectory_flag == PositionCommand::TRAJECTORY_STATUS_COMPLETED);
+
+            if (is_trajectory_completed && dist <= arrival_distance_threshold_ && status_.arming_state == VehicleStatus::ARMING_STATE_ARMED) {
                 disarm();
                 have_target_ = false;
-                RCLCPP_INFO(this->get_logger(), "Arrived at target. Distance: %.2f m <= threshold %.2f m", dist, arrival_distance_threshold_);
+                RCLCPP_INFO(this->get_logger(), "Arrived at FINAL target. Distance: %.2f m <= threshold %.2f m, trajectory_flag: COMPLETED",
+                           dist, arrival_distance_threshold_);
             }
         }
     }
