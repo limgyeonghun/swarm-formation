@@ -33,10 +33,14 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
     node_->declare_parameter("enable_debug_logs", false);
     node_->get_parameter("enable_debug_logs", enable_debug_logs_);
-    
+
     node_->declare_parameter("enable_lbfgs_detail_logs", false);
     // Note: enable_lbfgs_detail_logs will be read by PolyTrajOptimizer::setParam()
-    
+
+    node_->declare_parameter("enable_hungarian", true);
+    node_->get_parameter("enable_hungarian", enable_hungarian_);
+    FSM_LOG_INFO("Hungarian algorithm for task assignment: %s", enable_hungarian_ ? "ENABLED" : "DISABLED");
+
     node_->declare_parameter("drone_id", 0);
     node_->get_parameter("drone_id", drone_id_);
     FSM_LOG_INFO("Starting ReplanFSM for drone_id: %d", drone_id_);
@@ -373,13 +377,6 @@ void ReplanFSM::computeAndPublishPaths() {
 
 void ReplanFSM::targetPositionCallback(const path_manager::msg::PositionCommand::SharedPtr msg) {
     current_pos_ = Eigen::Vector3d(msg->position.x, msg->position.y, msg->position.z);
-    // Debug log to show position updates
-    if (enable_debug_logs_) {
-        RCLCPP_DEBUG(node_->get_logger(), "Updated position from traj_server: (%.3f, %.3f, %.3f)", 
-                    current_pos_(0), current_pos_(1), current_pos_(2));
-        log_manager_->infof("Updated position from traj_server: (%.3f, %.3f, %.3f)", 
-                    current_pos_(0), current_pos_(1), current_pos_(2));
-    }
 }
 
 void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
@@ -824,7 +821,15 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
     std::vector<int> assignment;
     bool use_prev_assignment = false;
 
-    if (valid_positions < num_drones_) {
+    if (!enable_hungarian_) {
+        // Hungarian algorithm disabled - use simple drone_id-based assignment
+        RCLCPP_INFO(node_->get_logger(),
+                   "Hungarian algorithm disabled. Using simple drone_id -> target_id assignment.");
+        assignment.resize(num_drones_);
+        for (int i = 0; i < num_drones_; ++i) {
+            assignment[i] = i;  // drone 0 -> target 0, drone 1 -> target 1, etc.
+        }
+    } else if (valid_positions < num_drones_) {
         // Not all drone positions available - use previous assignment if available
         RCLCPP_WARN(node_->get_logger(),
                    "Only %d/%d drone positions available. Using previous assignment if available.",
@@ -840,7 +845,7 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
             }
         }
     } else {
-        // All positions available - compute optimal assignment
+        // All positions available - compute optimal assignment using Hungarian algorithm
 
         // Step 4: For line formations, try order-preserving matching first
         if (current_formation_type_.find("line") != std::string::npos) {

@@ -122,6 +122,7 @@ private:
     bool rviz_simulation_;
     bool flag_escape_emergency_;
     bool enable_debug_logs_;
+    bool enable_hungarian_;  // Enable/disable Hungarian algorithm for task assignment
 
     // Formation manager variables
     int num_drones_;

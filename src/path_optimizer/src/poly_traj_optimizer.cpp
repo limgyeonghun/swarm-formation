@@ -97,14 +97,40 @@ namespace ego_planner
     // Final result logging
     if (log_manager_) {
         log_manager_->infof("Optimization completed: iter=%d, use_formation=%d, time(ms)=%f", iter_num_, use_formation, time_ms);
-        
+
         log_manager_->infof("[COST] formation_cost=%f (wei_formation=%f, similarity=%f)", dbg_cost_formation_, wei_formation_, debug_similarity_);
-        
+
+        // Nonholonomic constraint summary
+        // ALWAYS log for Before/After comparison (even when weight=0 and no violations)
+        double total_nonholo_cost = dbg_cost_curvature_ + dbg_cost_braking_ +
+                                     dbg_cost_fwd_vel_ + dbg_cost_lat_accel_;
+        int total_violations = dbg_curv_violations_ + dbg_brake_violations_ +
+                               dbg_fwd_vel_violations_ + dbg_lat_accel_violations_;
+
+        // Always log (unconditional) to ensure consistent Before/After data
+        log_manager_->infof("[NONHOLONOMIC SUMMARY] total_violations=%d, total_cost=%.6f (weight=%.3f)",
+                             total_violations, total_nonholo_cost, wei_nonholo_);
+
+        if (total_violations > 0 || wei_nonholo_ > 0.0) {
+            if (dbg_curv_violations_ > 0) {
+                log_manager_->infof("  ⚠ Curvature violations: %d (max_κ=%.4f > limit=%.4f)",
+                                     dbg_curv_violations_, dbg_max_curvature_, max_curvature_);
+            }
+            if (dbg_brake_violations_ > 0) {
+                log_manager_->infof("  ⚠ Braking violations: %d (min_decel=%.4f < limit=-%.4f m/s²)",
+                                     dbg_brake_violations_, dbg_max_brake_decel_, max_brake_decel_);
+            }
+            if (total_violations == 0 && wei_nonholo_ > 0.0) {
+                log_manager_->infof("  ✓ All nonholonomic constraints satisfied! max_κ=%.4f (limit=%.4f)",
+                                     dbg_max_curvature_, max_curvature_);
+            }
+        }
+
         // Additional debugging info
         if (enable_debug_logs_) {
             const char* result_str = lbfgs::lbfgs_strerror(result);
             log_manager_->debugf("L-BFGS Final Result: %d (%s)", result, result_str);
-            log_manager_->debugf("Final iteration info: costFunction calls=%d, max_iterations=%d, Final cost=%f", 
+            log_manager_->debugf("Final iteration info: costFunction calls=%d, max_iterations=%d, Final cost=%f",
               iter_num_, lbfgs_params.max_iterations, final_cost);
         }
     } else {
@@ -254,7 +280,32 @@ namespace ego_planner
         opt->log_manager_->infof("  formation_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(2), opt->wei_formation_);
         opt->log_manager_->infof("  feasibility_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(4), opt->wei_feas_);
         opt->log_manager_->infof("  time_cost=%.6f (weight=%.3f)", time_cost, opt->wei_time_);
-        
+
+        // Detailed nonholonomic constraint violation logging
+        // ALWAYS log if violations exist (for Before/After comparison analysis)
+        double total_nonholo_cost = opt->dbg_cost_curvature_ + opt->dbg_cost_braking_ +
+                                     opt->dbg_cost_fwd_vel_ + opt->dbg_cost_lat_accel_;
+        int total_violations = opt->dbg_curv_violations_ + opt->dbg_brake_violations_ +
+                               opt->dbg_fwd_vel_violations_ + opt->dbg_lat_accel_violations_;
+
+        // Log if: (1) violations exist, OR (2) weight > 0 (to show constraint is active)
+        if (total_violations > 0 || opt->wei_nonholo_ > 0.0) {
+            opt->log_manager_->infof("[NONHOLONOMIC VIOLATIONS] total_cost=%.6f (weight=%.3f)",
+                                      total_nonholo_cost, opt->wei_nonholo_);
+            opt->log_manager_->infof("  curvature: violations=%d, cost=%.6f, max_κ=%.4f (limit=%.4f)",
+                                      opt->dbg_curv_violations_, opt->dbg_cost_curvature_,
+                                      opt->dbg_max_curvature_, opt->max_curvature_);
+            opt->log_manager_->infof("  braking: violations=%d, cost=%.6f, min_decel=%.4f m/s² (limit=-%.4f)",
+                                      opt->dbg_brake_violations_, opt->dbg_cost_braking_,
+                                      opt->dbg_max_brake_decel_, opt->max_brake_decel_);
+            opt->log_manager_->infof("  fwd_velocity: violations=%d, cost=%.6f (min_vel=%.4f m/s)",
+                                      opt->dbg_fwd_vel_violations_, opt->dbg_cost_fwd_vel_,
+                                      opt->min_forward_vel_);
+            opt->log_manager_->infof("  lateral_accel: violations=%d, cost=%.6f (limit=%.4f m/s²)",
+                                      opt->dbg_lat_accel_violations_, opt->dbg_cost_lat_accel_,
+                                      opt->max_lateral_accel_);
+        }
+
         // Store formation cost for final logging
         opt->dbg_cost_formation_ = obs_swarm_feas_qvar_costs(2);
     } else if (!opt->enable_lbfgs_detail_logs_ && opt->use_formation_) {
@@ -339,6 +390,18 @@ namespace ego_planner
     costs.setZero();
     double t = 0;
 
+    // Reset nonholonomic constraint violation tracking
+    dbg_curv_violations_ = 0;
+    dbg_brake_violations_ = 0;
+    dbg_fwd_vel_violations_ = 0;
+    dbg_lat_accel_violations_ = 0;
+    dbg_max_curvature_ = 0.0;
+    dbg_max_brake_decel_ = 0.0;
+    dbg_cost_curvature_ = 0.0;
+    dbg_cost_braking_ = 0.0;
+    dbg_cost_fwd_vel_ = 0.0;
+    dbg_cost_lat_accel_ = 0.0;
+
     for (int i = 0; i < N; ++i)
     {
       const Eigen::Matrix<double, 6, 3> &c = jerkOpt_.get_b().block<6, 3>(i * 6, 0);
@@ -418,6 +481,23 @@ namespace ego_planner
             jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaAc;
             gdT(i) += omg * (costa / K + step * gradViolaAt);
             costs(4) += omg * step * costa;
+        }
+
+        // Nonholonomic constraint cost (forward velocity + braking + curvature + lateral acceleration)
+        Eigen::Vector3d grad_nonholo_vel, grad_nonholo_acc;
+        double cost_nonholo;
+        if (nonholonomicGradCost(vel, acc, grad_nonholo_vel, grad_nonholo_acc, cost_nonholo)) {
+            // Gradient w.r.t. control points from velocity
+            gradViolaVc = beta1 * grad_nonholo_vel.transpose();
+            gradViolaVt = alpha * grad_nonholo_vel.transpose() * acc;
+
+            // Gradient w.r.t. control points from acceleration
+            gradViolaAc = beta2 * grad_nonholo_acc.transpose();
+            gradViolaAt = alpha * grad_nonholo_acc.transpose() * jer;
+
+            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * (gradViolaVc + gradViolaAc);
+            gdT(i) += omg * (cost_nonholo / K + step * (gradViolaVt + gradViolaAt));
+            costs(4) += omg * step * cost_nonholo;  // Add to feasibility cost
         }
 
         s1 += step;
@@ -673,6 +753,162 @@ namespace ego_planner
     return false;
   }
 
+  bool PolyTrajOptimizer::nonholonomicGradCost(const Eigen::Vector3d &vel,
+                                               const Eigen::Vector3d &acc,
+                                               Eigen::Vector3d &grad_vel,
+                                               Eigen::Vector3d &grad_acc,
+                                               double &cost_nonholo)
+  {
+    /**
+     * Nonholonomic Constraints for Rover Dynamics
+     *
+     * Combines 4 constraints to prevent backward motion, sharp turns, and sudden braking:
+     * 1. Forward velocity constraint: v_forward > v_min (prevent backward/hovering)
+     * 2. Braking deceleration constraint: a_forward > -a_brake_max (prevent sudden stops)
+     * 3. Curvature constraint: κ < κ_max (prevent sharp turns)
+     * 4. Centripetal acceleration: v²×κ < a_lat_max (speed-curvature coupling)
+     */
+
+    grad_vel.setZero();
+    grad_acc.setZero();
+    cost_nonholo = 0.0;
+
+    double cost1 = 0.0, cost2 = 0.0, cost3 = 0.0, cost4 = 0.0;  // Individual costs
+    double v_norm = vel.norm();
+
+    // Skip if velocity is too small (stationary or near-stationary)
+    if (v_norm < 1e-4) {
+      // Penalize zero velocity (hovering not allowed for rover)
+      if (min_forward_vel_ > 1e-3) {
+        double vel_deficit = min_forward_vel_;
+        cost_nonholo = wei_nonholo_ * vel_deficit * vel_deficit * vel_deficit;
+        // Gradient is zero since velocity is already zero
+      }
+      return cost_nonholo > 0.0;
+    }
+
+    // Calculate heading (velocity direction)
+    Eigen::Vector3d heading = vel / v_norm;
+
+    // ========== Constraint 1: Minimum Forward Velocity ==========
+    // Prevent backward motion and hovering
+    double v_forward = v_norm;  // In 2D/3D, we want minimum speed
+
+    if (v_forward < min_forward_vel_) {
+      double fwd_deficit = min_forward_vel_ - v_forward;
+      cost1 = wei_nonholo_ * fwd_deficit * fwd_deficit * fwd_deficit;
+
+      // Gradient: ∂cost/∂v = ∂cost/∂||v|| · ∂||v||/∂v
+      Eigen::Vector3d grad1_v = wei_nonholo_ * 3.0 * fwd_deficit * fwd_deficit * (-heading);
+
+      cost_nonholo += cost1;
+      grad_vel += grad1_v;
+      dbg_fwd_vel_violations_++;
+      dbg_cost_fwd_vel_ += cost1;
+    }
+
+    // ========== Constraint 2: Maximum Braking Deceleration ==========
+    // Prevent sudden stops (deceleration in direction of motion)
+    double a_forward = acc.dot(heading);
+
+    if (a_forward < -max_brake_decel_) {
+      double brake_excess = -max_brake_decel_ - a_forward;
+      cost2 = wei_nonholo_ * brake_excess * brake_excess * brake_excess;
+
+      // Gradient w.r.t. acceleration
+      Eigen::Vector3d grad2_a = wei_nonholo_ * 3.0 * brake_excess * brake_excess * (-heading);
+
+      // Gradient w.r.t. velocity (from heading dependency)
+      // ∂(a·h)/∂v = ∂(a·(v/||v||))/∂v = (a - (a·h)h) / ||v||
+      Eigen::Vector3d grad2_v = wei_nonholo_ * 3.0 * brake_excess * brake_excess *
+                                (acc - a_forward * heading) / v_norm;
+
+      cost_nonholo += cost2;
+      grad_acc += grad2_a;
+      grad_vel += grad2_v;
+      dbg_brake_violations_++;
+      dbg_cost_braking_ += cost2;
+      if (a_forward < dbg_max_brake_decel_) {
+        dbg_max_brake_decel_ = a_forward;
+      }
+    }
+
+    // ========== Constraint 3: Curvature Constraint ==========
+    // Prevent sharp turns (minimum turning radius)
+    Eigen::Vector3d v_cross_a = vel.cross(acc);
+    double cross_norm = v_cross_a.norm();
+
+    // Use a minimum velocity threshold to prevent numerical instability
+    // When v is very small, curvature becomes unreliable, so we clip it
+    const double v_min_for_curvature = 0.05;  // 5 cm/s minimum
+    double v_safe = std::max(v_norm, v_min_for_curvature);
+    double v_safe3 = v_safe * v_safe * v_safe;
+
+    if (cross_norm > 1e-6) {
+      // Use safe velocity for curvature calculation (prevents division by near-zero)
+      double curvature = cross_norm / v_safe3;
+
+      // Track maximum curvature
+      if (curvature > dbg_max_curvature_) {
+        dbg_max_curvature_ = curvature;
+      }
+
+      if (curvature > max_curvature_) {
+        double curv_excess = curvature - max_curvature_;
+        cost3 = wei_nonholo_ * curv_excess * curv_excess * curv_excess;
+
+        // ∂cost/∂κ
+        double dcost_dcurv = wei_nonholo_ * 3.0 * curv_excess * curv_excess;
+
+        // Use v_safe for gradient calculation (same as curvature calculation)
+        // ∂κ/∂(v×a) = 1 / v_safe³ · (v×a) / ||v×a||
+        Eigen::Vector3d dcurv_dcross = v_cross_a / (cross_norm * v_safe3);
+
+        // ∂κ/∂||v|| = -3κ / v_safe (only if v_norm >= v_min, else gradient is zero)
+        double dcurv_dvnorm = (v_norm >= v_min_for_curvature) ? (-3.0 * curvature / v_safe) : 0.0;
+
+        // Gradient w.r.t. velocity
+        Eigen::Vector3d grad3_v_cross = acc.cross(dcurv_dcross);
+        Eigen::Vector3d grad3_v_norm = dcurv_dvnorm * heading;
+        Eigen::Vector3d grad3_v = dcost_dcurv * (grad3_v_cross + grad3_v_norm);
+
+        // Gradient w.r.t. acceleration
+        Eigen::Vector3d grad3_a = dcost_dcurv * vel.cross(dcurv_dcross);
+
+        cost_nonholo += cost3;
+        grad_vel += grad3_v;
+        grad_acc += grad3_a;
+        dbg_curv_violations_++;
+        dbg_cost_curvature_ += cost3;
+      }
+    }
+
+    // ========== Constraint 4: Centripetal Acceleration ==========
+    // Speed-curvature coupling: prevent rollover/slip
+    if (cross_norm > 1e-6) {
+      double curvature = cross_norm / v_safe3;  // Use same safe velocity as Constraint 3
+      double centripetal_acc = v_norm * v_norm * curvature;
+
+      if (centripetal_acc > max_lateral_accel_) {
+        double lat_excess = centripetal_acc - max_lateral_accel_;
+        cost4 = wei_nonholo_ * lat_excess * lat_excess * lat_excess;
+
+        // ∂(v²κ)/∂v = 2v·κ + v²·∂κ/∂v
+        double dcost_dlat = wei_nonholo_ * 3.0 * lat_excess * lat_excess;
+
+        // Simplified gradient (dominant term: velocity dependency)
+        Eigen::Vector3d grad4_v = dcost_dlat * 2.0 * v_norm * curvature * heading;
+
+        cost_nonholo += cost4;
+        grad_vel += grad4_v;
+        dbg_lat_accel_violations_++;
+        dbg_cost_lat_accel_ += cost4;
+      }
+    }
+
+    return cost_nonholo > 0.0;
+  }
+
   void PolyTrajOptimizer::distanceSqrVarianceWithGradCost2p(const Eigen::MatrixXd &ps,
                                                             Eigen::MatrixXd &gdp,
                                                             double &var)
@@ -848,6 +1084,8 @@ namespace ego_planner
     node_->get_parameter("optimization/weight_time", wei_time_);
     node_->declare_parameter("optimization/weight_formation", 0.0);
     node_->get_parameter("optimization/weight_formation", wei_formation_);
+    node_->declare_parameter("optimization/weight_nonholonomic", 15000.0);
+    node_->get_parameter("optimization/weight_nonholonomic", wei_nonholo_);
 
     node_->declare_parameter("optimization/obstacle_clearance", 0.1);
     node_->get_parameter("optimization/obstacle_clearance", obs_clearance_);
@@ -857,6 +1095,16 @@ namespace ego_planner
     node_->get_parameter("optimization/max_vel", max_vel_);
     node_->declare_parameter("optimization/max_acc", 1.0);
     node_->get_parameter("optimization/max_acc", max_acc_);
+
+    // Nonholonomic constraint parameters
+    node_->declare_parameter("optimization/min_forward_vel", 0.2);
+    node_->get_parameter("optimization/min_forward_vel", min_forward_vel_);
+    node_->declare_parameter("optimization/max_brake_decel", 2.0);
+    node_->get_parameter("optimization/max_brake_decel", max_brake_decel_);
+    node_->declare_parameter("optimization/max_curvature", 0.8);
+    node_->get_parameter("optimization/max_curvature", max_curvature_);
+    node_->declare_parameter("optimization/max_lateral_accel", 1.5);
+    node_->get_parameter("optimization/max_lateral_accel", max_lateral_accel_);
 
     // Log initialization based on enable_debug_logs setting
     if (enable_debug_logs_) {

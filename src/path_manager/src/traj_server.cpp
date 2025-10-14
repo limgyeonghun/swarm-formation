@@ -27,8 +27,12 @@ private:
     LocalTrajData local_traj_;
     int drone_id_;
     double n_seconds_ahead_;
+    double rampup_duration_;
+    double initial_lookahead_offset_;
     bool rviz_simulation_;
     bool have_local_traj_ = false;
+    int last_traj_id_ = -1;
+    double traj_update_time_ = 0.0;
 };
 
 TrajServer::TrajServer() : Node("traj_server") {
@@ -41,6 +45,12 @@ TrajServer::TrajServer() : Node("traj_server") {
 
     declare_parameter("fsm/n_seconds_ahead", -1.0);
     get_parameter("fsm/n_seconds_ahead", n_seconds_ahead_);
+
+    declare_parameter("fsm/rampup_duration", 1.0);
+    get_parameter("fsm/rampup_duration", rampup_duration_);
+
+    declare_parameter("fsm/initial_lookahead_offset", 0.3);
+    get_parameter("fsm/initial_lookahead_offset", initial_lookahead_offset_);
 
     rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
     auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
@@ -56,6 +66,12 @@ TrajServer::TrajServer() : Node("traj_server") {
 
 void TrajServer::trajCallback(const path_manager::msg::PolyTraj::SharedPtr msg) {
     if (msg->drone_id != drone_id_) return;
+
+    // Track trajectory update for ramp-up logic
+    if (msg->traj_id != last_traj_id_) {
+        last_traj_id_ = msg->traj_id;
+        traj_update_time_ = now().seconds();
+    }
 
     local_traj_.drone_id = msg->drone_id;
     local_traj_.traj_id = msg->traj_id;
@@ -98,38 +114,55 @@ void TrajServer::publishPositionCommand() {
     t_cur = std::min(local_traj_.duration, t_cur);
 
     double t_ahead = (t_cur + n_seconds_ahead_);
-    Eigen::Vector3d pos = local_traj_.traj.getPos(t_ahead);
-    Eigen::Vector3d vel = local_traj_.traj.getVel(t_ahead);
-    Eigen::Vector3d acc = local_traj_.traj.getAcc(t_ahead);
+    Eigen::Vector3d speed_cmd_pos = local_traj_.traj.getPos(t_ahead);
+    Eigen::Vector3d speed_cmd_vel = local_traj_.traj.getVel(t_ahead);
+    Eigen::Vector3d speed_cmd_acc = local_traj_.traj.getAcc(t_ahead);
+
+    // Dynamic lookahead for direction to prevent oscillation at initial ramp-up
+    double elapsed_since_update = now_ros.seconds() - traj_update_time_;
+    double direction_lookahead = 0.0;
+
+    if (elapsed_since_update < rampup_duration_) {
+        // Gradually decrease the lookahead offset during ramp-up period
+        double rampup_factor = 1.0 - (elapsed_since_update / rampup_duration_);
+        direction_lookahead = initial_lookahead_offset_ * rampup_factor;
+    }
+
+    Eigen::Vector3d direction_cmd_pos = local_traj_.traj.getPos(t_cur + direction_lookahead);
 
     // Eigen::Vector3d jerk = local_traj_.traj.getJerk(t_ahead);
 
     double yaw = 0.0;
     double yaw_dot = 0.0;
 
-    if (vel.norm() > 1e-3) {
-        yaw = std::atan2(vel(1), vel(0));
+    if (speed_cmd_vel.norm() > 1e-3) {
+        yaw = std::atan2(speed_cmd_vel(1), speed_cmd_vel(0));
     }
 
     path_manager::msg::PositionCommand msg{};
     msg.header.stamp = now_ros;
     msg.header.frame_id = "odom";
 
-    msg.position.x = pos(0);
-    msg.position.y = pos(1);
-    msg.position.z = pos(2);
+    msg.position.x = speed_cmd_pos(0);
+    msg.position.y = speed_cmd_pos(1);
+    msg.position.z = speed_cmd_pos(2);
 
-    msg.velocity.x = vel(0);
-    msg.velocity.y = vel(1);
-    msg.velocity.z = vel(2);
+    msg.velocity.x = speed_cmd_vel(0);
+    msg.velocity.y = speed_cmd_vel(1);
+    msg.velocity.z = speed_cmd_vel(2);
 
-    msg.acceleration.x = acc(0);
-    msg.acceleration.y = acc(1);
-    msg.acceleration.z = acc(2);
+    msg.acceleration.x = speed_cmd_acc(0);
+    msg.acceleration.y = speed_cmd_acc(1);
+    msg.acceleration.z = speed_cmd_acc(2);
 
     msg.jerk.x = NAN;
     msg.jerk.y = NAN;
     msg.jerk.z = NAN;
+
+    // Lookahead point on trajectory (for direction calculation, prevents corner cutting)
+    msg.lookahead_point.x = direction_cmd_pos.x();
+    msg.lookahead_point.y = direction_cmd_pos.y();
+    msg.lookahead_point.z = direction_cmd_pos.z();
 
     msg.yaw = yaw;
     msg.yaw_dot = yaw_dot;

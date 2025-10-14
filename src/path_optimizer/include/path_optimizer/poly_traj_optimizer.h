@@ -105,10 +105,17 @@ namespace ego_planner
     double wei_sqrvar_;
     double wei_time_;
     double wei_formation_;
+    double wei_nonholo_;  // Weight for nonholonomic constraint cost (rover-specific)
 
     double obs_clearance_;
     double swarm_clearance_;
     double max_vel_, max_acc_;
+
+    // Nonholonomic constraint parameters (rover dynamics)
+    double min_forward_vel_;    // Minimum forward velocity (prevent backward motion)
+    double max_brake_decel_;    // Maximum braking deceleration
+    double max_curvature_;      // Maximum curvature (1/min_turn_radius)
+    double max_lateral_accel_;  // Maximum lateral acceleration (centripetal)
 
     int formation_size_ = 4;  // Default to 4 drones
     bool use_formation_ = true;
@@ -120,6 +127,18 @@ namespace ego_planner
     bool enable_obstacles_;
     bool enable_debug_logs_;
     bool enable_lbfgs_detail_logs_;
+
+    // Nonholonomic constraint violation tracking (for debugging and analysis)
+    int dbg_curv_violations_;        // Number of curvature violations
+    int dbg_brake_violations_;       // Number of braking violations
+    int dbg_fwd_vel_violations_;     // Number of forward velocity violations
+    int dbg_lat_accel_violations_;   // Number of lateral acceleration violations
+    double dbg_max_curvature_;       // Maximum curvature observed in trajectory
+    double dbg_max_brake_decel_;     // Maximum braking deceleration observed
+    double dbg_cost_curvature_;      // Total curvature violation cost
+    double dbg_cost_braking_;        // Total braking violation cost
+    double dbg_cost_fwd_vel_;        // Total forward velocity violation cost
+    double dbg_cost_lat_accel_;      // Total lateral acceleration violation cost
 
     rclcpp::Node::SharedPtr node_;
 
@@ -210,6 +229,12 @@ namespace ego_planner
     bool feasibilityGradCostA(const Eigen::Vector3d &a,
                               Eigen::Vector3d &grada,
                               double &costa);
+
+    bool nonholonomicGradCost(const Eigen::Vector3d &vel,
+                              const Eigen::Vector3d &acc,
+                              Eigen::Vector3d &grad_vel,
+                              Eigen::Vector3d &grad_acc,
+                              double &cost_nonholo);
 
     void distanceSqrVarianceWithGradCost2p(const Eigen::MatrixXd &ps,
                                            Eigen::MatrixXd &gdp,

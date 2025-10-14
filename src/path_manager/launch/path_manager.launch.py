@@ -140,11 +140,7 @@ def create_drone_nodes(context, *args, **kwargs):
                 executable='traj_server',
                 name=f'TrajServer_drone_{i}',
                 output='screen',
-                parameters=[{
-                    'drone_id': did,
-                    'rviz_simulation': rviz_sim,
-                    'fsm/n_seconds_ahead': n_seconds_ahead,
-                }],
+                parameters=[params,optimizer_file],
             )
         )
 
@@ -227,7 +223,7 @@ def create_drone_nodes(context, *args, **kwargs):
     )
 
     formation_commander_delayed = TimerAction(
-        period=0.0,
+        period=10.0,
         actions=[formation_commander],
     )
 

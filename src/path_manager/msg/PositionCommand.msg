@@ -1,8 +1,9 @@
 std_msgs/Header header
-geometry_msgs/Point position
+geometry_msgs/Point position          # Target position (for velocity calculation)
 geometry_msgs/Vector3 velocity
 geometry_msgs/Vector3 acceleration
 geometry_msgs/Vector3 jerk
+geometry_msgs/Point lookahead_point   # Lookahead point (for direction calculation)
 float64 yaw
 float64 yaw_dot
 

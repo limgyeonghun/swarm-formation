@@ -19,7 +19,7 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(
     this->declare_parameter<double>("arrival_distance_threshold", 0.5);
     this->get_parameter("arrival_distance_threshold", arrival_distance_threshold_);
 
-    RCLCPP_INFO(this->get_logger(), "ID: %d | target_timeout_threshold: %.2f  arrival_distance_threshold: %.2f", 
+    RCLCPP_INFO(this->get_logger(), "ID: %d | target_timeout: %.2f  arrival_threshold: %.2f",
                 rover_id_, target_idle_timeout_sec_, arrival_distance_threshold_);
 
     std::string sid = std::to_string(rover_id_ + 1);
@@ -91,12 +91,15 @@ void RoverControl::publish_trajectory_setpoint()
     {
         TrajectorySetpoint msg{};
         msg.timestamp = this->now().nanoseconds();
-        msg.position[0] = target_pos_.position.x - offset_x_pt_;
-        msg.position[1] = target_pos_.position.y - offset_y_pt_;
+
+        // Use lookahead_point from traj_server (calculated on trajectory from current position)
+        msg.position[0] = target_pos_.lookahead_point.x - offset_x_pt_;
+        msg.position[1] = target_pos_.lookahead_point.y - offset_y_pt_;
         // msg.position[2] = 0.0;
 
-        msg.velocity[0] = target_pos_.velocity.x;
-        msg.velocity[1] = target_pos_.velocity.y;
+        // Use trajectory velocity for speed command
+        msg.velocity[0] = target_pos_.position.x - offset_x_pt_;
+        msg.velocity[1] = target_pos_.position.y - offset_y_pt_;
         msg.velocity[2] = target_pos_.velocity.z;
 
         trajectory_setpoint_pub_->publish(msg);

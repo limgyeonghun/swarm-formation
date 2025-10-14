@@ -9,27 +9,37 @@
     # Debug Logging Control
     enable_debug_logs: true  # Set to true to enable detailed timing logs
     enable_lbfgs_detail_logs: true  # Set to true to enable detailed L-BFGS cost debugging
+
+    # Task Assignment Control
+    enable_hungarian: false  # Set to false to use simple drone_id-based assignment (no Hungarian algorithm)
     
-    # Cost Function Weights
+    # Cost Function Weights (Traxxas-optimized)
     optimization/weight_obstacle: 50000.0
     optimization/weight_swarm: 80000.0
     optimization/weight_feasibility: 25000.0
     optimization/weight_sqrvariance: 25000.0
-    optimization/weight_time: 80.0
-    optimization/weight_formation: 20000.0
-    
+    optimization/weight_time: 80.0               # Increased to encourage smoother, slower approaches (was 80.0)
+    optimization/weight_formation: 30000.0        # Increased for better formation holding (was 20000.0)
+    optimization/weight_nonholonomic: 0.0     # Significantly increased for Traxxas constraints (was 15000.0)
+
     # Safety Distance Settings
     optimization/obstacle_clearance: 0.8  # Further increased safety distance from obstacles
     optimization/swarm_clearance: 0.8
-    
+
     # Formation and Dynamics Constraints
     optimization/formation_type: 2
     optimization/max_vel: 1.5
-    optimization/max_acc: 3.0
+    optimization/max_acc: 2.0               # Reduced from 3.0 to match your rover's capability
 
-    # Path Manager Parameters
-    manager/max_vel: 1.5
-    manager/max_acc: 3.0
+    # Nonholonomic Constraints (NO REVERSE TORQUE - coasting deceleration only)
+    optimization/min_forward_vel: 0.05      # Low to allow near-stop, but prevent full stop/reverse
+    optimization/max_brake_decel: 1.3       # Very low - only coasting friction, NO active braking
+    optimization/max_curvature: 0.8         # 1.25m turn radius (not too tight for slow turns)
+    optimization/max_lateral_accel: 2.0     # Conservative for 1.5 m/s max speed
+
+    # Path Manager Parameters (Traxxas-optimized)
+    manager/max_vel: 1.5                    # Keep your safety limit
+    manager/max_acc: 2.0                    # Match optimization constraint
     manager/polyTraj_piece_length: 2.0
     manager/planning_horizon: 7.5
     
@@ -37,4 +47,6 @@
     fsm/thresh_replan_time: 0.5
     fsm/thresh_no_replan_meter: 1.0
     fsm/replan_trajectory_time: 0.1
-    fsm/n_seconds_ahead: 0.0
+    fsm/n_seconds_ahead: 0.5      # Lookahead distance on trajectory for direction (prevents corner cutting)
+    fsm/rampup_duration: 1.5      # Duration over which to ramp up to full speed after trajectory update
+    fsm/initial_lookahead_offset: 0.3  # Initial offset added to lookahead point on trajectory after update
