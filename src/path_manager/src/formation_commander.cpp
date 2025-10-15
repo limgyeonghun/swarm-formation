@@ -225,8 +225,8 @@ private:
                 msg.waypoints.resize(7);
                 msg.waypoints[0].x = 32.47298; msg.waypoints[0].y = -93.42377; msg.waypoints[0].z = 0.0;
                 msg.waypoints[1].x = 27.85286; msg.waypoints[1].y = -116.42038; msg.waypoints[1].z = 0.0;
-                msg.waypoints[2].x = 29.01373; msg.waypoints[2].y = -121.56232; msg.waypoints[2].z = 0.0;
-                msg.waypoints[3].x = 32.08601; msg.waypoints[3].y = -127.38222; msg.waypoints[3].z = 0.0;
+                msg.waypoints[2].x = 27.01373; msg.waypoints[2].y = -122.2; msg.waypoints[2].z = 0.0;
+                msg.waypoints[3].x = 27.48601; msg.waypoints[3].y = -127.08222; msg.waypoints[3].z = 0.0;
                 msg.waypoints[4].x = 38.37347; msg.waypoints[4].y = -129.20889; msg.waypoints[4].z = 0.0;
                 msg.waypoints[5].x = 42.09200; msg.waypoints[5].y = -130.01768; msg.waypoints[5].z = 0.0;
                 msg.waypoints[6].x = 100.63176; msg.waypoints[6].y = -138.94522; msg.waypoints[6].z = 0.0;
