@@ -126,7 +126,7 @@ private:
     }
 
     void checkDistanceAndPublish() {
-        if (!have_initial_command_ || command_count_ >= 4) {
+        if (!have_initial_command_ || command_count_ >= 8) {
             return;
         }
 
@@ -171,7 +171,7 @@ private:
 
     void publishFormationCommand()
     {
-        if (command_count_ >= 3) {
+        if (command_count_ >= 7) {
             RCLCPP_INFO(this->get_logger(), "Formation command sequence completed. Stopping distance check timer.");
             if (distance_check_timer_) {
                 distance_check_timer_->cancel();
@@ -184,12 +184,30 @@ private:
         msg.header.frame_id = "world";
 
         // Define formation sequences
+        //
+        // Available formation types:
+        //   - "line_first"          : Line formation at 83° with offset (each drone has different waypoint)
+        //   - "line_first": Line formation at 83° without offset (all drones share waypoints, local optimizer maintains formation)
+        //   - "line_second"         : Line formation at -8.63° with offset
+        //   - "line_second": Line formation at -8.63° without offset
+        //   - "triangle"            : Triangle formation
+        //   - "square"              : Square formation
+        //
+        // Use no_offset variants when:
+        //   - Complex curved paths where offset causes formation drift
+        //   - Want to rely purely on local formation constraint
+        //   - Optimization sometimes "gives up" on formation and follows global path alone
+        //
+        // Use regular (with offset) variants when:
+        //   - Straight or simple curved paths
+        //   - Want explicit waypoint separation for each drone
+        //
         switch (command_count_) {
             case 0:
                 msg.formation_center.x = -8.75;
                 msg.formation_center.y = -57.0;
                 msg.formation_center.z = 0.0;
-                msg.formation_type = "line_first";
+                msg.formation_type = "line_first";  // Use "line_first" if formation drifts on curves
                 msg.formation_scale = 4.0;
 
                 msg.waypoints.resize(5);
@@ -207,40 +225,97 @@ private:
                 msg.formation_type = "triangle";
                 msg.formation_scale = 2.0;
 
-                msg.waypoints.resize(5);
+                msg.waypoints.resize(2);
                 msg.waypoints[0].x = 22.88972; msg.waypoints[0].y = -71.87321; msg.waypoints[0].z = 0.0;
                 msg.waypoints[1].x = 30.23262; msg.waypoints[1].y = -74.74562; msg.waypoints[1].z = 0.0;
-                msg.waypoints[2].x = 32.45039; msg.waypoints[2].y = -80.23940; msg.waypoints[2].z = 0.0;
-                msg.waypoints[3].x = 32.90863; msg.waypoints[3].y = -87.44061; msg.waypoints[3].z = 0.0;
-                msg.waypoints[4].x = 32.47298; msg.waypoints[4].y = -93.42377; msg.waypoints[4].z = 0.0;
                 break;
 
             case 2:
+                msg.formation_center.x = 32.45039;
+                msg.formation_center.y = -80.23940;
+                msg.formation_center.z = 0.0;
+                msg.formation_type = "triangle";
+                msg.formation_scale = 2.0;
+
+                msg.waypoints.resize(3);
+                msg.waypoints[0].x = 32.45039; msg.waypoints[0].y = -80.23940; msg.waypoints[0].z = 0.0;
+                msg.waypoints[1].x = 32.90863; msg.waypoints[1].y = -87.44061; msg.waypoints[1].z = 0.0;
+                msg.waypoints[2].x = 32.47298; msg.waypoints[2].y = -93.42377; msg.waypoints[2].z = 0.0;
+                break;
+
+            case 3:
+                // Stage 1: triangle -> square formation change + initial path
                 msg.formation_center.x = 32.47;
                 msg.formation_center.y = -93.42;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "square";
                 msg.formation_scale = 2.0;
 
-                msg.waypoints.resize(7);
+                msg.waypoints.resize(3);
                 msg.waypoints[0].x = 32.47298; msg.waypoints[0].y = -93.42377; msg.waypoints[0].z = 0.0;
                 msg.waypoints[1].x = 27.85286; msg.waypoints[1].y = -116.42038; msg.waypoints[1].z = 0.0;
                 msg.waypoints[2].x = 27.01373; msg.waypoints[2].y = -122.2; msg.waypoints[2].z = 0.0;
-                msg.waypoints[3].x = 27.48601; msg.waypoints[3].y = -127.08222; msg.waypoints[3].z = 0.0;
-                msg.waypoints[4].x = 38.37347; msg.waypoints[4].y = -129.20889; msg.waypoints[4].z = 0.0;
-                msg.waypoints[5].x = 42.09200; msg.waypoints[5].y = -130.01768; msg.waypoints[5].z = 0.0;
-                msg.waypoints[6].x = 100.63176; msg.waypoints[6].y = -138.94522; msg.waypoints[6].z = 0.0;
                 break;
 
-            case 3:
-                msg.formation_center.x = 107;
-                msg.formation_center.y = -138.76;
+            case 4:
+                // Stage 2: square formation maintained, continue long straight path
+                msg.formation_center.x = 42.09200;
+                msg.formation_center.y = -130.01768;
                 msg.formation_center.z = 0.0;
-                msg.formation_type = "line_second";
+                msg.formation_type = "square";
                 msg.formation_scale = 2.0;
 
-                msg.waypoints.resize(1);
-                msg.waypoints[0].x = 107.0; msg.waypoints[0].y = -138.76; msg.waypoints[0].z = 0.0;
+                msg.waypoints.resize(4);
+                msg.waypoints[0].x = 27.48601; msg.waypoints[0].y = -127.08222; msg.waypoints[0].z = 0.0;
+                msg.waypoints[1].x = 38.37347; msg.waypoints[1].y = -129.20889; msg.waypoints[1].z = 0.0;
+                msg.waypoints[2].x = 42.09200; msg.waypoints[2].y = -130.01768; msg.waypoints[2].z = 0.0;
+                msg.waypoints[3].x = 100.63176; msg.waypoints[3].y = -138.94522; msg.waypoints[3].z = 0.0;
+                break;
+
+            case 5:
+                // Combined long path: square -> line_second formation with curved path, circle, and straight segments
+                msg.formation_center.x = 89.56;
+                msg.formation_center.y = -26.97;
+                msg.formation_center.z = 0.0;
+                msg.formation_type = "line_second";
+                msg.formation_scale = 1.5;
+
+                msg.waypoints.resize(17);
+                // Initial curved path
+                msg.waypoints[0].x = 94.61884; msg.waypoints[0].y = -137.36130; msg.waypoints[0].z = 0.0;
+                msg.waypoints[1].x = 106.19094; msg.waypoints[1].y = -138.85164; msg.waypoints[1].z = 0.0;
+                msg.waypoints[2].x = 109.88909; msg.waypoints[2].y = -136.74628; msg.waypoints[2].z = 0.0;
+                msg.waypoints[3].x = 112.11637; msg.waypoints[3].y = -133.03310; msg.waypoints[3].z = 0.0;
+                msg.waypoints[4].x = 114.09413; msg.waypoints[4].y = -122.49115; msg.waypoints[4].z = 0.0;
+                // First half of circle path
+                msg.waypoints[5].x = 116.19815; msg.waypoints[5].y = -106.08804; msg.waypoints[5].z = 0.0;
+                msg.waypoints[6].x = 121.31105; msg.waypoints[6].y = -104.47885; msg.waypoints[6].z = 0.0;
+                msg.waypoints[7].x = 129.03363; msg.waypoints[7].y = -101.68507; msg.waypoints[7].z = 0.0;
+                msg.waypoints[8].x = 133.40306; msg.waypoints[8].y = -96.61195; msg.waypoints[8].z = 0.0;
+                msg.waypoints[9].x = 137.13039; msg.waypoints[9].y = -88.31696; msg.waypoints[9].z = 0.0;
+                // Second half of circle path
+                msg.waypoints[10].x = 134.43517; msg.waypoints[10].y = -77.65039; msg.waypoints[10].z = 0.0;
+                msg.waypoints[11].x = 128.59427; msg.waypoints[11].y = -72.46378; msg.waypoints[11].z = 0.0;
+                msg.waypoints[12].x = 121.21349; msg.waypoints[12].y = -68.27953; msg.waypoints[12].z = 0.0;
+                msg.waypoints[13].x = 123.41044; msg.waypoints[13].y = -52.36917; msg.waypoints[13].z = 0.0;
+                msg.waypoints[14].x = 124.92587; msg.waypoints[14].y = -37.03749; msg.waypoints[14].z = 0.0;
+                msg.waypoints[15].x = 122.65699; msg.waypoints[15].y = -32.65216; msg.waypoints[15].z = 0.0;
+                // Long straight path with obstacles
+                msg.waypoints[16].x = 89.56; msg.waypoints[16].y = -26.97; msg.waypoints[16].z = 0.0;
+                break;
+            case 6:
+                // Final: line_second -> square formation change
+                msg.formation_center.x = 3.48957;
+                msg.formation_center.y = -14.59468;
+                msg.formation_center.z = 0.0;
+                msg.formation_type = "square";
+                msg.formation_scale = 2.0;
+
+                msg.waypoints.resize(4);
+                msg.waypoints[0].x = 3.48957; msg.waypoints[0].y = -14.59468; msg.waypoints[0].z = 0.0;
+                msg.waypoints[1].x = 0.23684; msg.waypoints[1].y = -12.25636; msg.waypoints[1].z = 0.0;
+                msg.waypoints[2].x = -0.85307; msg.waypoints[2].y = -8.07603; msg.waypoints[2].z = 0.0;
+                msg.waypoints[3].x = 0.04395; msg.waypoints[3].y = 2.61689; msg.waypoints[3].z = 0.0;
                 break;
         }
 

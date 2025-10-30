@@ -476,34 +476,18 @@ std::vector<int> HungarianAlgorithm::orderPreservingMatch(
     const Eigen::Vector3d& line_direction) {
 
     int n = current_positions.size();
-    std::vector<int> assignment(n);
 
-    Eigen::Vector3d line_dir_norm = line_direction.normalized();
+    // FIXED: Instead of using projection-based ordering which causes role swapping
+    // when the formation rotates, use simple distance-based Hungarian algorithm.
+    // This ensures drones take the nearest available position, maintaining their
+    // relative spatial relationships even when the line formation changes direction.
 
-    // Project positions onto line direction and sort
-    std::vector<std::pair<double, int>> current_projections;
-    std::vector<std::pair<double, int>> target_projections;
+    // Create simple Euclidean distance cost matrix
+    auto cost_matrix = createCostMatrix(current_positions, target_positions);
 
-    for (int i = 0; i < n; ++i) {
-        double current_proj = current_positions[i].dot(line_dir_norm);
-        double target_proj = target_positions[i].dot(line_dir_norm);
-
-        current_projections.push_back({current_proj, i});
-        target_projections.push_back({target_proj, i});
-    }
-
-    // Sort by projection value
-    std::sort(current_projections.begin(), current_projections.end());
-    std::sort(target_projections.begin(), target_projections.end());
-
-    // Assign in order
-    for (int i = 0; i < n; ++i) {
-        int drone_idx = current_projections[i].second;
-        int target_idx = target_projections[i].second;
-        assignment[drone_idx] = target_idx;
-    }
-
-    return assignment;
+    // Use Hungarian algorithm to find optimal assignment based on distance
+    // This naturally preserves spatial relationships without explicitly enforcing order
+    return solve(cost_matrix);
 }
 
 } // namespace path_manager

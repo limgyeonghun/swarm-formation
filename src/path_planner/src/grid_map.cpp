@@ -16,7 +16,9 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   node_->declare_parameter("grid_map/esdf_slice_height", -0.1);
   node_->declare_parameter("grid_map/show_esdf_time", false);
   node_->declare_parameter("grid_map/local_bound_inflate", 1.0);
-  
+  node_->declare_parameter("grid_map/map_origin_x", 0.0);
+  node_->declare_parameter("grid_map/map_origin_y", 0.0);
+
   // Road boundary parameters
   node_->declare_parameter("grid_map/use_road_boundary", false);
   node_->declare_parameter("grid_map/road_segments", std::vector<double>());
@@ -75,10 +77,24 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
               << ") -> (" << seg.end_x << "," << seg.end_y << "), width: " << seg.width << "m" << std::endl;
   }
   std::cout << "  road_margin: " << mp_.road_margin_ << std::endl;
+  std::cout << "  map_origin_x: " << node_->get_parameter("grid_map/map_origin_x").as_double() << std::endl;
+  std::cout << "  map_origin_y: " << node_->get_parameter("grid_map/map_origin_y").as_double() << std::endl;
 
   mp_.local_bound_inflate_ = std::max(mp_.resolution_, mp_.local_bound_inflate_);
   mp_.resolution_inv_ = 1.0 / mp_.resolution_;
-  mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, -0.01);
+
+  // Get custom map origin if provided, otherwise use default centered origin
+  double map_origin_x = node_->get_parameter("grid_map/map_origin_x").as_double();
+  double map_origin_y = node_->get_parameter("grid_map/map_origin_y").as_double();
+
+  if (map_origin_x == 0.0 && map_origin_y == 0.0) {
+    // Default behavior: center map at (0, 0)
+    mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, -0.01);
+  } else {
+    // Use custom origin for optimized map placement
+    mp_.map_origin_ = Eigen::Vector3d(map_origin_x, map_origin_y, -0.01);
+  }
+
   mp_.map_size_ = Eigen::Vector3d(x_size, y_size, z_size);
   
   // Initialize ESDF parameters

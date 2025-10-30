@@ -80,7 +80,7 @@ private:
     // Formation manager functions
     void generateFormationTargets(const Eigen::Vector3d& center, const std::string& formation_type, double scale, const std::vector<Eigen::Vector3d>& waypoints = {});
     std::vector<Eigen::Vector3d> generateFormationPattern(const std::string& formation_type, int num_drones, double scale);
-    void publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints = {});
+    void publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints = {}, bool formation_changed = false);
 
     std::shared_ptr<PathManager> path_manager_;
 
@@ -127,6 +127,7 @@ private:
     // Formation manager variables
     int num_drones_;
     std::string current_formation_type_;
+    std::string prev_formation_type_;  // Track previous formation type for change detection
     double current_formation_scale_;
     Eigen::Vector3d current_formation_center_;
     bool has_formation_command_;

@@ -10,7 +10,7 @@
 
     formation_type: "line"
     formation_scale: 4.0
-    distance_threshold: 4.0
+    distance_threshold: 6.0
     
     drone_0:
       drone_id: 0

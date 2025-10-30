@@ -25,6 +25,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
       flag_escape_emergency_(false),
       num_drones_(4),
       current_formation_type_("square"),
+      prev_formation_type_(""),  // Empty string indicates no previous formation
       current_formation_scale_(2.0),
       has_formation_command_(false)
     {
@@ -683,28 +684,58 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
     start_pt_ = current_pos_;
 
     bool success = false;
-    
+
     std::vector<Eigen::Vector3d> waypoints;
-    
+
+    // Calculate my initial formation position (where I should be in the formation)
+    Eigen::Vector3d my_initial_formation_position = Eigen::Vector3d(
+        msg->target_position.x,
+        msg->target_position.y,
+        msg->target_position.z);
+
     if (!msg->formation_positions.empty()) {
+        // If we have formation_positions, the first one is my initial formation position
+        my_initial_formation_position = Eigen::Vector3d(
+            msg->formation_positions[0].x,
+            msg->formation_positions[0].y,
+            msg->formation_positions[0].z);
+
+        // Build waypoints: first go to initial formation position, then follow remaining waypoints
         waypoints.reserve(msg->formation_positions.size());
         for (const auto& pos : msg->formation_positions) {
             waypoints.emplace_back(pos.x, pos.y, pos.z);
         }
 
         end_pt_ = waypoints.back();
-        RCLCPP_INFO(node_->get_logger(), "Using %zu waypoints from formation_positions for drone %d", 
+        RCLCPP_INFO(node_->get_logger(), "Using %zu waypoints from formation_positions for drone %d",
                    waypoints.size(), drone_id_);
-        log_manager_->infof("Using %zu waypoints from formation_positions for drone %d", 
+        log_manager_->infof("Using %zu waypoints from formation_positions for drone %d",
                            waypoints.size(), drone_id_);
     } else {
-        end_pt_ = Eigen::Vector3d(
-            msg->target_position.x,
-            msg->target_position.y,
-            msg->target_position.z);
-        waypoints = { end_pt_ };
+        // No formation_positions: just use target_position
+        // Add initial formation position as first waypoint to ensure formation recovery
+        waypoints = { my_initial_formation_position };
+        end_pt_ = my_initial_formation_position;
         RCLCPP_INFO(node_->get_logger(), "Using single target_position as waypoint for drone %d", drone_id_);
         log_manager_->infof("Using single target_position as waypoint for drone %d", drone_id_);
+    }
+
+    // Check if we need to add initial formation position recovery waypoint
+    double dist_to_initial_formation = (current_pos_ - my_initial_formation_position).norm();
+    const double FORMATION_RECOVERY_THRESHOLD = 1.0;  // 1 meter threshold
+
+    if (dist_to_initial_formation > FORMATION_RECOVERY_THRESHOLD) {
+        RCLCPP_INFO(node_->get_logger(),
+                   "Drone %d is %.2f meters away from initial formation position. Adding recovery waypoint.",
+                   drone_id_, dist_to_initial_formation);
+        log_manager_->infof(
+                   "Drone %d is %.2f meters away from initial formation position. Adding recovery waypoint.",
+                   drone_id_, dist_to_initial_formation);
+
+        // Insert initial formation position at the beginning of waypoints if not already there
+        if (waypoints.empty() || (waypoints[0] - my_initial_formation_position).norm() > 0.1) {
+            waypoints.insert(waypoints.begin(), my_initial_formation_position);
+        }
     }
 
     RCLCPP_INFO(node_->get_logger(), "start_pt_: %.2f, %.2f, %.2f", start_pt_(0), start_pt_(1), start_pt_(2));
@@ -777,7 +808,19 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
                 msg->formation_center.y,
                 msg->formation_center.z);
 
+    // Detect formation change
+    bool formation_changed = (!prev_formation_type_.empty() &&
+                             prev_formation_type_ != msg->formation_type);
+
+    if (formation_changed) {
+        RCLCPP_INFO(node_->get_logger(),
+                   "Formation change detected: %s -> %s",
+                   prev_formation_type_.c_str(),
+                   msg->formation_type.c_str());
+    }
+
     // Update formation parameters
+    prev_formation_type_ = current_formation_type_;  // Save current before updating
     current_formation_type_ = msg->formation_type;
     current_formation_scale_ = msg->formation_scale;
     current_formation_center_ = Eigen::Vector3d(
@@ -853,11 +896,11 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
 
             // Determine line direction
             assignment_params_.formation_type = current_formation_type_;
-            if (current_formation_type_ == "line_first") {
+            if (current_formation_type_ == "line_first" || current_formation_type_ == "line_first_no_offset") {
                 double line_angle = 83.0 * M_PI / 180.0;
                 assignment_params_.formation_direction = Eigen::Vector3d(
                     cos(line_angle), sin(line_angle), 0.0);
-            } else if (current_formation_type_ == "line_second") {
+            } else if (current_formation_type_ == "line_second" || current_formation_type_ == "line_second_no_offset") {
                 double line_angle = -8.63 * M_PI / 180.0;
                 assignment_params_.formation_direction = Eigen::Vector3d(
                     cos(line_angle), sin(line_angle), 0.0);
@@ -921,8 +964,8 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
                "Drone %d assigned to target position %d: (%.2f, %.2f, %.2f)",
                drone_id_, assignment[drone_id_], my_target.x(), my_target.y(), my_target.z());
 
-    // Step 8: Publish formation target
-    publishFormationTarget(my_target, waypoints);
+    // Step 8: Publish formation target (pass formation_changed flag)
+    publishFormationTarget(my_target, waypoints, formation_changed);
 }
 
 void ReplanFSM::generateFormationTargets(
@@ -1005,7 +1048,7 @@ std::vector<Eigen::Vector3d> ReplanFSM::generateFormationPattern(
     else if (formation_type == "line_first") {
         double spacing = (num_drones > 1) ? scale / (num_drones - 1) : 0.0;
         double line_angle = 83.0 * M_PI / 180.0;
-        
+
         for (int i = 0; i < num_drones; ++i) {
             double line_position = -scale/2 + i * spacing;
             pattern.push_back(Eigen::Vector3d(
@@ -1015,10 +1058,16 @@ std::vector<Eigen::Vector3d> ReplanFSM::generateFormationPattern(
             ));
         }
     }
+    else if (formation_type == "line_first_no_offset") {
+        // No offset version - all drones target same waypoint, formation maintained by local optimizer
+        for (int i = 0; i < num_drones; ++i) {
+            pattern.push_back(Eigen::Vector3d(0.0, 0.0, 0.0));  // Zero offset for all
+        }
+    }
     else if (formation_type == "line_second") {
         double spacing = (num_drones > 1) ? scale / (num_drones - 1) : 0.0;
         double line_angle = -8.63 * M_PI / 180.0;
-        
+
         for (int i = 0; i < num_drones; ++i) {
             double line_position = -scale/2 + i * spacing;
             pattern.push_back(Eigen::Vector3d(
@@ -1026,6 +1075,12 @@ std::vector<Eigen::Vector3d> ReplanFSM::generateFormationPattern(
                 line_position * sin(line_angle),
                 0.0
             ));
+        }
+    }
+    else if (formation_type == "line_second_no_offset") {
+        // No offset version - all drones target same waypoint, formation maintained by local optimizer
+        for (int i = 0; i < num_drones; ++i) {
+            pattern.push_back(Eigen::Vector3d(0.0, 0.0, 0.0));  // Zero offset for all
         }
     }
     else if (formation_type == "circle") {
@@ -1065,7 +1120,7 @@ std::vector<Eigen::Vector3d> ReplanFSM::generateFormationPattern(
     return pattern;
 }
 
-void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints) {
+void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints, bool formation_changed) {
     path_manager::msg::FormationTarget target_msg;
 
     target_msg.header.stamp = node_->now();
@@ -1082,33 +1137,65 @@ void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std:
 
     target_msg.formation_type = current_formation_type_;
     target_msg.formation_scale = current_formation_scale_;
-    
+
     if (!waypoints.empty()) {
-        std::vector<Eigen::Vector3d> formation_pattern = 
+        std::vector<Eigen::Vector3d> formation_pattern =
             generateFormationPattern(current_formation_type_, num_drones_, current_formation_scale_);
-        
+
         Eigen::Vector3d formation_offset = Eigen::Vector3d::Zero();
         if (drone_id_ < formation_pattern.size()) {
             formation_offset = formation_pattern[drone_id_];
         }
-        
-        target_msg.formation_positions.reserve(waypoints.size());
+
+        std::vector<Eigen::Vector3d> adjusted_waypoints;
+
+        // If formation changed, insert alignment waypoint before first waypoint
+        if (formation_changed && !waypoints.empty()) {
+            // Calculate alignment waypoint: move towards first waypoint direction
+            // but position myself at the new formation offset
+            Eigen::Vector3d direction_to_first_wp = (waypoints[0] - current_pos_).normalized();
+            double distance_to_first_wp = (waypoints[0] - current_pos_).norm();
+
+            // Place alignment waypoint at a fraction of the distance to first waypoint
+            // This gives the drone space to align to the new formation
+            double alignment_distance = std::min(distance_to_first_wp * 0.5, 3.0);  // Max 3 meters ahead
+
+            Eigen::Vector3d alignment_waypoint = current_pos_ +
+                                                 direction_to_first_wp * alignment_distance;
+
+            // Apply new formation offset to alignment waypoint
+            alignment_waypoint = alignment_waypoint + formation_offset;
+
+            adjusted_waypoints.push_back(alignment_waypoint);
+
+            RCLCPP_INFO(node_->get_logger(),
+                       "Drone %d: Inserting formation alignment waypoint at (%.2f, %.2f, %.2f) before first waypoint",
+                       drone_id_, alignment_waypoint.x(), alignment_waypoint.y(), alignment_waypoint.z());
+        }
+
+        // Add all original waypoints with formation offset
         for (const auto& wp : waypoints) {
-            Eigen::Vector3d drone_waypoint = wp + formation_offset;
-            
+            adjusted_waypoints.push_back(wp + formation_offset);
+        }
+
+        target_msg.formation_positions.reserve(adjusted_waypoints.size());
+        for (const auto& wp : adjusted_waypoints) {
             geometry_msgs::msg::Point waypoint_pos;
-            waypoint_pos.x = drone_waypoint.x();
-            waypoint_pos.y = drone_waypoint.y();
-            waypoint_pos.z = drone_waypoint.z();
+            waypoint_pos.x = wp.x();
+            waypoint_pos.y = wp.y();
+            waypoint_pos.z = wp.z();
             target_msg.formation_positions.push_back(waypoint_pos);
         }
-        
-        RCLCPP_INFO(node_->get_logger(), "Publishing formation target with %zu formation-adjusted waypoints for drone %d (offset: %.2f, %.2f, %.2f)", 
-                   waypoints.size(), drone_id_, formation_offset.x(), formation_offset.y(), formation_offset.z());
+
+        RCLCPP_INFO(node_->get_logger(),
+                   "Publishing formation target with %zu waypoints for drone %d (offset: %.2f, %.2f, %.2f)%s",
+                   adjusted_waypoints.size(), drone_id_,
+                   formation_offset.x(), formation_offset.y(), formation_offset.z(),
+                   formation_changed ? " [FORMATION CHANGED - alignment waypoint added]" : "");
     } else {
-        std::vector<Eigen::Vector3d> formation_pattern = 
+        std::vector<Eigen::Vector3d> formation_pattern =
             generateFormationPattern(current_formation_type_, num_drones_, current_formation_scale_);
-        
+
         target_msg.formation_positions.reserve(formation_pattern.size());
         for (const auto& pos : formation_pattern) {
             geometry_msgs::msg::Point formation_pos;
