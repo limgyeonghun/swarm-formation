@@ -223,7 +223,7 @@ def create_drone_nodes(context, *args, **kwargs):
     )
 
     formation_commander_delayed = TimerAction(
-        period=10.0,
+        period=60.0,
         actions=[formation_commander],
     )
 
