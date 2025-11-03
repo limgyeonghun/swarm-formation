@@ -104,7 +104,8 @@ private:
     bool have_local_traj_;
     bool have_recv_pre_agent_;
     bool flag_replan_astar_;
-    int drone_id_;
+    int drone_id_;      // Internal index (0,1,2,3...)
+    int mavlink_id_;    // MAVLink system ID for PX4 communication
     double replan_thresh_;
     double no_replan_thresh_;
     double replan_trajectory_time_;

@@ -55,7 +55,8 @@ TrajServer::TrajServer() : Node("traj_server") {
     rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
     auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
-    std::string pos_cmd_topic = "/vehicle" + std::to_string(drone_id_ + 1) + "/target_position";
+    // Internal agent topic (0,1,2,3...), not to be confused with external vehicle mavlink_id
+    std::string pos_cmd_topic = "/agent" + std::to_string(drone_id_) + "/target_position";
     pos_cmd_pub_ = create_publisher<path_manager::msg::PositionCommand>(pos_cmd_topic, sensor_qos);
 
     traj_sub_ = create_subscription<path_manager::msg::PolyTraj>(

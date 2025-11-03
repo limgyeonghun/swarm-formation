@@ -44,7 +44,10 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
     node_->declare_parameter("drone_id", 0);
     node_->get_parameter("drone_id", drone_id_);
-    FSM_LOG_INFO("Starting ReplanFSM for drone_id: %d", drone_id_);
+
+    node_->declare_parameter("mavlink_id", 1);
+    node_->get_parameter("mavlink_id", mavlink_id_);
+    FSM_LOG_INFO("Starting ReplanFSM for drone_id: %d (internal), mavlink_id: %d (PX4)", drone_id_, mavlink_id_);
 
     // Formation manager parameters
     node_->declare_parameter("num_drones", 4);
@@ -159,14 +162,16 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
     if (rviz_simulation_)
     {
-        std::string target_position_topic = "/vehicle" + std::to_string(drone_id_ + 1) + "/target_position";
+        // Internal agent topic for simulation
+        std::string target_position_topic = "/agent" + std::to_string(drone_id_) + "/target_position";
         target_position_sub_ = node_->create_subscription<path_manager::msg::PositionCommand>(
             target_position_topic, sensor_qos, std::bind(&ReplanFSM::targetPositionCallback, this, std::placeholders::_1));
         have_position_ = true;  // We have initial position from parameters
     }
     else
     {
-        std::string px4_position_topic = "/vehicle" + std::to_string(drone_id_ + 1) + "/fmu/out/vehicle_local_position";
+        // External MAVLink topic for real PX4
+        std::string px4_position_topic = "/vehicle" + std::to_string(mavlink_id_) + "/fmu/out/vehicle_local_position_v1";
         px4_position_sub_ = node_->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
         px4_position_topic, sensor_qos, std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1));
     }

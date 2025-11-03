@@ -27,7 +27,8 @@ public:
     RoverControl();
 
 private:
-  int rover_id_;
+  int index_;          // Internal array index (0,1,2,3...)
+  int mavlink_id_;     // MAVLink system ID (can be non-consecutive like 1,4,5,6)
   float offset_x_pt_;
   float offset_y_pt_;
   double target_idle_timeout_sec_;

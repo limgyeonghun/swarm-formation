@@ -2,10 +2,13 @@
 #include <algorithm>
 #include <cmath>
 
-RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(0.0), offset_y_pt_(0.0)
+RoverControl::RoverControl() : Node("RoverControl"), index_(0), mavlink_id_(1), offset_x_pt_(0.0), offset_y_pt_(0.0)
 {
-    this->declare_parameter<int>("rover_id", 1);
-    this->get_parameter("rover_id", rover_id_);
+    this->declare_parameter<int>("index", 0);
+    this->get_parameter("index", index_);
+
+    this->declare_parameter<int>("mavlink_id", 1);
+    this->get_parameter("mavlink_id", mavlink_id_);
 
     this->declare_parameter<float>("start_point_x", 0.0);
     this->get_parameter("start_point_x", offset_x_pt_);
@@ -19,12 +22,12 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(
     this->declare_parameter<double>("arrival_distance_threshold", 0.5);
     this->get_parameter("arrival_distance_threshold", arrival_distance_threshold_);
 
-    RCLCPP_INFO(this->get_logger(), "ID: %d | target_timeout: %.2f  arrival_threshold: %.2f",
-                rover_id_, target_idle_timeout_sec_, arrival_distance_threshold_);
+    RCLCPP_INFO(this->get_logger(), "Index: %d (internal) | MAVLink ID: %d (vehicle) | target_timeout: %.2f  arrival_threshold: %.2f",
+                index_, mavlink_id_, target_idle_timeout_sec_, arrival_distance_threshold_);
 
-    std::string sid = std::to_string(rover_id_ + 1);
-    const std::string topic_prefix_out = "/vehicle" + sid + "/fmu/out/";
-    const std::string topic_prefix_in = "/vehicle" + sid + "/fmu/in/";
+    std::string mavlink_str = std::to_string(mavlink_id_);
+    const std::string topic_prefix_out = "/vehicle" + mavlink_str + "/fmu/out/";
+    const std::string topic_prefix_in = "/vehicle" + mavlink_str + "/fmu/in/";
 
     rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
     auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 20), qos_profile);
@@ -32,12 +35,14 @@ RoverControl::RoverControl() : Node("RoverControl"), rover_id_(1), offset_x_pt_(
     status_sub_ = this->create_subscription<VehicleStatus>(
         topic_prefix_out + "vehicle_status_v1", qos, bind(&RoverControl::status_cb, this, std::placeholders::_1));
     position_sub_ = this->create_subscription<VehicleLocalPosition>(
-        topic_prefix_out + "vehicle_local_position", qos, bind(&RoverControl::pos_cb, this, std::placeholders::_1));
+        topic_prefix_out + "vehicle_local_position_v1", qos, bind(&RoverControl::pos_cb, this, std::placeholders::_1));
     // target_sub_ = this->create_subscription<PositionCommand>(
     //     topic_prefix_in + "target_position", qos, bind(&RoverControl::target_cb, this, std::placeholders::_1));
 
+    // Internal topic uses agent index (0,1,2,3...), external MAVLink uses vehicle mavlink_id
+    std::string agent_id = std::to_string(index_);
     target_sub_ = this->create_subscription<PositionCommand>(
-        "vehicle" + sid + "/target_position", qos, bind(&RoverControl::target_cb, this, std::placeholders::_1));    
+        "/agent" + agent_id + "/target_position", qos, bind(&RoverControl::target_cb, this, std::placeholders::_1));    
     trajectory_setpoint_pub_ = this->create_publisher<TrajectorySetpoint>(topic_prefix_in + "trajectory_setpoint", qos);
     offboard_control_mode_pub_ = this->create_publisher<OffboardControlMode>(topic_prefix_in + "offboard_control_mode", qos);
     command_pub_ = this->create_publisher<VehicleCommand>(topic_prefix_in + "vehicle_command", qos);
@@ -126,7 +131,7 @@ void RoverControl::publish_vehicle_command(uint16_t command, float param1, float
   msg.param1 = param1;
   msg.param2 = param2;
   msg.command = command;
-  msg.target_system = rover_id_ + 1;
+  msg.target_system = mavlink_id_;  // Use actual MAVLink system ID
   msg.target_component = 1;
   msg.source_system = 1;
   msg.source_component = 1;

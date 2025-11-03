@@ -13,25 +13,29 @@
     distance_threshold: 6.0
     
     drone_0:
-      drone_id: 0
+      index: 0          # Internal agent index (0,1,2,3...) -> /agent0/target_position
+      mavlink_id: 1     # External MAVLink ID (can be non-consecutive) -> /vehicle1/fmu/...
       start_point_x: 0.00
       start_point_y: 0.00
       start_point_z: 0.00
 
     drone_1:
-      drone_id: 1
+      index: 1          # Internal: /agent1/...
+      mavlink_id: 5     # External: /vehicle5/fmu/...
       start_point_x: 0.24
       start_point_y: 1.99
       start_point_z: 0.00
 
     drone_2:
-      drone_id: 2
+      index: 2          # Internal: /agent2/...
+      mavlink_id: 7     # External: /vehicle7/fmu/...
       start_point_x: 0.49
       start_point_y: 3.97
       start_point_z: 0.00
 
     drone_3:
-      drone_id: 3
+      index: 3          # Internal: /agent3/...
+      mavlink_id: 9     # External: /vehicle9/fmu/...
       start_point_x: 0.73
       start_point_y: 5.96
       start_point_z: 0.00

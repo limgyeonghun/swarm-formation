@@ -77,44 +77,48 @@ def create_drone_nodes(context, *args, **kwargs):
     rover_nodes  = []
     jfi_nodes    = []
 
-    # Drones to run - collect actual drone_ids from config
+    # Drones to run - collect actual indices from config
     if num_drones == 1:
         drones_to_run = [target_drone_id]
         print(f"Single drone mode: running drone {target_drone_id}")
     else:
-        # Extract actual drone IDs from drones.yaml
+        # Extract actual drone indices from drones.yaml
         drones_to_run = []
         for i in range(6):  # Check drone_0 to drone_5
             drone_key = f'drone_{i}'
             if drone_key in drone_cfg:
-                drones_to_run.append(drone_cfg[drone_key]['drone_id'])
+                drones_to_run.append(drone_cfg[drone_key]['index'])
         print(f"Multi-drone mode: running drones {drones_to_run}")
 
     # Create nodes per drone
-    for drone_id in drones_to_run:
+    for drone_index in drones_to_run:
         target_cfg = None
-        target_index = 0
+        target_key_index = 0
 
         for i in range(6):  # drone_0 .. drone_5
             drone_key = f'drone_{i}'
             if drone_key in drone_cfg:
-                if drone_cfg[drone_key]['drone_id'] == drone_id:
+                if drone_cfg[drone_key]['index'] == drone_index:
                     target_cfg = drone_cfg[drone_key]
-                    target_index = i
-                    print(f"Found {drone_key} with drone_id={drone_id}")
+                    target_key_index = i
+                    print(f"Found {drone_key} with index={drone_index}")
                     break
 
         if target_cfg is None:
-            print(f"Error: drone_id {drone_id} not found in drones.yaml")
+            print(f"Error: index {drone_index} not found in drones.yaml")
             continue
 
         cfg = target_cfg
-        did = drone_id
-        i = target_index
+        idx = drone_index
+        i = target_key_index
+
+        # Get mavlink_id from config, or default to index + 1
+        mavlink_id = cfg.get('mavlink_id', idx + 1)
 
         params = {
             'rviz_simulation': rviz_sim,
-            'drone_id':        did,
+            'drone_id':        idx,
+            'mavlink_id':      mavlink_id,
             'start_point_x':   float(cfg['start_point_x']),
             'start_point_y':   float(cfg['start_point_y']),
             'start_point_z':   float(cfg['start_point_z']),
@@ -122,7 +126,7 @@ def create_drone_nodes(context, *args, **kwargs):
 
         remaps = []
         if not real_mode:
-            id_str = str(did + 1)
+            id_str = str(idx + 1)
             remaps = [
                 (f'V{id_str}/planning/broadcast_traj_send', '/planning/broadcast_traj_recv'),
                 (f'V{id_str}/j_fi/broadcast_traj_recv', '/planning/broadcast_traj_recv'),
@@ -156,7 +160,8 @@ def create_drone_nodes(context, *args, **kwargs):
                 name=f'RoverControl_drone_{i}',
                 output='screen',
                 parameters=[
-                    {'rover_id': did},
+                    {'index': idx},
+                    {'mavlink_id': mavlink_id},
                     {'rviz_simulation': rviz_sim},
                     {'start_point_x': cfg['start_point_x']},
                     {'start_point_y': cfg['start_point_y']},
@@ -168,7 +173,6 @@ def create_drone_nodes(context, *args, **kwargs):
         )
 
         if real_mode:
-            system_id = did + 1
             jfi_nodes.append(
                 Node(
                     package='jfi_comm',
@@ -178,12 +182,12 @@ def create_drone_nodes(context, *args, **kwargs):
                     parameters=[
                         {'port_name': jfi_port},
                         {'baud_rate': jfi_baud_rate},
-                        {'system_id': system_id},
+                        {'system_id': mavlink_id},
                         {'component_id': 1},
                     ]
                 )
             )
-            print(f"JFI node added for drone {did} with system_id {system_id}")
+            print(f"JFI node added for drone index={idx} with mavlink_id={mavlink_id}")
         else:
             print("JFI node skipped (not in real mode)")
 
