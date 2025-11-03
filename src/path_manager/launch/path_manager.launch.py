@@ -77,12 +77,17 @@ def create_drone_nodes(context, *args, **kwargs):
     rover_nodes  = []
     jfi_nodes    = []
 
-    # Drones to run
+    # Drones to run - collect actual drone_ids from config
     if num_drones == 1:
         drones_to_run = [target_drone_id]
         print(f"Single drone mode: running drone {target_drone_id}")
     else:
-        drones_to_run = list(range(num_drones))
+        # Extract actual drone IDs from drones.yaml
+        drones_to_run = []
+        for i in range(6):  # Check drone_0 to drone_5
+            drone_key = f'drone_{i}'
+            if drone_key in drone_cfg:
+                drones_to_run.append(drone_cfg[drone_key]['drone_id'])
         print(f"Multi-drone mode: running drones {drones_to_run}")
 
     # Create nodes per drone

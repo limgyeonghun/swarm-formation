@@ -19,6 +19,17 @@ def launch_setup(context, *args, **kwargs):
     num_rovers = int(LaunchConfiguration('num_rovers').perform(context))
     rviz_simulation = LaunchConfiguration('rviz_simulation').perform(context)
     drone_id = LaunchConfiguration('drone_id').perform(context)
+    rover_ids_str = LaunchConfiguration('rover_ids').perform(context)
+
+    # Parse rover IDs (comma-separated string like "1,4,5,9")
+    if rover_ids_str:
+        rover_ids = [int(x.strip()) for x in rover_ids_str.split(',')]
+    else:
+        # Default: use sequential IDs starting from 0
+        rover_ids = list(range(num_rovers))
+
+    print(f"Using rover IDs: {rover_ids}")
+    print(f"Number of rovers: {len(rover_ids)}")
 
     # MicroXRCEAgent for PX4-ROS2 communication
     xrce_agent_process = ExecuteProcess(
@@ -39,8 +50,12 @@ def launch_setup(context, *args, **kwargs):
     ]
 
     # Create PX4 instances for each rover
-    for i in range(num_rovers):
-        if i == 0:
+    for idx, rover_id in enumerate(rover_ids):
+        # Use idx for position in rover_poses array
+        # Use rover_id for PX4 instance ID
+        pose_idx = idx if idx < len(rover_poses) else 0
+
+        if idx == 0:
             # First rover launches Gazebo with world
             env_dict = {
                 'GZ_SIM_RESOURCE_PATH': f'{px4_src_path}/Tools/simulation/gz/models:{px4_src_path}/Tools/simulation/gz/worlds',
@@ -49,7 +64,7 @@ def launch_setup(context, *args, **kwargs):
                 'PX4_GZ_WORLDS': f'{px4_src_path}/Tools/simulation/gz/worlds',
                 'PX4_GZ_MODELS': f'{px4_src_path}/Tools/simulation/gz/models',
                 'PX4_SYS_AUTOSTART': '4012',
-                'PX4_GZ_MODEL_POSE': rover_poses[i],
+                'PX4_GZ_MODEL_POSE': rover_poses[pose_idx],
                 'PX4_SIM_MODEL': 'gz_rover_ackermann',
             }
         else:
@@ -62,25 +77,25 @@ def launch_setup(context, *args, **kwargs):
                 'PX4_GZ_WORLDS': f'{px4_src_path}/Tools/simulation/gz/worlds',
                 'PX4_GZ_MODELS': f'{px4_src_path}/Tools/simulation/gz/models',
                 'PX4_SYS_AUTOSTART': '4012',
-                'PX4_GZ_MODEL_POSE': rover_poses[i],
+                'PX4_GZ_MODEL_POSE': rover_poses[pose_idx],
                 'PX4_SIM_MODEL': 'gz_rover_ackermann',
             }
 
         px4_process = ExecuteProcess(
             cmd=[
                 f'{px4_src_path}/build/px4_sitl_default/bin/px4',
-                '-i', str(i),
+                '-i', str(rover_id),  # Use custom rover ID here
             ],
             additional_env=env_dict,
             output='screen',
         )
 
-        if i == 0:
+        if idx == 0:
             # Launch first rover immediately
             nodes_to_start.append(px4_process)
         else:
             # Delay subsequent rovers by 3 seconds each
-            delay = 3.0 * i
+            delay = 3.0 * idx
             nodes_to_start.append(
                 TimerAction(
                     period=delay,
@@ -90,7 +105,7 @@ def launch_setup(context, *args, **kwargs):
 
     # Include the path_manager.launch.py after all rovers are started
     # Wait for all rovers to be ready (3 seconds per rover + 5 seconds buffer)
-    path_manager_delay = (num_rovers * 3.0) + 5.0
+    path_manager_delay = (len(rover_ids) * 3.0) + 5.0
 
     path_manager_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -157,6 +172,14 @@ def generate_launch_description():
             'drone_id',
             default_value='1',
             description='Target drone ID to run (default: 1)'
+        )
+    )
+
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'rover_ids',
+            default_value='',
+            description='Comma-separated rover IDs to spawn (e.g., "1,4,5,9"). If empty, uses sequential IDs 0,1,2,3...'
         )
     )
 
