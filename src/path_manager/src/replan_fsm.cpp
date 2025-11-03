@@ -166,7 +166,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     }
     else
     {
-        std::string px4_position_topic = "/vehicle" + std::to_string(drone_id_ + 1) + "/fmu/out/vehicle_local_position_v1";
+        std::string px4_position_topic = "/vehicle" + std::to_string(drone_id_ + 1) + "/fmu/out/vehicle_local_position";
         px4_position_sub_ = node_->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
         px4_position_topic, sensor_qos, std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1));
     }
