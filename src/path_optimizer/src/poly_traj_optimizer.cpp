@@ -606,6 +606,39 @@ namespace ego_planner
     if (similarity_error > 0)
     {
       ret = true;
+
+      // Adaptive formation weight based on similarity error
+      // Similarity range observed: 0.0 (perfect match) to ~1.1 (very different shapes)
+      // When shapes differ significantly (e.g., square->line), reduce weight dramatically
+      // to allow optimizer to find feasible paths first, then gradually converge to formation
+      // double adaptive_weight = wei_formation_base_;
+
+      // if (similarity_error > 0.8) {
+      //   // Extremely different shape (0.8-1.1) - prioritize feasibility over formation
+      //   adaptive_weight = wei_formation_base_ * 0.00625;  // 1/160 of base weight (500)
+      // } else if (similarity_error > 0.6) {
+      //   // Very different shape (0.6-0.8) - allow large deviations
+      //   adaptive_weight = wei_formation_base_ * 0.0125;   // 1/80 of base weight (1000)
+      // } else if (similarity_error > 0.4) {
+      //   // Significantly different shape (0.4-0.6) - reduced priority
+      //   adaptive_weight = wei_formation_base_ * 0.025;    // 1/40 of base weight (2000)
+      // } else if (similarity_error > 0.2) {
+      //   // Moderately different shape (0.2-0.4) - balanced approach
+      //   adaptive_weight = wei_formation_base_ * 0.0625;   // 1/16 of base weight (5000)
+      // } else if (similarity_error > 0.1) {
+      //   // Slightly different shape (0.1-0.2) - start enforcing formation
+      //   adaptive_weight = wei_formation_base_ * 0.125;    // 1/8 of base weight (10000)
+      // } else if (similarity_error > 0.05) {
+      //   // Close to target (0.05-0.1) - enforce formation more
+      //   adaptive_weight = wei_formation_base_ * 0.25;     // 1/4 of base weight (20000)
+      // } else if (similarity_error > 0.02) {
+      //   // Very close (0.02-0.05) - strong formation enforcement
+      //   adaptive_weight = wei_formation_base_ * 0.5;      // 1/2 of base weight (40000)
+      // }
+      // // else: similarity_error <= 0.02, use full base weight (80000) for precision
+
+      // wei_formation_ = adaptive_weight;  // Update current weight
+
       costp = wei_formation_ * similarity_error;
       std::vector<Eigen::Vector3d> swarm_grad;
       swarm_graph_->getGrad(swarm_grad);
@@ -1084,6 +1117,7 @@ namespace ego_planner
     node_->get_parameter("optimization/weight_time", wei_time_);
     node_->declare_parameter("optimization/weight_formation", 0.0);
     node_->get_parameter("optimization/weight_formation", wei_formation_);
+    wei_formation_base_ = wei_formation_;  // Store base weight for adaptive adjustment
     node_->declare_parameter("optimization/weight_nonholonomic", 15000.0);
     node_->get_parameter("optimization/weight_nonholonomic", wei_nonholo_);
 

@@ -105,6 +105,7 @@ namespace ego_planner
     double wei_sqrvar_;
     double wei_time_;
     double wei_formation_;
+    double wei_formation_base_;  // Base formation weight (from config)
     double wei_nonholo_;  // Weight for nonholonomic constraint cost (rover-specific)
 
     double obs_clearance_;

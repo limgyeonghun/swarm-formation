@@ -4,28 +4,19 @@
     optimization/constrain_points_perPiece: 3
     
     # Obstacle Avoidance Control
-    enable_obstacles: true
+    enable_obstacles: false
     
     # Debug Logging Control
-    enable_debug_logs: false  # Set to true to enable detailed timing logs
-    enable_lbfgs_detail_logs: false  # Set to true to enable detailed L-BFGS cost debugging
+    enable_debug_logs: true  # Set to true to enable detailed timing logs
+    enable_lbfgs_detail_logs: true  # Set to true to enable detailed L-BFGS cost debugging
 
-    # Task Assignment Control
-    enable_hungarian: true  # Set to false to use simple drone_id-based assignment (no Hungarian algorithm)
-
-    # Hungarian Algorithm Cost Weights
-    assignment/w_dist: 1.0      # Distance cost weight
-    assignment/w_head: 0.5      # Heading change cost weight
-    assignment/w_switch: 10.0   # Switching penalty (INCREASED from 2.0 to prevent role swaps during rotation)
-    assignment/w_shape: 0.3     # Shape-specific cost weight (angle for polygons, projection for lines)
-    
     # Cost Function Weights (Traxxas-optimized)
     optimization/weight_obstacle: 50000.0
     optimization/weight_swarm: 50000.0
     optimization/weight_feasibility: 25000.0
     optimization/weight_sqrvariance: 25000.0
     optimization/weight_time: 50.0               # Increased to encourage smoother, slower approaches (was 80.0)
-    optimization/weight_formation: 80000.0        # Increased for better formation holding (was 20000.0)
+    optimization/weight_formation: 15000.0        # Increased for better formation holding (was 20000.0)
     optimization/weight_nonholonomic: 10000.0     # Significantly increased for Traxxas constraints (was 15000.0)
 
     # Safety Distance Settings

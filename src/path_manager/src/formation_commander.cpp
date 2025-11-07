@@ -277,7 +277,7 @@ private:
                 msg.formation_center.x = 89.56;
                 msg.formation_center.y = -26.97;
                 msg.formation_center.z = 0.0;
-                msg.formation_type = "line_second";
+                msg.formation_type = "line_first";
                 msg.formation_scale = 1.5;
 
                 msg.waypoints.resize(17);
