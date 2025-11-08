@@ -85,7 +85,8 @@ private:
 
     // Hungarian algorithm for optimal drone-target assignment
     std::vector<int> hungarianAssignment(const std::vector<Eigen::Vector3d>& current_positions,
-                                         const std::vector<Eigen::Vector3d>& target_positions);
+                                         const std::vector<Eigen::Vector3d>& target_positions,
+                                         const std::vector<Eigen::Vector3d>& waypoints);
 
     std::shared_ptr<PathManager> path_manager_;
 
@@ -137,6 +138,10 @@ private:
     Eigen::Vector3d current_formation_center_;
     bool has_formation_command_;
     SwarmGraph::Ptr swarm_graph_;
+
+    // Previous formation tracking for smooth transitions
+    Eigen::Vector3d prev_end_pt_;  // Previous formation target endpoint
+    Eigen::Vector3d prev_formation_offset_;  // Previous formation offset for this drone
 
     // Swarm position tracking for Hungarian assignment
     std::map<int, Eigen::Vector3d> swarm_positions_;  // drone_id -> current position

@@ -126,7 +126,7 @@ private:
     }
 
     void checkDistanceAndPublish() {
-        if (!have_initial_command_ || command_count_ >= 8) {
+        if (!have_initial_command_ || command_count_ >= 7) {
             return;
         }
 
@@ -171,7 +171,7 @@ private:
 
     void publishFormationCommand()
     {
-        if (command_count_ >= 8) {
+        if (command_count_ >= 7) {
             RCLCPP_INFO(this->get_logger(), "Formation command sequence completed. Stopping distance check timer.");
             if (distance_check_timer_) {
                 distance_check_timer_->cancel();
@@ -225,25 +225,15 @@ private:
                 msg.formation_type = "triangle";
                 msg.formation_scale = 2.0;
 
-                msg.waypoints.resize(2);
+                msg.waypoints.resize(5);
                 msg.waypoints[0].x = 22.88972; msg.waypoints[0].y = -71.87321; msg.waypoints[0].z = 0.0;
                 msg.waypoints[1].x = 30.23262; msg.waypoints[1].y = -74.74562; msg.waypoints[1].z = 0.0;
+                msg.waypoints[2].x = 32.45039; msg.waypoints[2].y = -80.23940; msg.waypoints[2].z = 0.0;
+                msg.waypoints[3].x = 32.90863; msg.waypoints[3].y = -87.44061; msg.waypoints[3].z = 0.0;
+                msg.waypoints[4].x = 32.47298; msg.waypoints[4].y = -93.42377; msg.waypoints[4].z = 0.0;
                 break;
 
             case 2:
-                msg.formation_center.x = 32.45039;
-                msg.formation_center.y = -80.23940;
-                msg.formation_center.z = 0.0;
-                msg.formation_type = "triangle";
-                msg.formation_scale = 2.0;
-
-                msg.waypoints.resize(3);
-                msg.waypoints[0].x = 32.45039; msg.waypoints[0].y = -80.23940; msg.waypoints[0].z = 0.0;
-                msg.waypoints[1].x = 32.90863; msg.waypoints[1].y = -87.44061; msg.waypoints[1].z = 0.0;
-                msg.waypoints[2].x = 32.47298; msg.waypoints[2].y = -93.42377; msg.waypoints[2].z = 0.0;
-                break;
-
-            case 3:
                 // Stage 1: triangle -> square formation change + initial path
                 msg.formation_center.x = 32.47;
                 msg.formation_center.y = -93.42;
@@ -257,7 +247,7 @@ private:
                 msg.waypoints[2].x = 27.01373; msg.waypoints[2].y = -122.2; msg.waypoints[2].z = 0.0;
                 break;
 
-            case 4:
+            case 3:
                 // Stage 2: square formation maintained, continue long straight path
                 msg.formation_center.x = 42.09200;
                 msg.formation_center.y = -130.01768;
@@ -272,13 +262,13 @@ private:
                 msg.waypoints[3].x = 100.63176; msg.waypoints[3].y = -138.94522; msg.waypoints[3].z = 0.0;
                 break;
 
-            case 5:
-                // Combined long path: square -> line_second formation with curved path, circle, and straight segments
+            case 4:
+                // Combined long path: square -> line_first formation with curved path, circle, and straight segments
                 msg.formation_center.x = 89.56;
                 msg.formation_center.y = -26.97;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "line_first";
-                msg.formation_scale = 2.0;  // Increased to 2.5 for safer spacing (drone spacing = 2.5/3 = 0.83m > 2*swarm_clearance=0.6m)
+                msg.formation_scale = 2.0;
 
                 msg.waypoints.resize(17);
                 // Initial curved path
@@ -303,30 +293,29 @@ private:
                 // Long straight path with obstacles
                 msg.waypoints[16].x = 89.56; msg.waypoints[16].y = -26.97; msg.waypoints[16].z = 0.0;
                 break;
-            case 6:
+            case 5:
                 // Middle: line_first -> triangle formation change
                 msg.formation_center.x = 46.5;
                 msg.formation_center.y = -20.8;
                 msg.formation_center.z = 0.0;
-                msg.formation_type = "triangle_rotated";
+                msg.formation_type = "triangle";
                 msg.formation_scale = 2.0;
 
-                msg.waypoints.resize(2);
+                msg.waypoints.resize(1);
                 msg.waypoints[0].x = 46.5; msg.waypoints[0].y = -20.8; msg.waypoints[0].z = 0.0;  // Midpoint
-                msg.waypoints[1].x = 3.48957; msg.waypoints[1].y = -14.59468; msg.waypoints[1].z = 0.0;  // Near final
                 break;
-            case 7:
-                // Final: triangle -> square formation change
-                msg.formation_center.x = 3.48957;
-                msg.formation_center.y = -14.59468;
+            case 6:
+                // Final: triangle -> square formation change (earlier transition)
+                msg.formation_center.x = 20.0;
+                msg.formation_center.y = -17.0;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "square";
                 msg.formation_scale = 2.0;
 
                 msg.waypoints.resize(4);
-                msg.waypoints[0].x = 3.48957; msg.waypoints[0].y = -14.59468; msg.waypoints[0].z = 0.0;
-                msg.waypoints[1].x = 0.23684; msg.waypoints[1].y = -12.25636; msg.waypoints[1].z = 0.0;
-                msg.waypoints[2].x = -0.85307; msg.waypoints[2].y = -8.07603; msg.waypoints[2].z = 0.0;
+                msg.waypoints[0].x = 20.0; msg.waypoints[0].y = -17.0; msg.waypoints[0].z = 0.0;
+                msg.waypoints[1].x = 10.0; msg.waypoints[1].y = -15.5; msg.waypoints[1].z = 0.0;
+                msg.waypoints[2].x = 3.0; msg.waypoints[2].y = -14.0; msg.waypoints[2].z = 0.0;
                 msg.waypoints[3].x = 0.04395; msg.waypoints[3].y = 2.61689; msg.waypoints[3].z = 0.0;
                 break;
         }

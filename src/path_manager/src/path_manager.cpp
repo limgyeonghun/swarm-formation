@@ -12,7 +12,9 @@ namespace path_manager
           poly_traj_piece_length_(-1.0),
           planning_horizen_(-1.0),
           is_optimizer_initialized_(false),
-          first_call_(true)
+          first_call_(true),
+          current_drone_id_(-1),
+          current_formation_type_("")
     {
         log_manager_ = std::make_shared<swarm_formation::LogManager>(
             node_->get_name(), "./logs/runtime", swarm_formation::LogManager::INFO);
@@ -359,14 +361,17 @@ namespace path_manager
             return false;
         }
 
-        // Step 1: Prepare waypoints for B-spline generation
+        // Step 1: Adjust waypoints for formation (outer/inner line calculation)
+        std::vector<Eigen::Vector3d> adjusted_waypoints = adjustWaypointsForFormation(waypoints, start_pos);
+
+        // Step 2: Prepare waypoints for B-spline generation
         std::vector<Eigen::Vector3d> all_points;
         all_points.push_back(start_pos);
-        for (const auto& wp : waypoints) {
+        for (const auto& wp : adjusted_waypoints) {
             all_points.push_back(wp);
         }
 
-        // Step 2: Convert Vector3d to VectorXd for playground_bspline
+        // Step 3: Convert Vector3d to VectorXd for playground_bspline
         std::vector<Eigen::VectorXd> pts_vectorxd;
         if (!all_points.empty()) {
             for (int i = 0; i < 3; ++i) {
@@ -395,24 +400,25 @@ namespace path_manager
             return false;
         }
 
-        // Step 3: Generate B-spline trajectory using playground_bspline
+        // Step 4: Generate B-spline trajectory using playground_bspline
         std::vector<Eigen::VectorXd> b_pts = playground_bspline(pts_vectorxd);
 
         RCLCPP_INFO(node_->get_logger(), "Generated %zu B-spline points", b_pts.size());
 
-        // Step 4: Convert back to Vector3d for trajectory generation
+        // Step 5: Convert back to Vector3d for trajectory generation
         std::vector<Eigen::Vector3d> sampled_points;
         for (const auto& b_pt : b_pts) {
             sampled_points.push_back(Eigen::Vector3d(b_pt.x(), b_pt.y(), b_pt.z()));
         }
 
-        // Step 5: Convert to MINCO trajectory
+        // Step 6: Convert to MINCO trajectory
         poly_traj::MinJerkOpt globalMJO;
-        
+
         // Create waypoint trajectory using the sampled points
         Eigen::Matrix<double, 3, 3> headState, tailState;
         headState << start_pos, start_vel, start_acc;
-        tailState << waypoints.back(), end_vel, end_acc;
+        // Use adjusted waypoints' last point (not original waypoints)
+        tailState << adjusted_waypoints.back(), end_vel, end_acc;
         
         Eigen::MatrixXd innerPts;
         if (sampled_points.size() > 2) {
@@ -541,8 +547,211 @@ bool PathManager::isMapReady(const Eigen::Vector3d& start_pos) const {
             }
         }
     }
-    
+
     return true;
+}
+
+void PathManager::setFormationInfo(int drone_id, const std::string& formation_type,
+                                   const std::vector<Eigen::Vector3d>& formation_pattern) {
+    current_drone_id_ = drone_id;
+    current_formation_type_ = formation_type;
+    current_formation_pattern_ = formation_pattern;
+
+    RCLCPP_INFO(node_->get_logger(),
+                "PathManager: Set formation info - drone_id=%d, type=%s, pattern_size=%zu",
+                drone_id, formation_type.c_str(), formation_pattern.size());
+}
+
+double PathManager::computePathCurvature(const Eigen::Vector3d& p1,
+                                        const Eigen::Vector3d& p2,
+                                        const Eigen::Vector3d& p3) {
+    // Compute curvature using three consecutive points
+    // κ = 2 * area(triangle) / (|p1-p2| * |p2-p3| * |p3-p1|)
+
+    Eigen::Vector3d v1 = p2 - p1;
+    Eigen::Vector3d v2 = p3 - p2;
+
+    double len1 = v1.norm();
+    double len2 = v2.norm();
+
+    if (len1 < 1e-6 || len2 < 1e-6) {
+        return 0.0;  // Straight line or degenerate case
+    }
+
+    // Cross product gives twice the area of triangle
+    Eigen::Vector3d cross = v1.cross(v2);
+    double area = cross.norm() / 2.0;
+
+    double len3 = (p3 - p1).norm();
+
+    if (len3 < 1e-6) {
+        return 0.0;
+    }
+
+    // Curvature (only magnitude, sign determined separately)
+    double curvature = 2.0 * area / (len1 * len2 * len3);
+
+    return curvature;
+}
+
+Eigen::Vector3d PathManager::computeLateralOffset(const Eigen::Vector3d& prev_point,
+                                                  const Eigen::Vector3d& curr_point,
+                                                  const Eigen::Vector3d& next_point,
+                                                  double offset_distance) {
+    // Compute the direction vectors
+    Eigen::Vector3d v1 = curr_point - prev_point;
+    Eigen::Vector3d v2 = next_point - curr_point;
+
+    if (v1.norm() < 1e-6 || v2.norm() < 1e-6) {
+        return curr_point;  // No offset for degenerate case
+    }
+
+    // Normalize
+    v1.normalize();
+    v2.normalize();
+
+    // Compute the average tangent direction
+    Eigen::Vector3d tangent = (v1 + v2).normalized();
+
+    // Compute the normal vector (perpendicular to tangent in XY plane)
+    // For 2D path in XY plane, normal is simply rotating tangent by 90 degrees
+    Eigen::Vector3d normal(-tangent.y(), tangent.x(), 0.0);
+    normal.normalize();
+
+    // Apply offset: positive offset_distance means move to the right (outer line for CCW turn)
+    Eigen::Vector3d offset_point = curr_point + normal * offset_distance;
+
+    return offset_point;
+}
+
+std::vector<Eigen::Vector3d> PathManager::adjustWaypointsForFormation(
+    const std::vector<Eigen::Vector3d>& waypoints,
+    const Eigen::Vector3d& start_pos) {
+
+    // If no formation info set, return original waypoints
+    if (current_drone_id_ < 0 || current_formation_pattern_.empty()) {
+        RCLCPP_WARN(node_->get_logger(), "No formation info set, using original waypoints");
+        return waypoints;
+    }
+
+    // Check if this is a line formation
+    bool is_line_formation = (current_formation_type_.find("line") != std::string::npos);
+
+    if (is_line_formation) {
+        RCLCPP_INFO(node_->get_logger(),
+                   "Line formation detected: using simple offset without outer/inner line");
+        return adjustWaypointsForLineFormation(waypoints, start_pos);
+    } else {
+        RCLCPP_INFO(node_->get_logger(),
+                   "Non-line formation (%s): using outer/inner line calculation",
+                   current_formation_type_.c_str());
+        return adjustWaypointsWithCurvature(waypoints, start_pos);
+    }
+}
+
+std::vector<Eigen::Vector3d> PathManager::adjustWaypointsForLineFormation(
+    const std::vector<Eigen::Vector3d>& waypoints,
+    const Eigen::Vector3d& start_pos) {
+
+    // For line formations, waypoints already have offsets applied by FSM
+    // Line formation is designed to be parallel to travel direction
+    // No additional adjustment needed - just return original waypoints
+
+    Eigen::Vector3d my_formation_offset = current_formation_pattern_[current_drone_id_];
+
+    RCLCPP_INFO(node_->get_logger(),
+                "Line formation: drone %d, formation offset (%.3f, %.3f, %.3f) - using original waypoints",
+                current_drone_id_,
+                my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
+
+    RCLCPP_INFO(node_->get_logger(),
+                "Line formation: returning %zu original waypoints without modification",
+                waypoints.size());
+
+    // Simply return the original waypoints
+    return waypoints;
+}
+
+std::vector<Eigen::Vector3d> PathManager::adjustWaypointsWithCurvature(
+    const std::vector<Eigen::Vector3d>& waypoints,
+    const Eigen::Vector3d& start_pos) {
+
+    // For non-line formations: apply outer/inner line calculation with curvature
+
+    Eigen::Vector3d my_formation_offset = current_formation_pattern_[current_drone_id_];
+
+    // Use Y component as lateral offset (perpendicular to path)
+    double lateral_offset = my_formation_offset.y();
+
+    RCLCPP_INFO(node_->get_logger(),
+                "Adjusting waypoints for drone %d with lateral offset %.3fm (formation Y: %.3f)",
+                current_drone_id_, lateral_offset, my_formation_offset.y());
+
+    std::vector<Eigen::Vector3d> adjusted_waypoints;
+    adjusted_waypoints.reserve(waypoints.size());
+
+    // Add start position
+    std::vector<Eigen::Vector3d> all_points;
+    all_points.push_back(start_pos);
+    all_points.insert(all_points.end(), waypoints.begin(), waypoints.end());
+
+    // For each waypoint, apply lateral offset based on path curvature
+    for (size_t i = 0; i < all_points.size(); ++i) {
+        Eigen::Vector3d adjusted_point;
+
+        if (i == 0) {
+            // First point: use next point for direction
+            if (all_points.size() > 1) {
+                Eigen::Vector3d dir = (all_points[1] - all_points[0]).normalized();
+                Eigen::Vector3d normal(-dir.y(), dir.x(), 0.0);
+                adjusted_point = all_points[0] + normal * lateral_offset;
+            } else {
+                adjusted_point = all_points[0];
+            }
+        } else if (i == all_points.size() - 1) {
+            // Last point: use previous point for direction
+            Eigen::Vector3d dir = (all_points[i] - all_points[i-1]).normalized();
+            Eigen::Vector3d normal(-dir.y(), dir.x(), 0.0);
+            adjusted_point = all_points[i] + normal * lateral_offset;
+        } else {
+            // Middle points: compute curvature and adjust offset
+            double curvature = computePathCurvature(all_points[i-1], all_points[i], all_points[i+1]);
+
+            // For curved sections, adjust the offset distance
+            // Outer line (positive lateral_offset on CCW turn) needs larger radius
+            // Inner line (negative lateral_offset on CCW turn) needs smaller radius
+            double curvature_threshold = 0.01;  // Threshold to detect significant curves
+
+            if (std::abs(curvature) > curvature_threshold) {
+                // In curved section: apply additional offset based on curvature
+                // This creates the outer/inner line effect
+                double curvature_factor = 1.0 + curvature * 10.0;  // Scale factor
+                adjusted_point = computeLateralOffset(
+                    all_points[i-1], all_points[i], all_points[i+1],
+                    lateral_offset * curvature_factor);
+
+                RCLCPP_DEBUG(node_->get_logger(),
+                            "Waypoint %zu: curvature=%.4f, factor=%.3f",
+                            i, curvature, curvature_factor);
+            } else {
+                // Straight section: simple lateral offset
+                adjusted_point = computeLateralOffset(
+                    all_points[i-1], all_points[i], all_points[i+1],
+                    lateral_offset);
+            }
+        }
+
+        // Skip start position, only add waypoints
+        if (i > 0) {
+            adjusted_waypoints.push_back(adjusted_point);
+        }
+    }
+
+    RCLCPP_INFO(node_->get_logger(),
+                "Adjusted %zu waypoints with outer/inner line calculation",
+                adjusted_waypoints.size());
+
+    return adjusted_waypoints;
 }
 
 } // namespace path_manager
