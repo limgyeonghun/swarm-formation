@@ -20,18 +20,9 @@
     grid_map/local_bound_inflate: 15.0
     
     # Map Boundary Settings (2D)
-    grid_map/virtual_ceil_height: 0.5  # Ground level
+    grid_map/virtual_ceil_height: -1.0  # Disabled (was 0.5 - causing all cells to be obstacles!)
     grid_map/local_map_margin: 10
     
     # ESDF Settings (2D slice)
     grid_map/esdf_slice_height: 0.0  # Ground level slice
     grid_map/show_esdf_time: false
-    
-    # Road Boundary Settings (for road following)
-    grid_map/use_road_boundary: false
-    # [start_x, start_y, end_x, end_y, width, ...]
-    # Extended road path for swarm formation following - updated for x-direction movement
-    grid_map/road_segments: [
-      -10.0,  1.5,   10.0, -14.5,   1.0,
-    ]
-    grid_map/road_margin: 0.2  # Increased safety margin

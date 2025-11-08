@@ -98,6 +98,13 @@ namespace ego_planner
     if (log_manager_) {
         log_manager_->infof("Optimization completed: iter=%d, use_formation=%d, time(ms)=%f", iter_num_, use_formation, time_ms);
 
+        // Calculate and log jerk metrics
+        poly_traj::Trajectory final_traj = jerkOpt_.getTraj();
+        double total_jerk = computeTotalJerk(final_traj);
+        double max_jerk = computeMaxJerk(final_traj);
+        log_manager_->infof("[JERK METRICS] total_jerk=%.6f, max_jerk=%.6f m/s³, duration=%.3f s",
+                            total_jerk, max_jerk, final_traj.getTotalDuration());
+
         log_manager_->infof("[COST] formation_cost=%f (wei_formation=%f, similarity=%f)", dbg_cost_formation_, wei_formation_, debug_similarity_);
 
         // Nonholonomic constraint summary
@@ -338,8 +345,21 @@ namespace ego_planner
   {
     for (int i = 0; i < VT.size(); ++i)
     {
-      RT(i) = VT(i) > 0.0 ? ((0.5 * VT(i) + 1.0) * VT(i) + 1.0)
-                          : 1.0 / ((0.5 * VT(i) - 1.0) * VT(i) + 1.0);
+      if (VT(i) > 0.0) {
+        RT(i) = ((0.5 * VT(i) + 1.0) * VT(i) + 1.0);
+      } else {
+        double denom = ((0.5 * VT(i) - 1.0) * VT(i) + 1.0);
+        // Protect against near-zero denominator
+        if (std::abs(denom) < 1e-10) {
+          if (log_manager_) {
+            log_manager_->errorf("VirtualT2RealT: Near-zero denominator at i=%d, VT=%f, denom=%e",
+                                i, VT(i), denom);
+          }
+          RT(i) = 1.0;  // Fallback to minimum time
+        } else {
+          RT(i) = 1.0 / denom;
+        }
+      }
     }
   }
 
@@ -554,6 +574,10 @@ namespace ego_planner
     if (i_dp <= 0 || i_dp >= cps_.cp_size * 2 / 3)
       return false;
 
+    if (!swarm_trajs_) {
+      return false;
+    }
+
     int size = swarm_trajs_->size();
     if (drone_id_ == formation_size_ - 1)
       size = formation_size_;
@@ -606,38 +630,6 @@ namespace ego_planner
     if (similarity_error > 0)
     {
       ret = true;
-
-      // Adaptive formation weight based on similarity error
-      // Similarity range observed: 0.0 (perfect match) to ~1.1 (very different shapes)
-      // When shapes differ significantly (e.g., square->line), reduce weight dramatically
-      // to allow optimizer to find feasible paths first, then gradually converge to formation
-      // double adaptive_weight = wei_formation_base_;
-
-      // if (similarity_error > 0.8) {
-      //   // Extremely different shape (0.8-1.1) - prioritize feasibility over formation
-      //   adaptive_weight = wei_formation_base_ * 0.00625;  // 1/160 of base weight (500)
-      // } else if (similarity_error > 0.6) {
-      //   // Very different shape (0.6-0.8) - allow large deviations
-      //   adaptive_weight = wei_formation_base_ * 0.0125;   // 1/80 of base weight (1000)
-      // } else if (similarity_error > 0.4) {
-      //   // Significantly different shape (0.4-0.6) - reduced priority
-      //   adaptive_weight = wei_formation_base_ * 0.025;    // 1/40 of base weight (2000)
-      // } else if (similarity_error > 0.2) {
-      //   // Moderately different shape (0.2-0.4) - balanced approach
-      //   adaptive_weight = wei_formation_base_ * 0.0625;   // 1/16 of base weight (5000)
-      // } else if (similarity_error > 0.1) {
-      //   // Slightly different shape (0.1-0.2) - start enforcing formation
-      //   adaptive_weight = wei_formation_base_ * 0.125;    // 1/8 of base weight (10000)
-      // } else if (similarity_error > 0.05) {
-      //   // Close to target (0.05-0.1) - enforce formation more
-      //   adaptive_weight = wei_formation_base_ * 0.25;     // 1/4 of base weight (20000)
-      // } else if (similarity_error > 0.02) {
-      //   // Very close (0.02-0.05) - strong formation enforcement
-      //   adaptive_weight = wei_formation_base_ * 0.5;      // 1/2 of base weight (40000)
-      // }
-      // // else: similarity_error <= 0.02, use full base weight (80000) for precision
-
-      // wei_formation_ = adaptive_weight;  // Update current weight
 
       costp = wei_formation_ * similarity_error;
       std::vector<Eigen::Vector3d> swarm_grad;
@@ -696,6 +688,11 @@ namespace ego_planner
   {
     if (i_dp <= 0 || i_dp >= cps_.cp_size * 2 / 3)
       return false;
+
+    // Check for nullptr before accessing swarm_trajs_
+    if (!swarm_trajs_) {
+      return false;
+    }
 
     bool ret = false;
 
@@ -877,14 +874,25 @@ namespace ego_planner
     double v_safe = std::max(v_norm, v_min_for_curvature);
     double v_safe3 = v_safe * v_safe * v_safe;
 
+    // Calculate curvature once and reuse for both constraints
+    double curvature = 0.0;
+    Eigen::Vector3d dcurv_dcross = Eigen::Vector3d::Zero();
+    double dcurv_dvnorm = 0.0;
+
     if (cross_norm > 1e-6) {
       // Use safe velocity for curvature calculation (prevents division by near-zero)
-      double curvature = cross_norm / v_safe3;
+      curvature = cross_norm / v_safe3;
 
       // Track maximum curvature
       if (curvature > dbg_max_curvature_) {
         dbg_max_curvature_ = curvature;
       }
+
+      // Pre-compute curvature gradients for reuse
+      // ∂κ/∂(v×a) = 1 / v_safe³ · (v×a) / ||v×a||
+      dcurv_dcross = v_cross_a / (cross_norm * v_safe3);
+      // ∂κ/∂||v|| = -3κ / v_safe (only if v_norm >= v_min, else gradient is zero)
+      dcurv_dvnorm = (v_norm >= v_min_for_curvature) ? (-3.0 * curvature / v_safe) : 0.0;
 
       if (curvature > max_curvature_) {
         double curv_excess = curvature - max_curvature_;
@@ -892,13 +900,6 @@ namespace ego_planner
 
         // ∂cost/∂κ
         double dcost_dcurv = wei_nonholo_ * 3.0 * curv_excess * curv_excess;
-
-        // Use v_safe for gradient calculation (same as curvature calculation)
-        // ∂κ/∂(v×a) = 1 / v_safe³ · (v×a) / ||v×a||
-        Eigen::Vector3d dcurv_dcross = v_cross_a / (cross_norm * v_safe3);
-
-        // ∂κ/∂||v|| = -3κ / v_safe (only if v_norm >= v_min, else gradient is zero)
-        double dcurv_dvnorm = (v_norm >= v_min_for_curvature) ? (-3.0 * curvature / v_safe) : 0.0;
 
         // Gradient w.r.t. velocity
         Eigen::Vector3d grad3_v_cross = acc.cross(dcurv_dcross);
@@ -919,21 +920,29 @@ namespace ego_planner
     // ========== Constraint 4: Centripetal Acceleration ==========
     // Speed-curvature coupling: prevent rollover/slip
     if (cross_norm > 1e-6) {
-      double curvature = cross_norm / v_safe3;  // Use same safe velocity as Constraint 3
+      // Reuse curvature calculated above (no redundant computation)
       double centripetal_acc = v_norm * v_norm * curvature;
 
       if (centripetal_acc > max_lateral_accel_) {
         double lat_excess = centripetal_acc - max_lateral_accel_;
         cost4 = wei_nonholo_ * lat_excess * lat_excess * lat_excess;
 
-        // ∂(v²κ)/∂v = 2v·κ + v²·∂κ/∂v
+        // ∂cost/∂(v²κ)
         double dcost_dlat = wei_nonholo_ * 3.0 * lat_excess * lat_excess;
 
-        // Simplified gradient (dominant term: velocity dependency)
-        Eigen::Vector3d grad4_v = dcost_dlat * 2.0 * v_norm * curvature * heading;
+        // Complete gradient: ∂(v²κ)/∂v = 2v·κ·heading + v²·∂κ/∂v·heading
+        // ∂(v²κ)/∂(v×a) = v²·∂κ/∂(v×a)
+        Eigen::Vector3d grad4_v_norm = 2.0 * v_norm * curvature * heading;
+        Eigen::Vector3d grad4_v_curv = v_norm * v_norm * dcurv_dvnorm * heading;
+        Eigen::Vector3d grad4_v = dcost_dlat * (grad4_v_norm + grad4_v_curv);
+
+        Eigen::Vector3d grad4_v_cross = v_norm * v_norm * acc.cross(dcurv_dcross);
+        Eigen::Vector3d grad4_a_cross = v_norm * v_norm * vel.cross(dcurv_dcross);
+        Eigen::Vector3d grad4_a = dcost_dlat * grad4_a_cross;
+        grad_vel += grad4_v + dcost_dlat * grad4_v_cross;
+        grad_acc += grad4_a;
 
         cost_nonholo += cost4;
-        grad_vel += grad4_v;
         dbg_lat_accel_violations_++;
         dbg_cost_lat_accel_ += cost4;
       }
@@ -1303,5 +1312,46 @@ namespace ego_planner
         formation_size_ = 0;
         break;
     }
+  }
+
+  // Compute total jerk: ∫ ||d³P/dt³||² dt
+  double PolyTrajOptimizer::computeTotalJerk(const poly_traj::Trajectory &traj)
+  {
+    double total_jerk = 0.0;
+    double dt = 0.01;  // Sample every 10ms
+    double T = traj.getTotalDuration();
+    int num_samples = static_cast<int>(T / dt);
+
+    for (int i = 0; i < num_samples; ++i)
+    {
+      double t = i * dt;
+      Eigen::Vector3d jerk = traj.getJer(t);  // Get jerk at time t
+      total_jerk += jerk.squaredNorm() * dt;  // Integrate ||jerk||² * dt
+    }
+
+    return total_jerk;
+  }
+
+  // Compute maximum jerk: max_{t∈[0,T]} ||d³P/dt³(t)||
+  double PolyTrajOptimizer::computeMaxJerk(const poly_traj::Trajectory &traj)
+  {
+    double max_jerk = 0.0;
+    double dt = 0.01;  // Sample every 10ms
+    double T = traj.getTotalDuration();
+    int num_samples = static_cast<int>(T / dt);
+
+    for (int i = 0; i < num_samples; ++i)
+    {
+      double t = i * dt;
+      Eigen::Vector3d jerk = traj.getJer(t);
+      double jerk_norm = jerk.norm();
+
+      if (jerk_norm > max_jerk)
+      {
+        max_jerk = jerk_norm;
+      }
+    }
+
+    return max_jerk;
   }
 }

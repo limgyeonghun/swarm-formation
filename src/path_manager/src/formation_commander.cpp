@@ -171,7 +171,7 @@ private:
 
     void publishFormationCommand()
     {
-        if (command_count_ >= 7) {
+        if (command_count_ >= 8) {
             RCLCPP_INFO(this->get_logger(), "Formation command sequence completed. Stopping distance check timer.");
             if (distance_check_timer_) {
                 distance_check_timer_->cancel();
@@ -278,7 +278,7 @@ private:
                 msg.formation_center.y = -26.97;
                 msg.formation_center.z = 0.0;
                 msg.formation_type = "line_first";
-                msg.formation_scale = 1.5;
+                msg.formation_scale = 2.0;  // Increased to 2.5 for safer spacing (drone spacing = 2.5/3 = 0.83m > 2*swarm_clearance=0.6m)
 
                 msg.waypoints.resize(17);
                 // Initial curved path
@@ -304,7 +304,19 @@ private:
                 msg.waypoints[16].x = 89.56; msg.waypoints[16].y = -26.97; msg.waypoints[16].z = 0.0;
                 break;
             case 6:
-                // Final: line_second -> square formation change
+                // Middle: line_first -> triangle formation change
+                msg.formation_center.x = 46.5;
+                msg.formation_center.y = -20.8;
+                msg.formation_center.z = 0.0;
+                msg.formation_type = "triangle_rotated";
+                msg.formation_scale = 2.0;
+
+                msg.waypoints.resize(2);
+                msg.waypoints[0].x = 46.5; msg.waypoints[0].y = -20.8; msg.waypoints[0].z = 0.0;  // Midpoint
+                msg.waypoints[1].x = 3.48957; msg.waypoints[1].y = -14.59468; msg.waypoints[1].z = 0.0;  // Near final
+                break;
+            case 7:
+                // Final: triangle -> square formation change
                 msg.formation_center.x = 3.48957;
                 msg.formation_center.y = -14.59468;
                 msg.formation_center.z = 0.0;

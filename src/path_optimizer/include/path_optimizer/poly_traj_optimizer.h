@@ -243,6 +243,10 @@ namespace ego_planner
 
     bool checkCollision(void);
 
+    // Jerk metric calculation functions
+    double computeTotalJerk(const poly_traj::Trajectory &traj);
+    double computeMaxJerk(const poly_traj::Trajectory &traj);
+
   public:
     typedef std::unique_ptr<PolyTrajOptimizer> Ptr;
   };

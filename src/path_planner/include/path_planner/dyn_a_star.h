@@ -128,7 +128,7 @@ public:
 
     std::vector<Eigen::Vector3d> getPath();
     std::vector<Eigen::Vector3d> astarSearchAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, int drone_id);
-    std::vector<Eigen::Vector3d> astarSearch2DAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, int drone_id);
+    std::vector<Eigen::Vector3d> astarSearch2DAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, int drone_id, bool use_esdf_check);
     
     Eigen::Vector3d getOrigin() const { return grid_map_->getOrigin(); }
     Eigen::Vector3d getMapSize() const { return grid_map_->getMapSize(); }

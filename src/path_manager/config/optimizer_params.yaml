@@ -15,13 +15,13 @@
     optimization/weight_swarm: 50000.0
     optimization/weight_feasibility: 25000.0
     optimization/weight_sqrvariance: 25000.0
-    optimization/weight_time: 50.0               # Increased to encourage smoother, slower approaches (was 80.0)
-    optimization/weight_formation: 15000.0        # Increased for better formation holding (was 20000.0)
-    optimization/weight_nonholonomic: 10000.0     # Significantly increased for Traxxas constraints (was 15000.0)
+    optimization/weight_time: 80.0               # Reduced to allow more time for smooth paths
+    optimization/weight_formation: 10000.0       # Fixed at user's request
+    optimization/weight_nonholonomic: 20000.0    # CRITICAL: Must be much higher than formation to prevent spinning!
 
     # Safety Distance Settings
     optimization/obstacle_clearance: 0.8  # Further increased safety distance from obstacles
-    optimization/swarm_clearance: 0.8
+    optimization/swarm_clearance: 0.5  # Reduced to prevent A* failure when formation spacing is tight (0.67m spacing > 0.6m clearance)
 
     # Formation and Dynamics Constraints
     optimization/formation_type: 2
@@ -29,16 +29,16 @@
     optimization/max_acc: 2.0               # Reduced from 3.0 to match your rover's capability
 
     # Nonholonomic Constraints (NO REVERSE TORQUE - coasting deceleration only)
-    optimization/min_forward_vel: 0.05      # Low to allow near-stop, but prevent full stop/reverse
-    optimization/max_brake_decel: 1.3       # Very low - only coasting friction, NO active braking
-    optimization/max_curvature: 0.8         # 1.25m turn radius (not too tight for slow turns)
-    optimization/max_lateral_accel: 2.0     # Conservative for 1.5 m/s max speed
+    optimization/min_forward_vel: 0.2      # Increased to prevent near-zero velocity crazy spins
+    optimization/max_brake_decel: 1.5       # Slightly increased for smoother stops
+    optimization/max_curvature: 0.55         # TIGHTER: Prevent spinning (min turn radius = 2.5m)
+    optimization/max_lateral_accel: 1.2     # TIGHTER: Reduce centripetal force for stability
 
     # Path Manager Parameters (Traxxas-optimized)
     manager/max_vel: 1.6                    # Keep your safety limit
     manager/max_acc: 2.0                    # Match optimization constraint
     manager/polyTraj_piece_length: 2.0
-    manager/planning_horizon: 6.0
+    manager/planning_horizon: 7.5
     
     # FSM Parameters
     fsm/thresh_replan_time: 0.5

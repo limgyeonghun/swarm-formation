@@ -182,8 +182,6 @@ inline void GridMap::indexToPos(const Eigen::Vector3i& id, Eigen::Vector3d& pos)
 inline int GridMap::getOccupancy(const Eigen::Vector3d& pos) {
   if (!isInMap(pos)) return -1;
 
-  if (!isInRoadBoundary(pos)) return 1;
-  
   Eigen::Vector3i id;
   posToIndex(pos, id);
   return md_.occupancy_buffer_[toAddress(id)] > 0.5 ? 1 : 0;
@@ -192,18 +190,12 @@ inline int GridMap::getOccupancy(const Eigen::Vector3d& pos) {
 inline int GridMap::getOccupancy(const Eigen::Vector3i& id) {
   if (!isInMap(id)) return -1;
 
-  Eigen::Vector3d pos;
-  indexToPos(id, pos);
-  if (!isInRoadBoundary(pos)) return 1;
-  
   return md_.occupancy_buffer_[toAddress(id)] > 0.5 ? 1 : 0;
 }
 
 inline int GridMap::getInflateOccupancy(const Eigen::Vector3d& pos) {
   if (!isInMap(pos)) return -1;
 
-  if (!isInRoadBoundary(pos)) return 1;
-  
   Eigen::Vector3i id;
   posToIndex(pos, id);
   return int(md_.occupancy_buffer_inflate_[toAddress(id)]);
@@ -252,7 +244,6 @@ inline bool GridMap::isKnownOccupied(const Eigen::Vector3i& id) {
 
 inline int GridMap::getInflateOccupancy2D(const Eigen::Vector3d& pos) {
   if (!isInMap(pos)) return -1;
-  if (!isInRoadBoundary(pos)) return 1;
 
   Eigen::Vector3i id;
   posToIndex(pos, id);

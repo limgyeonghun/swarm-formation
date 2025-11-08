@@ -5,6 +5,8 @@
 #include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <Eigen/Dense>
+#include <mutex>
+#include <map>
 #include "path_manager/msg/poly_traj.hpp"
 #include "path_manager/msg/formation_target.hpp"
 #include "path_manager/msg/formation_command.hpp"
@@ -81,6 +83,10 @@ private:
     std::vector<Eigen::Vector3d> generateFormationPattern(const std::string& formation_type, int num_drones, double scale);
     void publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints = {}, bool formation_changed = false);
 
+    // Hungarian algorithm for optimal drone-target assignment
+    std::vector<int> hungarianAssignment(const std::vector<Eigen::Vector3d>& current_positions,
+                                         const std::vector<Eigen::Vector3d>& target_positions);
+
     std::shared_ptr<PathManager> path_manager_;
 
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr optimized_path_pub_;
@@ -131,6 +137,10 @@ private:
     Eigen::Vector3d current_formation_center_;
     bool has_formation_command_;
     SwarmGraph::Ptr swarm_graph_;
+
+    // Swarm position tracking for Hungarian assignment
+    std::map<int, Eigen::Vector3d> swarm_positions_;  // drone_id -> current position
+    std::mutex swarm_positions_mutex_;  // Thread-safe access
 
     std::unique_ptr<swarm_formation::LogManager> log_manager_;
 };

@@ -353,6 +353,12 @@ namespace path_manager
     {
         RCLCPP_INFO(node_->get_logger(), "Planning global trajectory using playground B-spline with %zu waypoints", waypoints.size());
 
+        // Safety check: Need at least 1 waypoint for trajectory
+        if (waypoints.empty()) {
+            RCLCPP_ERROR(node_->get_logger(), "planGlobalTraj: No waypoints provided!");
+            return false;
+        }
+
         // Step 1: Prepare waypoints for B-spline generation
         std::vector<Eigen::Vector3d> all_points;
         all_points.push_back(start_pos);
@@ -380,9 +386,18 @@ namespace path_manager
             }
         }
 
+        // Safety check: B-spline requires at least 4 control points (order=3)
+        if (pts_vectorxd.size() < 4) {
+            RCLCPP_ERROR(node_->get_logger(),
+                        "planGlobalTraj: Not enough points for B-spline (need >=4, got %zu). "
+                        "This usually happens when A* returns too few waypoints.",
+                        pts_vectorxd.size());
+            return false;
+        }
+
         // Step 3: Generate B-spline trajectory using playground_bspline
         std::vector<Eigen::VectorXd> b_pts = playground_bspline(pts_vectorxd);
-        
+
         RCLCPP_INFO(node_->get_logger(), "Generated %zu B-spline points", b_pts.size());
 
         // Step 4: Convert back to Vector3d for trajectory generation

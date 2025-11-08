@@ -133,12 +133,14 @@ double AStar::getEuclHeu2D(GridNodePtr node1, GridNodePtr node2)
 vector<GridNodePtr> AStar::retrievePath(GridNodePtr current)
 {
     vector<GridNodePtr> path;
-    path.push_back(current);
+    if (!current) {
+        return path;  // Return empty path if current is null
+    }
 
-    while (current->cameFrom != NULL)
+    while (current != NULL)
     {
-        current = current->cameFrom;
         path.push_back(current);
+        current = current->cameFrom;
     }
 
     return path;
@@ -583,7 +585,7 @@ vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vect
                 log_manager_->infof("드론 %d: 2D A* 검색 성공 (ESDF 사용) - 경로 점 개수: %zu", drone_id, path.size());
             }
             RCLCPP_INFO(rclcpp::get_logger("astar"), "2D A* search successful");
-            return astarSearch2DAndGetSimplePath(step_size, start_pt, adjusted_end_pt, drone_id);
+            return astarSearch2DAndGetSimplePath(step_size, start_pt, adjusted_end_pt, drone_id, true);
         }
     }
 
@@ -598,7 +600,7 @@ vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vect
                 log_manager_->infof("드론 %d: 2D A* 검색 성공 (ESDF 비사용) - 경로 점 개수: %zu", drone_id, path.size());
             }
             RCLCPP_INFO(rclcpp::get_logger("astar"), "2D A* search successful without ESDF");
-            return astarSearch2DAndGetSimplePath(step_size, start_pt, adjusted_end_pt, drone_id);
+            return astarSearch2DAndGetSimplePath(step_size, start_pt, adjusted_end_pt, drone_id, false);
         }
     }
 
@@ -612,12 +614,13 @@ vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vect
     return fallback_path;    
 }
 
-vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Vector3d start_pt, Vector3d end_pt, int drone_id){
+vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Vector3d start_pt, Vector3d end_pt, int drone_id, bool use_esdf_check){
     vector<Vector3d> path = getPath();
     bool is_show_debug = false;
 
     if (log_manager_) {
-        log_manager_->infof("드론 %d: 2D 경로 단순화 시작 - 원본 경로 점 개수: %zu", drone_id, path.size());
+        log_manager_->infof("드론 %d: 2D 경로 단순화 시작 (ESDF %s) - 원본 경로 점 개수: %zu",
+                           drone_id, use_esdf_check ? "사용" : "비사용", path.size());
     }
 
     if (path.size() <= 1 || (path[0]-start_pt).norm() > 0.5){
@@ -646,7 +649,30 @@ vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Ve
     simple_path.push_back(cut_start);
 
     bool finish = false;
-    while (!finish) {
+    int safety_counter = 0;
+    const int MAX_ITERATIONS = 1000;  // Safety limit to prevent infinite loops
+    int prev_end_idx = -1;  // Track progress to detect stuck state
+
+    while (!finish && safety_counter < MAX_ITERATIONS) {
+        safety_counter++;
+
+        // Detect infinite loop: end_idx not progressing
+        if (end_idx == prev_end_idx) {
+            if (log_manager_) {
+                log_manager_->warnf("simplifyPath: Stuck at index %d, path may be blocked", end_idx);
+            }
+            // Force progress by skipping one point
+            if (end_idx < size - 1) {
+                simple_path.push_back(path[end_idx]);
+                end_idx++;
+            } else {
+                finish = true;  // Reached end
+            }
+            continue;
+        }
+        prev_end_idx = end_idx;
+
+        bool made_progress = false;
         for (int i = end_idx; i < size; i++){
             bool is_safe = true;
             Vector3d check_pt = path[i];
@@ -659,7 +685,9 @@ vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Ve
 
                 check_safe_pt(2) = start_pt(2);
 
-                if (checkOccupancy_esdf2D(check_safe_pt)){
+                // Use the same occupancy check method as A* search
+                bool is_occupied = use_esdf_check ? checkOccupancy_esdf2D(check_safe_pt) : checkOccupancy2D(check_safe_pt);
+                if (is_occupied){
                     is_safe = false;
                     break;
                 }
@@ -668,15 +696,19 @@ vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Ve
             if (is_safe && i == (size -1)){
                 finish = true;
                 simple_path.push_back(check_pt);
+                made_progress = true;
+                break;
             }
 
             if (is_safe){
+                // Continue checking next points
                 continue;
             }
 
+            // Found unsafe point - add previous safe point
             else {
+                made_progress = true;
                 if (i == end_idx) {
-
                     cut_start = path[i];
                     simple_path.push_back(cut_start);
                     end_idx = i + 1;
@@ -688,6 +720,23 @@ vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Ve
                 break;
             }
         }
+
+        // If loop completed without progress, force finish
+        if (!made_progress && end_idx >= size - 1) {
+            finish = true;
+        }
+    }
+
+    // Check if infinite loop was detected
+    if (safety_counter >= MAX_ITERATIONS) {
+        if (log_manager_) {
+            log_manager_->errorf("드론 %d: 경로 단순화 무한 루프 감지! (iterations=%d) - 원본 경로 반환",
+                                 drone_id, safety_counter);
+        }
+        RCLCPP_ERROR(rclcpp::get_logger("astar"),
+                     "Drone %d: Infinite loop detected in path simplification (iterations=%d) - returning original path",
+                     drone_id, safety_counter);
+        return path;  // Return original unsimplified path
     }
 
     if (is_show_debug){
