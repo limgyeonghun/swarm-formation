@@ -138,6 +138,8 @@ private:
     bool rviz_simulation_;
     bool flag_escape_emergency_;
     bool enable_debug_logs_;
+    bool enable_waypoint_markers_;
+    bool enable_global_trajectory_pub_;
 
     // Formation manager variables
     int num_drones_;

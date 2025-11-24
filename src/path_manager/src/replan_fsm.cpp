@@ -68,6 +68,14 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     node_->get_parameter("rviz_simulation", rviz_simulation_);
     FSM_LOG_INFO("rviz_simulation: %s", rviz_simulation_ ? "true" : "false");
 
+    node_->declare_parameter("enable_waypoint_markers", true);
+    node_->get_parameter("enable_waypoint_markers", enable_waypoint_markers_);
+    FSM_LOG_INFO("enable_waypoint_markers: %s", enable_waypoint_markers_ ? "true" : "false");
+
+    node_->declare_parameter("enable_global_trajectory_pub", true);
+    node_->get_parameter("enable_global_trajectory_pub", enable_global_trajectory_pub_);
+    FSM_LOG_INFO("enable_global_trajectory_pub: %s", enable_global_trajectory_pub_ ? "true" : "false");
+
     node_->declare_parameter("fsm/thresh_replan_time", -1.0);
     node_->declare_parameter("fsm/thresh_no_replan_meter", -1.0);
     node_->declare_parameter("fsm/replan_trajectory_time", -1.0);
@@ -207,10 +215,12 @@ void ReplanFSM::init()
             else if (exec_state_ == EXEC_TRAJ)
                 changeFSMExecState(REPLAN_TRAJ, "TRIG");
                 
-            path_manager::msg::PolyTraj msg;
-            globalTraj2ROSMsg(msg);
-            global_path_pub_->publish(msg);
-            FSM_LOG_INFO("Published global trajectory successfully!");
+            if (enable_global_trajectory_pub_) {
+                path_manager::msg::PolyTraj msg;
+                globalTraj2ROSMsg(msg);
+                global_path_pub_->publish(msg);
+                FSM_LOG_INFO("Published global trajectory successfully!");
+            }
         }
         else
         {
@@ -596,9 +606,11 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
 
     have_new_target_ = false;
 
-    path_manager::msg::PolyTraj msg2;
-    globalTraj2ROSMsg(msg2);
-    global_path_pub_->publish(msg2);
+    if (enable_global_trajectory_pub_) {
+        path_manager::msg::PolyTraj msg2;
+        globalTraj2ROSMsg(msg2);
+        global_path_pub_->publish(msg2);
+    }
 
     if (plan_success) {
         path_manager::msg::PolyTraj msg;
@@ -739,40 +751,42 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         RCLCPP_INFO(node_->get_logger(), "waypoint: %.2f, %.2f, %.2f", wp(0), wp(1), wp(2));
     }
 
-    // Visualize waypoints in RViz
-    visualization_msgs::msg::Marker marker;
-    marker.header.frame_id = "map";
-    marker.header.stamp = node_->now();
-    marker.ns = "waypoints_drone_" + std::to_string(drone_id_);
-    marker.id = drone_id_;
-    marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
-    marker.action = visualization_msgs::msg::Marker::ADD;
-    marker.scale.x = marker.scale.y = marker.scale.z = 0.3;  // Sphere size
+    // Visualize waypoints in RViz (optional)
+    if (enable_waypoint_markers_) {
+        visualization_msgs::msg::Marker marker;
+        marker.header.frame_id = "map";
+        marker.header.stamp = node_->now();
+        marker.ns = "waypoints_drone_" + std::to_string(drone_id_);
+        marker.id = drone_id_;
+        marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+        marker.scale.x = marker.scale.y = marker.scale.z = 0.3;  // Sphere size
 
-    // Set color based on drone_id
-    if (drone_id_ == 0) {
-        marker.color.r = 1.0; marker.color.g = 0.0; marker.color.b = 0.0;  // Red
-    } else if (drone_id_ == 1) {
-        marker.color.r = 0.0; marker.color.g = 0.0; marker.color.b = 1.0;  // Blue
-    } else if (drone_id_ == 2) {
-        marker.color.r = 0.0; marker.color.g = 1.0; marker.color.b = 0.0;  // Green
-    } else if (drone_id_ == 3) {
-        marker.color.r = 1.0; marker.color.g = 1.0; marker.color.b = 0.0;  // Yellow
+        // Set color based on drone_id
+        if (drone_id_ == 0) {
+            marker.color.r = 1.0; marker.color.g = 0.0; marker.color.b = 0.0;  // Red
+        } else if (drone_id_ == 1) {
+            marker.color.r = 0.0; marker.color.g = 0.0; marker.color.b = 1.0;  // Blue
+        } else if (drone_id_ == 2) {
+            marker.color.r = 0.0; marker.color.g = 1.0; marker.color.b = 0.0;  // Green
+        } else if (drone_id_ == 3) {
+            marker.color.r = 1.0; marker.color.g = 1.0; marker.color.b = 0.0;  // Yellow
+        }
+        marker.color.a = 1.0;
+
+        // Add all waypoints
+        for (const auto& wp : waypoints) {
+            geometry_msgs::msg::Point p;
+            p.x = wp(0);
+            p.y = wp(1);
+            p.z = wp(2);
+            marker.points.push_back(p);
+        }
+
+        waypoint_marker_pub_->publish(marker);
+        RCLCPP_INFO(node_->get_logger(), "Drone %d: Published %zu waypoint markers to RViz (frame: %s, ns: %s)",
+                    drone_id_, waypoints.size(), marker.header.frame_id.c_str(), marker.ns.c_str());
     }
-    marker.color.a = 1.0;
-
-    // Add all waypoints
-    for (const auto& wp : waypoints) {
-        geometry_msgs::msg::Point p;
-        p.x = wp(0);
-        p.y = wp(1);
-        p.z = wp(2);
-        marker.points.push_back(p);
-    }
-
-    waypoint_marker_pub_->publish(marker);
-    RCLCPP_INFO(node_->get_logger(), "Drone %d: Published %zu waypoint markers to RViz (frame: %s, ns: %s)",
-                drone_id_, waypoints.size(), marker.header.frame_id.c_str(), marker.ns.c_str());
 
     // Set formation info to PathManager for outer/inner line calculation
     std::vector<Eigen::Vector3d> formation_pattern =
@@ -823,11 +837,14 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         else if (exec_state_ == EXEC_TRAJ)
             changeFSMExecState(REPLAN_TRAJ, "formationTargetCallback");
 
-        path_manager::msg::PolyTraj traj_msg;
-        globalTraj2ROSMsg(traj_msg);
-        global_path_pub_->publish(traj_msg);
+        if (enable_global_trajectory_pub_) {
+            path_manager::msg::PolyTraj traj_msg;
+            globalTraj2ROSMsg(traj_msg);
+            global_path_pub_->publish(traj_msg);
+        }
 
-        RCLCPP_INFO(node_->get_logger(), "Successfully generated and published global trajectory for drone %d", drone_id_);
+        RCLCPP_INFO(node_->get_logger(), "Successfully generated%s global trajectory for drone %d",
+                    enable_global_trajectory_pub_ ? " and published" : "", drone_id_);
         log_manager_->infof("Successfully generated and published global trajectory for drone %d", drone_id_);
     }
     else {

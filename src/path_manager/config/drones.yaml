@@ -2,7 +2,7 @@
   ros__parameters:
     # Number of Drones
     num_drones: 4
-    
+
     use_initial_formation: true
     formation_center_x: -9.83
     formation_center_y: -67.0
@@ -11,6 +11,10 @@
     formation_type: "line"
     formation_scale: 1.0
     distance_threshold: 4.0
+
+    # Visualization options
+    enable_waypoint_markers: true       # Show waypoint markers in RViz
+    enable_global_trajectory_pub: true  # Publish global trajectory
     
     drone_0:
       index: 0          # Internal agent index (0,1,2,3...) -> /agent0/target_position
