@@ -77,6 +77,9 @@ namespace path_manager
     void setFormationInfo(int drone_id, const std::string& formation_type,
                          const std::vector<Eigen::Vector3d>& formation_pattern);
 
+    // Emergency stop: generate hovering trajectory at current position
+    bool EmergencyStop(const Eigen::Vector3d& stop_pos);
+
   private:
     bool computeInitReferenceState(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel,
                                    const Eigen::Vector3d &start_acc, const Eigen::Vector3d &local_target_pt,

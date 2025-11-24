@@ -4,6 +4,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <visualization_msgs/msg/marker.hpp>
 #include <Eigen/Dense>
 #include <mutex>
 #include <map>
@@ -38,6 +39,12 @@
         RCLCPP_ERROR(node_->get_logger(), msg, ##__VA_ARGS__); \
     } else if (log_manager_) { \
         log_manager_->errorf(msg, ##__VA_ARGS__); \
+    } \
+} while(0)
+
+#define FSM_LOG_DEBUG(msg, ...) do { \
+    if (enable_debug_logs_ && log_manager_) { \
+        log_manager_->debugf(msg, ##__VA_ARGS__); \
     } \
 } while(0)
 
@@ -77,11 +84,12 @@ private:
     bool planFromLocalTraj(bool flag_use_poly_init, bool use_formation);
     void changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_call);
     bool isMapReady(const Eigen::Vector3d& start_pos);
+    bool callEmergencyStop(const Eigen::Vector3d& stop_pos);
     
     // Formation manager functions
     void generateFormationTargets(const Eigen::Vector3d& center, const std::string& formation_type, double scale, const std::vector<Eigen::Vector3d>& waypoints = {});
     std::vector<Eigen::Vector3d> generateFormationPattern(const std::string& formation_type, int num_drones, double scale);
-    void publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints = {}, bool formation_changed = false);
+    void publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints = {}, bool formation_changed = false, const Eigen::Vector3d& formation_offset = Eigen::Vector3d::Zero());
 
     // Hungarian algorithm for optimal drone-target assignment
     std::vector<int> hungarianAssignment(const std::vector<Eigen::Vector3d>& current_positions,
@@ -99,6 +107,7 @@ private:
     rclcpp::Subscription<path_manager::msg::FormationTarget>::SharedPtr formation_target_sub_;
     rclcpp::Subscription<path_manager::msg::FormationCommand>::SharedPtr formation_cmd_sub_;
     rclcpp::Publisher<path_manager::msg::FormationTarget>::SharedPtr formation_target_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr waypoint_marker_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::TimerBase::SharedPtr odom_timer_;
 

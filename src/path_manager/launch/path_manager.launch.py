@@ -124,6 +124,14 @@ def create_drone_nodes(context, *args, **kwargs):
             'start_point_z':   float(cfg['start_point_z']),
         }
 
+        # Add ALL drones' initial positions for Hungarian algorithm (deadlock prevention)
+        for j in range(num_drones):
+            drone_key_j = f'drone_{j}'
+            if drone_key_j in drone_cfg:
+                params[f'{drone_key_j}.start_point_x'] = float(drone_cfg[drone_key_j]['start_point_x'])
+                params[f'{drone_key_j}.start_point_y'] = float(drone_cfg[drone_key_j]['start_point_y'])
+                params[f'{drone_key_j}.start_point_z'] = float(drone_cfg[drone_key_j]['start_point_z'])
+
         remaps = []
         if not real_mode:
             id_str = str(idx + 1)

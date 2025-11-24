@@ -9,8 +9,8 @@
     formation_center_z: 0.0
 
     formation_type: "line"
-    formation_scale: 4.0
-    distance_threshold: 6.0
+    formation_scale: 1.0
+    distance_threshold: 4.0
     
     drone_0:
       index: 0          # Internal agent index (0,1,2,3...) -> /agent0/target_position

@@ -193,6 +193,30 @@ Visualization Manager:
       Scale X: 0.3
       Scale Y: 0.3
       Scale Z: 0.3
+    - Class: rviz_default_plugins/Marker  # (/waypoint_markers)
+      Enabled: true
+      Name: Waypoint Markers
+      Topic:
+        Value: /waypoint_markers
+        Depth: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Namespaces:
+        waypoints_drone_0: true
+        waypoints_drone_1: true
+        waypoints_drone_2: true
+        waypoints_drone_3: true
+      Namespace Colors:
+        waypoints_drone_0: 255;0;0    # drone_0: 빨강
+        waypoints_drone_1: 0;0;255    # drone_1: 파랑
+        waypoints_drone_2: 0;255;0    # drone_2: 초록
+        waypoints_drone_3: 255;255;0  # drone_3: 노랑
+      Alpha: 1.0
+      Scale X: 0.3
+      Scale Y: 0.3
+      Scale Z: 0.3
     - Class: rviz_default_plugins/Grid
       Enabled: true
       Name: Grid

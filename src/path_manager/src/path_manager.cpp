@@ -361,8 +361,9 @@ namespace path_manager
             return false;
         }
 
-        // Step 1: Adjust waypoints for formation (outer/inner line calculation)
-        std::vector<Eigen::Vector3d> adjusted_waypoints = adjustWaypointsForFormation(waypoints, start_pos);
+        // Step 1: Use waypoints directly without adjustment (skip outer/inner line calculation)
+        // std::vector<Eigen::Vector3d> adjusted_waypoints = adjustWaypointsForFormation(waypoints, start_pos);
+        std::vector<Eigen::Vector3d> adjusted_waypoints = waypoints;  // Use original waypoints directly
 
         // Step 2: Prepare waypoints for B-spline generation
         std::vector<Eigen::Vector3d> all_points;
@@ -374,16 +375,19 @@ namespace path_manager
         // Step 3: Convert Vector3d to VectorXd for playground_bspline
         std::vector<Eigen::VectorXd> pts_vectorxd;
         if (!all_points.empty()) {
+            // Start point: repeat 3 times
             for (int i = 0; i < 3; ++i) {
                 Eigen::VectorXd pt_vectorxd(3);
                 pt_vectorxd << all_points.front().x(), all_points.front().y(), all_points.front().z();
                 pts_vectorxd.push_back(pt_vectorxd);
             }
+            // Middle waypoints: add once for smooth trajectory
             for (size_t i = 1; i < all_points.size() - 1; ++i) {
                 Eigen::VectorXd pt_vectorxd(3);
                 pt_vectorxd << all_points[i].x(), all_points[i].y(), all_points[i].z();
                 pts_vectorxd.push_back(pt_vectorxd);
             }
+            // End point: repeat 3 times
             for (int i = 0; i < 3; ++i) {
                 Eigen::VectorXd pt_vectorxd(3);
                 pt_vectorxd << all_points.back().x(), all_points.back().y(), all_points.back().z();
@@ -560,6 +564,28 @@ void PathManager::setFormationInfo(int drone_id, const std::string& formation_ty
     RCLCPP_INFO(node_->get_logger(),
                 "PathManager: Set formation info - drone_id=%d, type=%s, pattern_size=%zu",
                 drone_id, formation_type.c_str(), formation_pattern.size());
+}
+
+bool PathManager::EmergencyStop(const Eigen::Vector3d& stop_pos) {
+    auto ZERO = Eigen::Vector3d::Zero();
+    Eigen::Matrix<double, 3, 3> headState, tailState;
+    headState << stop_pos, ZERO, ZERO;
+    tailState = headState;
+
+    poly_traj::MinJerkOpt stopMJO;
+    stopMJO.reset(headState, tailState, 2);
+    stopMJO.generate(stop_pos, Eigen::Vector2d(1.0, 1.0));
+
+    traj_.setLocalTraj(stopMJO.getTraj(), rclcpp::Clock(RCL_ROS_TIME).now().seconds(), traj_.local_traj.drone_id);
+
+    RCLCPP_WARN(node_->get_logger(), "EMERGENCY STOP executed at position (%.2f, %.2f, %.2f)",
+                stop_pos.x(), stop_pos.y(), stop_pos.z());
+    if (log_manager_) {
+        log_manager_->warnf("EMERGENCY STOP executed at position (%.2f, %.2f, %.2f)",
+                           stop_pos.x(), stop_pos.y(), stop_pos.z());
+    }
+
+    return true;
 }
 
 double PathManager::computePathCurvature(const Eigen::Vector3d& p1,

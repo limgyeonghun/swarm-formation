@@ -10,13 +10,25 @@
     enable_debug_logs: true  # Set to true to enable detailed timing logs
     enable_lbfgs_detail_logs: true  # Set to true to enable detailed L-BFGS cost debugging
 
+    # Comparison Experiment Control
+    enable_hungarian_assignment: true  # Set to false for baseline (identity assignment)
+    enable_bspline_waypoints: true      # Set to false to use direct path (current → target only)
+
+    # Hungarian Cost Function Weights
+    hungarian/weight_distance: 100.0    # Distance cost (primary factor, baseline)
+    hungarian/weight_angle: 50.0        # Heading change cost (smooth direction changes)
+    hungarian/weight_pattern: 200.0     # Pattern position preservation (maintain formation structure)
+    hungarian/weight_structure: 100.0   # Formation structure preservation (relative geometry)
+    hungarian/weight_id: 0.1            # ID preservation penalty (tie-breaker only)
+    hungarian/weight_crossing: 500.0    # Path crossing penalty (HIGH PRIORITY: avoid collisions)
+
     # Cost Function Weights (Traxxas-optimized)
     optimization/weight_obstacle: 50000.0
     optimization/weight_swarm: 50000.0
     optimization/weight_feasibility: 10000.0
     optimization/weight_sqrvariance: 10000.0
     optimization/weight_time: 40.0               # Reduced to allow more time for smooth paths
-    optimization/weight_formation: 15000.0       # Fixed at user's request
+    optimization/weight_formation: 30000.0
     optimization/weight_nonholonomic: 5000.0    # CRITICAL: Must be much higher than formation to prevent spinning!
 
     # Safety Distance Settings
@@ -37,13 +49,13 @@
     # Path Manager Parameters (Traxxas-optimized)
     manager/max_vel: 1.6                    # Keep your safety limit
     manager/max_acc: 2.0                    # Match optimization constraint
-    manager/polyTraj_piece_length: 1.5
-    manager/planning_horizon: 5.5
+    manager/polyTraj_piece_length: 2.5
+    manager/planning_horizon: 7.5
     
     # FSM Parameters
-    fsm/thresh_replan_time: 0.5
+    fsm/thresh_replan_time: 0.25
     fsm/thresh_no_replan_meter: 1.0
-    fsm/replan_trajectory_time: 0.1
+    fsm/replan_trajectory_time: 0.05
     fsm/n_seconds_ahead: 0.5      # Lookahead distance on trajectory for direction (prevents corner cutting)
     fsm/rampup_duration: 1.5      # Duration over which to ramp up to full speed after trajectory update
     fsm/initial_lookahead_offset: 0.3  # Initial offset added to lookahead point on trajectory after update

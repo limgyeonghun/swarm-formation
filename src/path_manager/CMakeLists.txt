@@ -30,6 +30,7 @@ find_package(path_planner REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(swarm_graph REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PolyTraj.msg"
@@ -59,6 +60,7 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   geometry_msgs
   swarm_graph
   rosidl_default_runtime
+  visualization_msgs
 )
 
 target_include_directories(${PROJECT_NAME}_lib PUBLIC
@@ -83,6 +85,7 @@ ament_target_dependencies(${PROJECT_NAME}_node
   path_planner
   geometry_msgs
   rosidl_default_runtime
+  visualization_msgs
 )
 
 add_executable(traj_server
@@ -165,6 +168,6 @@ install(DIRECTORY config launch
 )
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp std_msgs px4_msgs nav_msgs Eigen3 path_optimizer geometry_msgs path_planner swarm_graph rosidl_default_generators)
+ament_export_dependencies(rclcpp std_msgs px4_msgs nav_msgs Eigen3 path_optimizer geometry_msgs path_planner swarm_graph rosidl_default_generators visualization_msgs)
 
 ament_package()

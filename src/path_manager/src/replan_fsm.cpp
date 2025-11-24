@@ -169,6 +169,9 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     formation_target_pub_ = node_->create_publisher<path_manager::msg::FormationTarget>(
         "formation_targets", sensor_qos);
 
+    waypoint_marker_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
+        "waypoint_markers", 10);
+
     timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this), timer_callback_group_);
 }
 
@@ -353,34 +356,47 @@ void ReplanFSM::computeAndPublishPaths() {
         }
 
         case EMERGENCY_STOP: {
-            // TODO: Implement emergency stop logic
-            RCLCPP_ERROR(node_->get_logger(), "EMERGENCY_STOP");
-            log_manager_->errorf("EMERGENCY_STOP");
+            if (flag_escape_emergency_) {
+                // Avoiding repeated calls
+                callEmergencyStop(current_pos_);
+            } else {
+                // Check if drone has stopped (velocity near zero)
+                // If stopped, try to generate new trajectory
+                if (current_vel_.norm() < 0.1) {
+                    RCLCPP_WARN(node_->get_logger(), "Drone stopped, attempting to recover from emergency stop");
+                    log_manager_->warnf("Drone stopped, attempting to recover from emergency stop");
+                    changeFSMExecState(GEN_NEW_TRAJ, "FSM");
+                }
+            }
+            flag_escape_emergency_ = false;
             break;
         }
     }
 }
 
 void ReplanFSM::targetPositionCallback(const path_manager::msg::PositionCommand::SharedPtr msg) {
-    current_pos_ = Eigen::Vector3d(msg->position.x, msg->position.y, msg->position.z);
+    Eigen::Vector3d new_pos(msg->position.x, msg->position.y, msg->position.z);
 
-    // ⭐ Update own position for Hungarian assignment
+    // ⭐ Update own position for Hungarian assignment (thread-safe)
     {
         std::lock_guard<std::mutex> lock(swarm_positions_mutex_);
-        swarm_positions_[drone_id_] = current_pos_;
+        current_pos_ = new_pos;
+        swarm_positions_[drone_id_] = new_pos;
     }
 }
 
 void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
-    current_pos_(0) = msg->x + offset_pt_(0);
-    current_pos_(1) = msg->y + offset_pt_(1);
-    current_pos_(2) = offset_pt_(2);
-    have_position_ = true;
+    Eigen::Vector3d new_pos;
+    new_pos(0) = msg->x + offset_pt_(0);
+    new_pos(1) = msg->y + offset_pt_(1);
+    new_pos(2) = offset_pt_(2);
 
-    // ⭐ Update own position for Hungarian assignment
+    // ⭐ Update own position for Hungarian assignment (thread-safe)
     {
         std::lock_guard<std::mutex> lock(swarm_positions_mutex_);
-        swarm_positions_[drone_id_] = current_pos_;
+        current_pos_ = new_pos;
+        swarm_positions_[drone_id_] = new_pos;
+        have_position_ = true;
     }
 }
 
@@ -615,7 +631,6 @@ bool ReplanFSM::planFromGlobalTraj(int trial_times) {
 }
 
 bool ReplanFSM::planFromLocalTraj(bool flag_use_poly_init, bool use_formation) {
-    double t_debug_start = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
     LocalTrajData *info = &path_manager_->traj_.local_traj;
     double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - path_manager_->traj_.local_traj.start_time;
 
@@ -683,151 +698,39 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
 
     std::vector<Eigen::Vector3d> waypoints;
 
-    // ⭐ Waypoint calculation: Use current_formation_type (already updated to target)
-    // Waypoints should be fixed goals based on the target formation
-    std::vector<Eigen::Vector3d> waypoint_pattern =
-        generateFormationPattern(current_formation_type_, num_drones_, current_formation_scale_);
-
-    Eigen::Vector3d my_formation_offset = Eigen::Vector3d::Zero();
-    if (drone_id_ < waypoint_pattern.size()) {
-        my_formation_offset = waypoint_pattern[drone_id_];
-    }
-
-    // Build waypoints from formation_positions (center points) + my offset
+    // ⭐ Waypoints are already calculated with offsets in formationCommandCallback
+    // Just use them directly - no need to recalculate or add intermediate points
     if (!msg->formation_positions.empty()) {
-        // Check if current formation is a line formation
-        bool is_line_formation = (current_formation_type_ == "line_first" ||
-                                  current_formation_type_ == "line_second" ||
-                                  current_formation_type_ == "line_first_no_offset" ||
-                                  current_formation_type_ == "line_second_no_offset");
-
-        if (is_line_formation) {
-            // ⭐ Line formation: All drones follow the SAME center path (no spatial offset)
-            // The X offset in formation pattern represents temporal/longitudinal spacing
-            // which will be handled by the optimizer maintaining formation
-            for (const auto& pos : msg->formation_positions) {
-                Eigen::Vector3d center_point(pos.x, pos.y, pos.z);
-                // NO offset applied - all drones get same waypoints
-                waypoints.emplace_back(center_point);
-            }
-
-            RCLCPP_INFO(node_->get_logger(),
-                       "Drone %d: Line formation - using %zu center waypoints (same path for all drones)",
-                       drone_id_, waypoints.size());
-            log_manager_->infof(
-                       "Drone %d: Line formation - using %zu center waypoints (same path for all drones)",
-                       drone_id_, waypoints.size());
-        } else {
-            // Non-line formation: Add intermediate alignment point
-            Eigen::Vector3d first_target_center(
-                msg->formation_positions[0].x,
-                msg->formation_positions[0].y,
-                msg->formation_positions[0].z
-            );
-
-            // Calculate previous formation center from previous endpoint and offset
-            // prev_formation_center = prev_end_pt_ - prev_formation_offset_
-            Eigen::Vector3d prev_formation_center = prev_end_pt_ - prev_formation_offset_;
-
-            RCLCPP_INFO(node_->get_logger(),
-                       "Drone %d: Previous formation center calculated: (%.2f, %.2f, %.2f)",
-                       drone_id_,
-                       prev_formation_center.x(), prev_formation_center.y(), prev_formation_center.z());
-            log_manager_->infof(
-                       "Drone %d: Previous end_pt=(%.2f, %.2f, %.2f), offset=(%.2f, %.2f, %.2f) → center=(%.2f, %.2f, %.2f)",
-                       drone_id_,
-                       prev_end_pt_.x(), prev_end_pt_.y(), prev_end_pt_.z(),
-                       prev_formation_offset_.x(), prev_formation_offset_.y(), prev_formation_offset_.z(),
-                       prev_formation_center.x(), prev_formation_center.y(), prev_formation_center.z());
-
-            // Calculate direction and distance from previous formation center to new target center
-            Eigen::Vector3d direction = first_target_center - prev_formation_center;
-            double total_distance = direction.norm();
-
-            // Place intermediate formation center at a fraction of the distance
-            // Use formation scale to determine distance (ensure drones have space to align)
-            double alignment_distance = std::min(
-                current_formation_scale_ * 2.0,  // At least 2x formation scale
-                total_distance * 0.3               // Or 30% of total distance
-            );
-
-            Eigen::Vector3d intermediate_formation_center;
-            if (total_distance > 1e-3) {
-                intermediate_formation_center = prev_formation_center + direction.normalized() * alignment_distance;
-            } else {
-                // If too close, just use previous formation center
-                intermediate_formation_center = prev_formation_center;
-            }
-
-            // Add intermediate alignment waypoint (previous formation → target formation)
-            Eigen::Vector3d my_alignment_waypoint = intermediate_formation_center + my_formation_offset;
-            waypoints.emplace_back(my_alignment_waypoint);
-
-            RCLCPP_INFO(node_->get_logger(),
-                       "Drone %d: Added intermediate alignment point at (%.2f, %.2f, %.2f), distance=%.2fm from prev center",
-                       drone_id_,
-                       my_alignment_waypoint.x(), my_alignment_waypoint.y(), my_alignment_waypoint.z(),
-                       alignment_distance);
-            log_manager_->infof(
-                       "Drone %d: Intermediate formation center at (%.2f, %.2f, %.2f)",
-                       drone_id_,
-                       intermediate_formation_center.x(), intermediate_formation_center.y(), intermediate_formation_center.z());
-
-            // Add remaining waypoints from formation_positions
-            for (const auto& pos : msg->formation_positions) {
-                Eigen::Vector3d center_point(pos.x, pos.y, pos.z);
-                Eigen::Vector3d my_waypoint = center_point + my_formation_offset;
-                waypoints.emplace_back(my_waypoint);
-            }
-
-            RCLCPP_INFO(node_->get_logger(),
-                       "Using %zu waypoints from formation_positions for drone %d (offset: %.2f, %.2f, %.2f)",
-                       waypoints.size(), drone_id_,
-                       my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
-            log_manager_->infof(
-                       "Using %zu waypoints from formation_positions for drone %d (offset: %.2f, %.2f, %.2f)",
-                       waypoints.size(), drone_id_,
-                       my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
+        // Simply extract waypoints from message (already have offsets applied)
+        for (const auto& pos : msg->formation_positions) {
+            waypoints.emplace_back(pos.x, pos.y, pos.z);
         }
+
+        RCLCPP_INFO(node_->get_logger(),
+                   "Drone %d: Using %zu waypoints from formation_positions (already offset-applied)",
+                   drone_id_, waypoints.size());
+        log_manager_->infof(
+                   "Drone %d: Using %zu waypoints from formation_positions (already offset-applied)",
+                   drone_id_, waypoints.size());
 
         end_pt_ = waypoints.back();
     } else {
-        // No formation_positions: use target_position
-        Eigen::Vector3d center_pos(
+        // No formation_positions: use target_position directly
+        // (target_position already has offset applied from formationCommandCallback)
+        Eigen::Vector3d my_target(
             msg->target_position.x,
             msg->target_position.y,
             msg->target_position.z);
 
-        // Check if line formation
-        bool is_line_formation = (current_formation_type_ == "line_first" ||
-                                  current_formation_type_ == "line_second" ||
-                                  current_formation_type_ == "line_first_no_offset" ||
-                                  current_formation_type_ == "line_second_no_offset");
+        waypoints = { my_target };
+        end_pt_ = my_target;
 
-        if (is_line_formation) {
-            // Line formation: use center position (no offset)
-            waypoints = { center_pos };
-            end_pt_ = center_pos;
-            RCLCPP_INFO(node_->get_logger(),
-                       "Drone %d: Line formation - using center target (no offset)",
-                       drone_id_);
-            log_manager_->infof(
-                       "Drone %d: Line formation - using center target (no offset)",
-                       drone_id_);
-        } else {
-            // Other formations: apply offset
-            Eigen::Vector3d my_target = center_pos + my_formation_offset;
-            waypoints = { my_target };
-            end_pt_ = my_target;
-            RCLCPP_INFO(node_->get_logger(),
-                       "Using single target_position as waypoint for drone %d (offset: %.2f, %.2f, %.2f)",
-                       drone_id_,
-                       my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
-            log_manager_->infof(
-                       "Using single target_position as waypoint for drone %d (offset: %.2f, %.2f, %.2f)",
-                       drone_id_,
-                       my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
-        }
+        RCLCPP_INFO(node_->get_logger(),
+                   "Drone %d: Using single target_position as waypoint (already offset-applied)",
+                   drone_id_);
+        log_manager_->infof(
+                   "Drone %d: Using single target_position as waypoint (already offset-applied)",
+                   drone_id_);
     }
 
     RCLCPP_INFO(node_->get_logger(), "start_pt_: %.2f, %.2f, %.2f", start_pt_(0), start_pt_(1), start_pt_(2));
@@ -835,6 +738,41 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
     for (const auto& wp : waypoints) {
         RCLCPP_INFO(node_->get_logger(), "waypoint: %.2f, %.2f, %.2f", wp(0), wp(1), wp(2));
     }
+
+    // Visualize waypoints in RViz
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = "map";
+    marker.header.stamp = node_->now();
+    marker.ns = "waypoints_drone_" + std::to_string(drone_id_);
+    marker.id = drone_id_;
+    marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.scale.x = marker.scale.y = marker.scale.z = 0.3;  // Sphere size
+
+    // Set color based on drone_id
+    if (drone_id_ == 0) {
+        marker.color.r = 1.0; marker.color.g = 0.0; marker.color.b = 0.0;  // Red
+    } else if (drone_id_ == 1) {
+        marker.color.r = 0.0; marker.color.g = 0.0; marker.color.b = 1.0;  // Blue
+    } else if (drone_id_ == 2) {
+        marker.color.r = 0.0; marker.color.g = 1.0; marker.color.b = 0.0;  // Green
+    } else if (drone_id_ == 3) {
+        marker.color.r = 1.0; marker.color.g = 1.0; marker.color.b = 0.0;  // Yellow
+    }
+    marker.color.a = 1.0;
+
+    // Add all waypoints
+    for (const auto& wp : waypoints) {
+        geometry_msgs::msg::Point p;
+        p.x = wp(0);
+        p.y = wp(1);
+        p.z = wp(2);
+        marker.points.push_back(p);
+    }
+
+    waypoint_marker_pub_->publish(marker);
+    RCLCPP_INFO(node_->get_logger(), "Drone %d: Published %zu waypoint markers to RViz (frame: %s, ns: %s)",
+                drone_id_, waypoints.size(), marker.header.frame_id.c_str(), marker.ns.c_str());
 
     // Set formation info to PathManager for outer/inner line calculation
     std::vector<Eigen::Vector3d> formation_pattern =
@@ -863,7 +801,11 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
 
         // Save current endpoint and offset for next formation transition
         prev_end_pt_ = end_pt_;
-        prev_formation_offset_ = my_formation_offset;
+        prev_formation_offset_ = Eigen::Vector3d(
+            msg->formation_offset.x,
+            msg->formation_offset.y,
+            msg->formation_offset.z
+        );
         RCLCPP_INFO(node_->get_logger(),
                    "Drone %d: Saved endpoint (%.2f, %.2f, %.2f) and offset (%.2f, %.2f, %.2f) for next transition",
                    drone_id_,
@@ -899,16 +841,33 @@ bool ReplanFSM::isMapReady(const Eigen::Vector3d& start_pos) {
         log_manager_->warnf("PathManager not initialized yet");
         return false;
     }
-    
+
     bool map_ready = path_manager_->isMapReady(start_pos);
     if (!map_ready) {
-        RCLCPP_DEBUG(node_->get_logger(), "Map not ready for position (%f,%f,%f)", 
+        RCLCPP_DEBUG(node_->get_logger(), "Map not ready for position (%f,%f,%f)",
                     start_pos(0), start_pos(1), start_pos(2));
-        log_manager_->debugf("Map not ready for position (%f,%f,%f)", 
+        log_manager_->debugf("Map not ready for position (%f,%f,%f)",
                     start_pos(0), start_pos(1), start_pos(2));
     }
-    
+
     return map_ready;
+}
+
+bool ReplanFSM::callEmergencyStop(const Eigen::Vector3d& stop_pos) {
+    if (!path_manager_) {
+        RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
+        log_manager_->errorf("PathManager is not initialized!");
+        return false;
+    }
+
+    path_manager_->EmergencyStop(stop_pos);
+
+    path_manager::msg::PolyTraj msg;
+    polyTraj2ROSMsg(msg);
+    optimized_path_pub_->publish(msg);
+    broadcast_traj_pub_->publish(msg);
+
+    return true;
 }
 
 void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationCommand::SharedPtr msg) {
@@ -953,12 +912,6 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
     std::vector<Eigen::Vector3d> formation_pattern =
         generateFormationPattern(current_formation_type_, num_drones_, current_formation_scale_);
 
-    std::vector<Eigen::Vector3d> target_positions;
-    target_positions.reserve(num_drones_);
-    for (const auto& pattern_point : formation_pattern) {
-        target_positions.push_back(current_formation_center_ + pattern_point);
-    }
-
     // Collect current positions of all drones
     std::vector<Eigen::Vector3d> current_positions(num_drones_);
     {
@@ -978,24 +931,163 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
             // Fallback to ID-based assignment if not all positions available
             RCLCPP_WARN(node_->get_logger(),
                        "Not all drone positions available, using ID-based assignment");
+            std::vector<Eigen::Vector3d> target_positions;
+            target_positions.reserve(num_drones_);
+            for (const auto& pattern_point : formation_pattern) {
+                target_positions.push_back(current_formation_center_ + pattern_point);
+            }
             Eigen::Vector3d my_target = target_positions[drone_id_];
             publishFormationTarget(my_target, waypoints, formation_changed);
             return;
         }
     }
 
-    // Run Hungarian algorithm to find optimal assignment
-    std::vector<int> assignment = hungarianAssignment(current_positions, target_positions, waypoints);
+    // Calculate intermediate formation center for Hungarian assignment
+    // This ensures smooth formation changes based on current swarm position
+    Eigen::Vector3d prev_swarm_center = Eigen::Vector3d::Zero();
+    for (int i = 0; i < num_drones_; ++i) {
+        prev_swarm_center += current_positions[i];
+    }
+    prev_swarm_center /= num_drones_;
 
-    // Find my assigned target
-    Eigen::Vector3d my_target = target_positions[assignment[drone_id_]];
+    Eigen::Vector3d first_pure_waypoint;
+    if (!waypoints.empty()) {
+        first_pure_waypoint = waypoints[0];  // First waypoint (pure, no offset)
+    } else {
+        first_pure_waypoint = current_formation_center_;
+    }
+
+    // Intermediate formation center = midpoint between prev swarm center and first pure waypoint
+    Eigen::Vector3d intermediate_formation_center = (prev_swarm_center + first_pure_waypoint) / 2.0;
 
     RCLCPP_INFO(node_->get_logger(),
-               "Drone %d assigned to target %d: (%.2f, %.2f, %.2f) via Hungarian algorithm",
-               drone_id_, assignment[drone_id_], my_target.x(), my_target.y(), my_target.z());
+               "[HUNGARIAN] Prev swarm center: (%.2f, %.2f, %.2f)",
+               prev_swarm_center.x(), prev_swarm_center.y(), prev_swarm_center.z());
+    RCLCPP_INFO(node_->get_logger(),
+               "[HUNGARIAN] First pure waypoint: (%.2f, %.2f, %.2f)",
+               first_pure_waypoint.x(), first_pure_waypoint.y(), first_pure_waypoint.z());
+    RCLCPP_INFO(node_->get_logger(),
+               "[HUNGARIAN] Intermediate formation center: (%.2f, %.2f, %.2f)",
+               intermediate_formation_center.x(), intermediate_formation_center.y(), intermediate_formation_center.z());
 
-    // Publish formation target
-    publishFormationTarget(my_target, waypoints, formation_changed);
+    // Create intermediate formation positions (for Hungarian assignment)
+    std::vector<Eigen::Vector3d> intermediate_formation_positions;
+    intermediate_formation_positions.reserve(num_drones_);
+    for (const auto& pattern_point : formation_pattern) {
+        intermediate_formation_positions.push_back(intermediate_formation_center + pattern_point);
+    }
+
+    // Run Hungarian algorithm to find optimal assignment BASED ON INTERMEDIATE POSITIONS
+    std::vector<int> assignment = hungarianAssignment(current_positions, intermediate_formation_positions, waypoints);
+
+    // Extract offset from intermediate assignment
+    Eigen::Vector3d my_intermediate_position = intermediate_formation_positions[assignment[drone_id_]];
+    Eigen::Vector3d my_formation_offset = my_intermediate_position - intermediate_formation_center;
+
+    RCLCPP_INFO(node_->get_logger(),
+               "Drone %d assigned to intermediate position %d: (%.2f, %.2f, %.2f)",
+               drone_id_, assignment[drone_id_],
+               my_intermediate_position.x(), my_intermediate_position.y(), my_intermediate_position.z());
+    RCLCPP_INFO(node_->get_logger(),
+               "Drone %d formation offset: (%.2f, %.2f, %.2f)",
+               drone_id_, my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
+
+    // Build waypoints: Apply path-normal offset for line formations
+    std::vector<Eigen::Vector3d> my_waypoints;
+
+    RCLCPP_INFO(node_->get_logger(),
+               "Drone %d: Base formation offset: (%.2f, %.2f, %.2f)",
+               drone_id_, my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
+
+    // For line formations, apply offset in the normal direction of the path
+    bool use_path_normal = (current_formation_type_ == "line_first" ||
+                            current_formation_type_ == "line_second" ||
+                            current_formation_type_ == "line_first_no_offset" ||
+                            current_formation_type_ == "line_second_no_offset");
+
+    // Calculate the signed offset distance (perpendicular distance from centerline)
+    // Determine which side of the line this drone should be on
+    double offset_distance = my_formation_offset.norm();
+
+    // Calculate reference normal direction at intermediate point
+    Eigen::Vector3d ref_tangent(1.0, 0.0, 0.0);
+    if (waypoints.size() >= 2) {
+        ref_tangent = (waypoints[0] - intermediate_formation_center).normalized();
+    }
+    // Normal is perpendicular to tangent (rotate 90° right in 2D: (x,y) -> (y,-x))
+    Eigen::Vector3d ref_normal(ref_tangent.y(), -ref_tangent.x(), 0.0);
+
+    // Determine sign: which side of the line?
+    // If offset has positive component in ref_normal direction, keep positive
+    double offset_sign = (my_formation_offset.dot(ref_normal) >= 0) ? 1.0 : -1.0;
+    offset_distance *= offset_sign;
+
+    if (use_path_normal) {
+        RCLCPP_INFO(node_->get_logger(),
+                   "Drone %d: Using path-normal offset (distance=%.2fm, sign=%.0f)",
+                   drone_id_, std::abs(offset_distance), offset_sign);
+    }
+
+    // Add all waypoints with appropriate offset
+    for (size_t i = 0; i < waypoints.size(); ++i) {
+        Eigen::Vector3d applied_offset = my_formation_offset;  // Default: fixed offset
+
+        if (use_path_normal && std::abs(offset_distance) > 1e-6) {
+            // Calculate path tangent (direction) at this waypoint
+            Eigen::Vector3d path_tangent(1.0, 0.0, 0.0);
+
+            if (i == 0 && waypoints.size() >= 2) {
+                // First waypoint: use direction to next waypoint
+                path_tangent = (waypoints[1] - waypoints[0]).normalized();
+            } else if (i == waypoints.size() - 1 && i > 0) {
+                // Last waypoint: use direction from previous waypoint
+                path_tangent = (waypoints[i] - waypoints[i-1]).normalized();
+            } else if (i > 0 && i < waypoints.size() - 1) {
+                // Middle waypoints: use average of incoming and outgoing directions
+                Eigen::Vector3d incoming = (waypoints[i] - waypoints[i-1]).normalized();
+                Eigen::Vector3d outgoing = (waypoints[i+1] - waypoints[i]).normalized();
+                path_tangent = ((incoming + outgoing) / 2.0).normalized();
+            }
+
+            // Calculate path normal (perpendicular to tangent, pointing right in 2D)
+            // For 2D: if tangent = (tx, ty), normal = (ty, -tx)
+            Eigen::Vector3d path_normal(path_tangent.y(), -path_tangent.x(), 0.0);
+
+            // Apply offset in the normal direction
+            applied_offset = path_normal * offset_distance;
+
+            RCLCPP_INFO(node_->get_logger(),
+                       "Drone %d WP%zu: tangent=(%.3f,%.3f) normal=(%.3f,%.3f) offset=(%.2f,%.2f)",
+                       drone_id_, i,
+                       path_tangent.x(), path_tangent.y(),
+                       path_normal.x(), path_normal.y(),
+                       applied_offset.x(), applied_offset.y());
+        }
+
+        Eigen::Vector3d wp_with_offset = waypoints[i] + applied_offset;
+        my_waypoints.push_back(wp_with_offset);
+
+        RCLCPP_INFO(node_->get_logger(),
+                   "Drone %d WP%zu: (%.2f, %.2f) + offset = (%.2f, %.2f)",
+                   drone_id_, i,
+                   waypoints[i].x(), waypoints[i].y(),
+                   wp_with_offset.x(), wp_with_offset.y());
+    }
+
+    // Final target is last waypoint + offset
+    Eigen::Vector3d my_target;
+    if (!my_waypoints.empty()) {
+        my_target = my_waypoints.back();
+    } else {
+        my_target = current_formation_center_ + my_formation_offset;
+    }
+
+    RCLCPP_INFO(node_->get_logger(),
+               "Drone %d final target: (%.2f, %.2f, %.2f) with %zu waypoints",
+               drone_id_, my_target.x(), my_target.y(), my_target.z(), my_waypoints.size());
+
+    // Publish formation target with my waypoints and offset
+    publishFormationTarget(my_target, my_waypoints, formation_changed, my_formation_offset);
 }
 
 void ReplanFSM::generateFormationTargets(
@@ -1025,16 +1117,11 @@ std::vector<Eigen::Vector3d> ReplanFSM::generateFormationPattern(
     pattern.reserve(num_drones);
 
     if (formation_type == "square" && num_drones == 4) {
-        // INTENTIONALLY ROTATED 90 DEGREES CCW FOR TESTING HUNGARIAN ALGORITHM
-        // Original positions (rotated -90deg):
-        //   Drone 0: [-scale/2, -scale/2]  →  [-scale/2, +scale/2]
-        //   Drone 1: [-scale/2, +scale/2]  →  [+scale/2, +scale/2]
-        //   Drone 2: [+scale/2, +scale/2]  →  [+scale/2, -scale/2]
-        //   Drone 3: [+scale/2, -scale/2]  →  [-scale/2, -scale/2]
-        pattern.push_back(Eigen::Vector3d( -scale/2,  scale/2, 0.0));   // Drone 0 (was position 1)
-        pattern.push_back(Eigen::Vector3d( scale/2,  scale/2, 0.0));    // Drone 1 (was position 2)
-        pattern.push_back(Eigen::Vector3d( scale/2, -scale/2, 0.0));    // Drone 2 (was position 3)
-        pattern.push_back(Eigen::Vector3d( -scale/2, -scale/2, 0.0));   // Drone 3 (was position 0)
+        // Standard square formation
+        pattern.push_back(Eigen::Vector3d(-scale/2, -scale/2, 0.0));  // Drone 0: 왼쪽 아래
+        pattern.push_back(Eigen::Vector3d(-scale/2,  scale/2, 0.0));  // Drone 1: 왼쪽 위
+        pattern.push_back(Eigen::Vector3d( scale/2,  scale/2, 0.0));  // Drone 2: 오른쪽 위
+        pattern.push_back(Eigen::Vector3d( scale/2, -scale/2, 0.0));  // Drone 3: 오른쪽 아래
     }
     else if (formation_type == "triangle" && num_drones >= 3) {
         double h = scale * std::sqrt(3) / 2.0;
@@ -1164,7 +1251,7 @@ std::vector<Eigen::Vector3d> ReplanFSM::generateFormationPattern(
     return pattern;
 }
 
-void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints, bool formation_changed) {
+void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints, bool formation_changed, const Eigen::Vector3d& formation_offset) {
     path_manager::msg::FormationTarget target_msg;
 
     target_msg.header.stamp = node_->now();
@@ -1181,6 +1268,11 @@ void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std:
 
     target_msg.formation_type = current_formation_type_;
     target_msg.formation_scale = current_formation_scale_;
+
+    // Store formation offset for next transition
+    target_msg.formation_offset.x = formation_offset.x();
+    target_msg.formation_offset.y = formation_offset.y();
+    target_msg.formation_offset.z = formation_offset.z();
 
     if (!waypoints.empty()) {
         // Simply pass waypoints as-is without adding offset
@@ -1335,73 +1427,71 @@ std::vector<int> ReplanFSM::hungarianAssignment(
         }
     }
 
-    // Initial cost computation with path-aware formation preservation
+    // === ORDER-PRESERVING ASSIGNMENT FOR LINE FORMATIONS ===
+    // For line formations, preserve ordering along the line direction
+    // This prevents drones from crossing paths and maintains stable formation
+    if (current_formation_type_ == "line_first" || current_formation_type_ == "line_second" ||
+        current_formation_type_ == "line_first_no_offset" || current_formation_type_ == "line_second_no_offset") {
+
+        RCLCPP_INFO(node_->get_logger(),
+                   "[ASSIGNMENT] Using order-preserving assignment for line formation: %s",
+                   current_formation_type_.c_str());
+        log_manager_->infof("[ASSIGNMENT] Order-preserving for line formation: %s",
+                           current_formation_type_.c_str());
+
+        // Calculate line direction from formation pattern
+        Eigen::Vector3d line_direction(1.0, 0.0, 0.0);  // Default
+        if (rotated_pattern.size() >= 2) {
+            line_direction = (rotated_pattern.back() - rotated_pattern.front()).normalized();
+        }
+
+        // Project current positions onto line direction and sort
+        std::vector<std::pair<double, int>> current_projections;
+        for (int i = 0; i < n; ++i) {
+            Eigen::Vector3d relative_pos = current_positions[i] - current_center;
+            double projection = relative_pos.dot(line_direction);
+            current_projections.push_back({projection, i});
+        }
+        std::sort(current_projections.begin(), current_projections.end());
+
+        // Project target positions onto line direction and sort
+        std::vector<std::pair<double, int>> target_projections;
+        for (int j = 0; j < n; ++j) {
+            Eigen::Vector3d relative_pos = target_positions[j] - target_center;
+            double projection = relative_pos.dot(line_direction);
+            target_projections.push_back({projection, j});
+        }
+        std::sort(target_projections.begin(), target_projections.end());
+
+        // Create order-preserving assignment: i-th drone along line -> i-th target along line
+        std::vector<int> assignment(n);
+        for (int i = 0; i < n; ++i) {
+            int drone_idx = current_projections[i].second;
+            int target_idx = target_projections[i].second;
+            assignment[drone_idx] = target_idx;
+
+            RCLCPP_INFO(node_->get_logger(),
+                       "[ASSIGNMENT] Drone %d (proj=%.2f) -> Target %d (proj=%.2f)",
+                       drone_idx, current_projections[i].first,
+                       target_idx, target_projections[i].first);
+        }
+
+        return assignment;
+    }
+
+    // === HUNGARIAN ALGORITHM FOR OTHER FORMATIONS ===
+    // SIMPLIFIED: Only use Euclidean distance between current position and target formation position
+    // No complex cost functions - just assign each drone to nearest available formation spot
+    RCLCPP_INFO(node_->get_logger(),
+               "[HUNGARIAN] Using Hungarian algorithm for formation: %s",
+               current_formation_type_.c_str());
+    log_manager_->infof("[HUNGARIAN] Using Hungarian algorithm for: %s",
+                       current_formation_type_.c_str());
+
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j < n; ++j) {
-            // 1. Basic distance cost (Euclidean distance)
-            double distance = (current_positions[i] - target_positions[j]).norm();
-
-            // 2. Formation-based orientation preservation
-            // Use rotated formation pattern aligned with path direction
-            double angle_cost = 0.0;
-            double pattern_position_cost = 0.0;
-
-            if (i < rotated_pattern.size() && j < rotated_pattern.size()) {
-                // Rotated pattern defines the ideal relative positions aligned with path
-                Eigen::Vector3d pattern_i = rotated_pattern[i];  // Drone i's position in rotated formation
-                Eigen::Vector3d pattern_j = rotated_pattern[j];  // Target j's position in rotated formation
-
-                double pattern_i_norm = pattern_i.norm();
-                double pattern_j_norm = pattern_j.norm();
-
-                // Angular alignment cost (for non-collinear formations)
-                if (pattern_i_norm > 1e-6 && pattern_j_norm > 1e-6) {
-                    double cos_similarity = pattern_i.dot(pattern_j) /
-                                           (pattern_i_norm * pattern_j_norm);
-                    angle_cost = 1.0 - cos_similarity;
-                }
-
-                // Pattern position cost (works for all formations including collinear)
-                // Penalizes assignment to different pattern positions
-                pattern_position_cost = (pattern_i - pattern_j).norm();
-            }
-
-            // 3. Structure preservation cost (relative position magnitude)
-            // Compute relative positions from centers
-            Eigen::Vector3d current_relative = current_positions[i] - current_center;
-            Eigen::Vector3d target_relative = target_positions[j] - target_center;
-            double structure_error = (current_relative - target_relative).norm();
-
-            // 4. ID preservation penalty (tie-breaker for ambiguous cases)
-            // Weak penalty to prefer identity assignment when costs are similar
-            double id_penalty = std::abs(i - j) * 0.1;
-
-            // 5. Path crossing penalty (collision avoidance heuristic)
-            double crossing_penalty = 0.0;
-            for (int k = 0; k < n; ++k) {
-                if (k == i) continue;
-
-                // Estimate path crossing likelihood
-                // Path i: current_positions[i] → target_positions[j]
-                // Path k: current_positions[k] → target_positions[k] (identity assumption)
-                Eigen::Vector3d path_i = target_positions[j] - current_positions[i];
-                Eigen::Vector3d path_k = target_positions[k] - current_positions[k];
-
-                // Paths likely cross if they point in opposite directions
-                if (path_i.dot(path_k) < 0) {
-                    crossing_penalty += 1.0;
-                }
-            }
-
-            // Combined multi-objective cost function
-            // Tuned weights for formation-preserving assignment
-            cost_matrix[i][j] =
-                1.0 * distance +                  // Efficiency: minimize total travel distance
-                2.0 * angle_cost +                // Orientation: prevent formation rotation
-                2.0 * pattern_position_cost +     // Pattern: preserve formation position order
-                1.0 * structure_error +           // Structure: preserve relative formation geometry
-                id_penalty +                      // Tie-breaker: weak preference for identity assignment
-                0.8 * crossing_penalty;           // Safety: reduce path crossings
+            // Cost = Euclidean distance from current position to target formation position
+            cost_matrix[i][j] = (current_positions[i] - target_positions[j]).norm();
         }
     }
 
@@ -1419,13 +1509,8 @@ std::vector<int> ReplanFSM::hungarianAssignment(
     }
 
     RCLCPP_INFO(node_->get_logger(),
-               "[HUNGARIAN] Cost matrix computed with formation-pattern-based orientation preservation");
-    RCLCPP_INFO(node_->get_logger(),
-               "[HUNGARIAN] Formation: %s | Weights: dist=1.0, angle=2.0, pattern=2.0, struct=1.0, id=0.1, cross=0.8",
-               current_formation_type_.c_str());
-    log_manager_->infof("[HUNGARIAN] Cost matrix computed with formation-pattern-based orientation preservation");
-    log_manager_->infof("[HUNGARIAN] Formation: %s | Weights: dist=1.0, angle=2.0, pattern=2.0, struct=1.0, id=0.1, cross=0.8",
-                       current_formation_type_.c_str());
+               "[HUNGARIAN] Cost matrix computed with simple Euclidean distance");
+    log_manager_->infof("[HUNGARIAN] Cost matrix: simple Euclidean distance only");
 
     // ===== Hungarian Algorithm Implementation =====
     // This is the O(n^3) Hungarian algorithm (Kuhn-Munkres)
@@ -1479,7 +1564,7 @@ std::vector<int> ReplanFSM::hungarianAssignment(
     }
 
     // Extract assignment: assignment[i] = j means drone i -> target j
-    std::vector<int> assignment(n);
+    std::vector<int> assignment(n, 0);  // Initialize with default values
     for (int j = 1; j <= n; ++j) {
         if (p[j] != 0) {
             int drone_idx = p[j] - 1;
@@ -1494,11 +1579,17 @@ std::vector<int> ReplanFSM::hungarianAssignment(
                             drone_idx, target_idx, n);
                 log_manager_->errorf("[HUNGARIAN] Assignment out of bounds: drone=%d, target=%d (n=%d)",
                                     drone_idx, target_idx, n);
-                // Fallback to identity assignment for this drone
-                if (drone_idx >= 0 && drone_idx < n) {
-                    assignment[drone_idx] = drone_idx;
-                }
             }
+        }
+    }
+
+    // Validate all assignments are within bounds
+    for (int i = 0; i < n; ++i) {
+        if (assignment[i] < 0 || assignment[i] >= n) {
+            RCLCPP_WARN(node_->get_logger(),
+                       "[HUNGARIAN] Invalid assignment for drone %d, using identity assignment",
+                       i);
+            assignment[i] = i;
         }
     }
 
