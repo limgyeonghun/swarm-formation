@@ -1,3 +1,13 @@
+# =============================================================================
+# COMMUNICATION TYPE: INTERNAL (ROS2 topic only)
+# =============================================================================
+# Purpose: TrajServer sends position commands to RoverControl
+# Flow: FSM → TrajServer → /agentN/target_position → RoverControl
+# Size: ~80 bytes
+# Note: NOT transmitted via serial - internal message within same drone
+# Note: TrajServer samples PolyTraj at 10ms intervals and publishes this
+# =============================================================================
+
 std_msgs/Header header
 geometry_msgs/Point position          # Target position (for velocity calculation)
 geometry_msgs/Vector3 velocity

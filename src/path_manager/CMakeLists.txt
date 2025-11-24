@@ -46,6 +46,7 @@ add_library(${PROJECT_NAME}_lib
   src/uniform_bspline.cpp
   src/polynomial_traj.cpp
   src/hungarian_algorithm.cpp
+  src/formation_utils.cpp
   ../common/log_manager.cpp
 )
 
@@ -108,6 +109,8 @@ ament_target_dependencies(traj_server
 
 add_executable(formation_commander
   src/formation_commander.cpp
+  src/hungarian_algorithm.cpp
+  src/formation_utils.cpp
 )
 ament_target_dependencies(formation_commander
   rclcpp

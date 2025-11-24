@@ -6,6 +6,8 @@
 #include <chrono>
 #include <cmath>
 #include "path_optimizer/poly_traj_utils.hpp"
+#include "path_manager/hungarian_algorithm.h"
+#include "path_manager/formation_utils.h"
 
 using namespace std::chrono_literals;
 
@@ -171,6 +173,62 @@ private:
         return current_formation_center_;
     }
 
+    // Get current drone positions from trajectories
+    std::vector<Eigen::Vector3d> getCurrentDronePositions() {
+        double current_time = this->now().seconds();
+        std::vector<Eigen::Vector3d> positions(num_drones_);
+
+        for (int i = 0; i < num_drones_; ++i) {
+            const auto& traj = drone_trajectories_[i];
+            if (traj.valid) {
+                double t_rel = current_time - traj.start_time;
+                t_rel = std::min(traj.duration, std::max(0.0, t_rel));
+                positions[i] = traj.traj.getPos(t_rel);
+            } else {
+                // Fallback: use (0,0,0) if trajectory not available
+                positions[i] = Eigen::Vector3d(0, 0, 0);
+                RCLCPP_WARN(this->get_logger(), "Drone %d trajectory not valid, using fallback position", i);
+            }
+        }
+
+        return positions;
+    }
+
+
+    // Compute Hungarian assignment
+    std::vector<int> computeHungarianAssignment(
+        const std::vector<Eigen::Vector3d>& current_positions,
+        const std::vector<Eigen::Vector3d>& target_positions,
+        const std::string& formation_type)
+    {
+        int n = num_drones_;
+
+        // For line formations, use order-preserving assignment
+        if (formation_type.find("line") != std::string::npos) {
+            RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Order-preserving for line formation: %s", formation_type.c_str());
+            std::vector<int> assignment(n);
+            std::iota(assignment.begin(), assignment.end(), 0);
+            return assignment;
+        }
+
+        // For other formations (square, triangle), use Hungarian algorithm
+        RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Using Hungarian algorithm for: %s", formation_type.c_str());
+
+        // Create cost matrix (simple Euclidean distance)
+        auto cost_matrix = path_manager::HungarianAlgorithm::createCostMatrix(current_positions, target_positions);
+
+        // Solve Hungarian algorithm
+        auto assignment = path_manager::HungarianAlgorithm::solve(cost_matrix);
+
+        // Log results
+        RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Assignments:");
+        for (int i = 0; i < n; ++i) {
+            RCLCPP_INFO(this->get_logger(), "  Drone %d -> Target %d", i, assignment[i]);
+        }
+
+        return assignment;
+    }
+
     void publishFormationCommand()
     {
         if (command_count_ >= MAX_FORMATION_COMMANDS) {
@@ -206,9 +264,7 @@ private:
         //
         switch (command_count_) {
             case 0:
-                msg.formation_center.x = -8.75;
-                msg.formation_center.y = -57.0;
-                msg.formation_center.z = 0.0;
+                // Formation center will be the last waypoint: (7.87, -68.99, 0.0)
                 msg.formation_type = "line_first";  // Use "line_first" if formation drifts on curves
                 msg.formation_scale = 2.0;
 
@@ -222,9 +278,7 @@ private:
                 break;
 
             case 1:
-                msg.formation_center.x = 22.88;
-                msg.formation_center.y = -71.87;
-                msg.formation_center.z = 0.0;
+                // Formation center will be the last waypoint: (32.47298, -93.42377, 0.0)
                 msg.formation_type = "square";
                 msg.formation_scale = 2.0;
 
@@ -238,9 +292,7 @@ private:
 
             case 2:
                 // Stage 1: triangle -> square formation change + initial path
-                msg.formation_center.x = 32.47;
-                msg.formation_center.y = -93.42;
-                msg.formation_center.z = 0.0;
+                // Formation center will be the last waypoint: (27.01373, -122.2, 0.0)
                 msg.formation_type = "triangle";
                 msg.formation_scale = 2.0;
 
@@ -252,9 +304,7 @@ private:
 
             case 3:
                 // Stage 2: square formation maintained, continue long straight path
-                msg.formation_center.x = 42.09200;
-                msg.formation_center.y = -130.01768;
-                msg.formation_center.z = 0.0;
+                // Formation center will be the last waypoint
                 msg.formation_type = "square";
                 msg.formation_scale = 2.0;
 
@@ -323,15 +373,47 @@ private:
             //     break;
         }
 
-        // Update current formation center
+        // ========== CENTRALIZED HUNGARIAN ALGORITHM ==========
+        // Compute target assignments to prevent collision
+        //
+        // Get current drone positions
+        auto current_positions = getCurrentDronePositions();
+
+        // Calculate formation center (last waypoint)
+        Eigen::Vector3d formation_center;
         if (!msg.waypoints.empty()) {
             const auto &last_wp = msg.waypoints.back();
-            current_formation_center_ = Eigen::Vector3d(last_wp.x, last_wp.y, last_wp.z);
+            formation_center = Eigen::Vector3d(last_wp.x, last_wp.y, last_wp.z);
+            current_formation_center_ = formation_center;
         } else {
-            current_formation_center_ = Eigen::Vector3d(
-                msg.formation_center.x, msg.formation_center.y, msg.formation_center.z
-            );
+            RCLCPP_WARN(this->get_logger(), "No waypoints in FormationCommand, using origin");
+            formation_center = Eigen::Vector3d(0, 0, 0);
+            current_formation_center_ = formation_center;
         }
+
+        // Generate formation pattern using shared utility
+        auto formation_pattern = path_manager::FormationUtils::generateFormationPattern(
+            msg.formation_type, num_drones_, msg.formation_scale);
+
+        // Calculate target positions (formation center + pattern)
+        std::vector<Eigen::Vector3d> target_positions(num_drones_);
+        for (int i = 0; i < num_drones_; ++i) {
+            target_positions[i] = formation_center + formation_pattern[i];
+        }
+
+        // Compute Hungarian assignment
+        auto target_assignments = computeHungarianAssignment(
+            current_positions, target_positions, msg.formation_type);
+
+        // Add assignments to message
+        msg.target_assignments.resize(num_drones_);
+        for (int i = 0; i < num_drones_; ++i) {
+            msg.target_assignments[i] = target_assignments[i];
+        }
+
+        RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Target assignments added to FormationCommand");
+
+        // ========== END HUNGARIAN ALGORITHM ==========
 
         formation_cmd_pub_->publish(msg);
 
@@ -340,9 +422,9 @@ private:
             "Published formation command #%d: %s at (%.1f, %.1f, %.1f) scale %.1f",
             command_count_ + 1,
             msg.formation_type.c_str(),
-            msg.formation_center.x,
-            msg.formation_center.y,
-            msg.formation_center.z,
+            formation_center.x(),
+            formation_center.y(),
+            formation_center.z(),
             msg.formation_scale
         );
 
