@@ -5,11 +5,20 @@
 #include <Eigen/Dense>
 #include <chrono>
 #include <cmath>
+#include <yaml-cpp/yaml.h>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include "path_optimizer/poly_traj_utils.hpp"
 #include "path_manager/hungarian_algorithm.h"
 #include "path_manager/formation_utils.h"
 
 using namespace std::chrono_literals;
+
+// Structure to hold formation command data from YAML
+struct FormationCommand {
+    std::string formation_type;
+    double formation_scale;
+    std::vector<std::vector<double>> waypoints;
+};
 
 /**
  * @brief Lightweight FormationCommander - only publishes formation commands
@@ -19,8 +28,6 @@ using namespace std::chrono_literals;
 class FormationCommander : public rclcpp::Node
 {
 public:
-    static constexpr int MAX_FORMATION_COMMANDS = 7;  // Total number of formation commands
-
     FormationCommander()
     : Node("formation_commander"),
       command_count_(0),
@@ -35,8 +42,11 @@ public:
         num_drones_ = this->get_parameter("num_drones").as_int();
         distance_threshold_ = this->get_parameter("distance_threshold").as_double();
 
-        RCLCPP_INFO(this->get_logger(), "FormationCommander started - num_drones: %d, distance_threshold: %.1f",
-                   num_drones_, distance_threshold_);
+        // Load mission from YAML (mission.commands)
+        loadMissionFromYAML();
+
+        RCLCPP_INFO(this->get_logger(), "FormationCommander started - num_drones: %d, distance_threshold: %.1f, loaded %zu commands",
+                   num_drones_, distance_threshold_, current_scenario_.size());
 
         rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
         auto sensor_qos = rclcpp::QoS(
@@ -130,7 +140,7 @@ private:
     }
 
     void checkDistanceAndPublish() {
-        if (!have_initial_command_ || command_count_ >= MAX_FORMATION_COMMANDS) {
+        if (!have_initial_command_ || command_count_ >= (int)current_scenario_.size()) {
             return;
         }
 
@@ -231,7 +241,7 @@ private:
 
     void publishFormationCommand()
     {
-        if (command_count_ >= MAX_FORMATION_COMMANDS) {
+        if (command_count_ >= (int)current_scenario_.size()) {
             RCLCPP_INFO(this->get_logger(), "Formation command sequence completed. Stopping distance check timer.");
             if (distance_check_timer_) {
                 distance_check_timer_->cancel();
@@ -243,30 +253,27 @@ private:
         msg.header.stamp = this->now();
         msg.header.frame_id = "world";
 
-        // Define formation sequences
-        //
-        // Available formation types:
-        //   - "line_first"          : Line formation at 83° with offset (each drone has different waypoint)
-        //   - "line_first": Line formation at 83° without offset (all drones share waypoints, local optimizer maintains formation)
-        //   - "line_second"         : Line formation at -8.63° with offset
-        //   - "line_second": Line formation at -8.63° without offset
-        //   - "triangle"            : Triangle formation
-        //   - "square"              : Square formation
-        //
-        // Use no_offset variants when:
-        //   - Complex curved paths where offset causes formation drift
-        //   - Want to rely purely on local formation constraint
-        //   - Optimization sometimes "gives up" on formation and follows global path alone
-        //
-        // Use regular (with offset) variants when:
-        //   - Straight or simple curved paths
-        //   - Want explicit waypoint separation for each drone
-        //
+        // Get current command from loaded scenario
+        const auto& cmd = current_scenario_[command_count_];
+
+        msg.formation_type = cmd.formation_type;
+        msg.formation_scale = cmd.formation_scale;
+
+        // Convert waypoints
+        msg.waypoints.resize(cmd.waypoints.size());
+        for (size_t i = 0; i < cmd.waypoints.size(); ++i) {
+            msg.waypoints[i].x = cmd.waypoints[i][0];
+            msg.waypoints[i].y = cmd.waypoints[i][1];
+            msg.waypoints[i].z = cmd.waypoints[i][2];
+        }
+
+        // OLD HARDCODED VERSION (kept for reference, can be deleted):
+        /*
         switch (command_count_) {
             case 0:
                 // Formation center will be the last waypoint: (7.87, -68.99, 0.0)
                 msg.formation_type = "line_first";  // Use "line_first" if formation drifts on curves
-                msg.formation_scale = 2.0;
+                msg.formation_scale = 1.0;
 
                 msg.waypoints.resize(5);
                 msg.waypoints[0].x = -8.75; msg.waypoints[0].y = -57.0; msg.waypoints[0].z = 0.0;
@@ -372,6 +379,8 @@ private:
             //     msg.waypoints[3].x = 0.04395; msg.waypoints[3].y = 2.61689; msg.waypoints[3].z = 0.0;
             //     break;
         }
+        */
+        // ========== END OLD HARDCODED VERSION ==========
 
         // ========== CENTRALIZED HUNGARIAN ALGORITHM ==========
         // Compute target assignments to prevent collision
@@ -442,6 +451,67 @@ private:
     Eigen::Vector3d current_formation_center_;
     bool have_initial_command_;
     std::vector<TrajectoryData> drone_trajectories_;
+    std::vector<FormationCommand> current_scenario_;  // Loaded scenario from YAML
+
+    // Load mission commands from YAML
+    void loadMissionFromYAML() {
+        // Get scenario name from parameter (passed by launch file)
+        this->declare_parameter("scenario", "default");
+        std::string scenario = this->get_parameter("scenario").as_string();
+
+        // Build path to scenario YAML file
+        std::string pkg_share_dir = ament_index_cpp::get_package_share_directory("path_manager");
+        std::string scenario_file = pkg_share_dir + "/config/scenario_" + scenario + ".yaml";
+
+        try {
+            YAML::Node yaml = YAML::LoadFile(scenario_file);
+
+            // Navigate to mission.commands
+            if (!yaml["/**"]["ros__parameters"]["mission"]["commands"]) {
+                RCLCPP_ERROR(this->get_logger(), "No mission.commands found in %s", scenario_file.c_str());
+                return;
+            }
+
+            YAML::Node commands = yaml["/**"]["ros__parameters"]["mission"]["commands"];
+
+            // Parse each command
+            for (size_t i = 0; i < commands.size(); i++) {
+                YAML::Node cmd_node = commands[i];
+
+                FormationCommand cmd;
+                cmd.formation_type = cmd_node["formation_type"].as<std::string>();
+                cmd.formation_scale = cmd_node["formation_scale"].as<double>();
+
+                // Parse waypoints
+                YAML::Node waypoints_node = cmd_node["waypoints"];
+                for (size_t j = 0; j < waypoints_node.size(); j++) {
+                    std::vector<double> waypoint;
+                    for (size_t k = 0; k < waypoints_node[j].size(); k++) {
+                        waypoint.push_back(waypoints_node[j][k].as<double>());
+                    }
+                    cmd.waypoints.push_back(waypoint);
+                }
+
+                current_scenario_.push_back(cmd);
+            }
+
+            RCLCPP_INFO(this->get_logger(), "Loaded %zu formation commands from scenario: %s",
+                       current_scenario_.size(), scenario.c_str());
+
+            // Print loaded commands
+            for (size_t i = 0; i < current_scenario_.size(); i++) {
+                const auto& cmd = current_scenario_[i];
+                RCLCPP_INFO(this->get_logger(), "  Command %zu: %s (scale: %.1f, %zu waypoints)",
+                           i, cmd.formation_type.c_str(), cmd.formation_scale, cmd.waypoints.size());
+            }
+
+        } catch (const YAML::Exception& e) {
+            RCLCPP_ERROR(this->get_logger(), "Failed to load scenario YAML: %s", e.what());
+            RCLCPP_ERROR(this->get_logger(), "File: %s", scenario_file.c_str());
+        } catch (const std::exception& e) {
+            RCLCPP_ERROR(this->get_logger(), "Error loading mission: %s", e.what());
+        }
+    }
 };
 
 int main(int argc, char **argv)

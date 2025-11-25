@@ -96,6 +96,12 @@ private:
                                          const std::vector<Eigen::Vector3d>& target_positions,
                                          const std::vector<Eigen::Vector3d>& waypoints);
 
+    // Helper functions for line segment intersection checking
+    bool segmentsIntersect2D(const Eigen::Vector3d& p1, const Eigen::Vector3d& q1,
+                             const Eigen::Vector3d& p2, const Eigen::Vector3d& q2);
+    int orientation(const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r);
+    bool onSegment(const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r);
+
     std::shared_ptr<PathManager> path_manager_;
 
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr optimized_path_pub_;
@@ -140,6 +146,8 @@ private:
     bool enable_debug_logs_;
     bool enable_waypoint_markers_;
     bool enable_global_trajectory_pub_;
+    double hungarian_distance_weight_;   // Weight for distance cost in Hungarian assignment
+    double hungarian_crossing_penalty_;  // Penalty weight for path crossings in Hungarian assignment
 
     // Formation manager variables
     int num_drones_;

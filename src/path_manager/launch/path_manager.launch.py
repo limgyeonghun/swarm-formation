@@ -41,6 +41,10 @@ def create_drone_nodes(context, *args, **kwargs):
     target_drone_id = int(drone_id_str)
     print(f"Target drone ID: {target_drone_id}")
 
+    # Scenario selection
+    scenario = context.perform_substitution(LaunchConfiguration('scenario'))
+    print(f"Selected scenario: {scenario}")
+
     # JFI params
     jfi_port_arg = context.perform_substitution(LaunchConfiguration('jfi_port'))
     jfi_baud_rate_str = context.perform_substitution(LaunchConfiguration('jfi_baud_rate'))
@@ -58,13 +62,31 @@ def create_drone_nodes(context, *args, **kwargs):
     pkg_share = FindPackageShare('path_manager')
     obstacles_file  = PathJoinSubstitution([pkg_share, 'config', 'obstacles.yaml'])
     optimizer_file  = PathJoinSubstitution([pkg_share, 'config', 'optimizer_params.yaml'])
-    drones_file     = PathJoinSubstitution([pkg_share, 'config', 'drones.yaml'])
-    map_file        = PathJoinSubstitution([pkg_share, 'config', 'map.yaml'])
+    map_file = PathJoinSubstitution([pkg_share, 'config', 'map.yaml'])
 
-    # Load drones.yaml
+    # Load base drone hardware configuration
+    drones_file = PathJoinSubstitution([pkg_share, 'config', 'drone_hardware.yaml'])
     drones_params = load_yaml_file(context.perform_substitution(drones_file))
     drone_cfg = drones_params['/**']['ros__parameters']
     num_drones = drone_cfg.get('num_drones', 1)
+    print(f"Loaded drone hardware config: drone_hardware.yaml (num_drones={num_drones})")
+
+    # Load scenario-specific configuration (initial positions + mission)
+    scenario_filename = f'scenario_{scenario}.yaml'
+    scenario_file = PathJoinSubstitution([pkg_share, 'config', scenario_filename])
+    scenario_params = load_yaml_file(context.perform_substitution(scenario_file))
+    scenario_cfg = scenario_params['/**']['ros__parameters']
+    print(f"Loaded scenario config: {scenario_filename}")
+
+    # Add drone initial positions from scenario to hardware config
+    for i in range(num_drones):
+        drone_key = f'drone_{i}'
+        if drone_key in scenario_cfg and drone_key in drone_cfg:
+            # Add start positions from scenario to drone config
+            drone_cfg[drone_key]['start_point_x'] = scenario_cfg[drone_key]['start_point_x']
+            drone_cfg[drone_key]['start_point_y'] = scenario_cfg[drone_key]['start_point_y']
+            drone_cfg[drone_key]['start_point_z'] = scenario_cfg[drone_key]['start_point_z']
+            print(f"  Added {drone_key} start position from scenario: ({scenario_cfg[drone_key]['start_point_x']}, {scenario_cfg[drone_key]['start_point_y']}, {scenario_cfg[drone_key]['start_point_z']})")
 
     fsm_params = drone_cfg.get('fsm', {})
     n_seconds_ahead = float(fsm_params.get('n_seconds_ahead', 0.0))
@@ -119,9 +141,9 @@ def create_drone_nodes(context, *args, **kwargs):
             'rviz_simulation': rviz_sim,
             'drone_id':        idx,
             'mavlink_id':      mavlink_id,
-            'start_point_x':   float(cfg['start_point_x']),
-            'start_point_y':   float(cfg['start_point_y']),
-            'start_point_z':   float(cfg['start_point_z']),
+            'start_point_x':   float(cfg.get('start_point_x', 0.0)),
+            'start_point_y':   float(cfg.get('start_point_y', 0.0)),
+            'start_point_z':   float(cfg.get('start_point_z', 0.0)),
         }
 
         # Add ALL drones' initial positions for Hungarian algorithm (deadlock prevention)
@@ -199,14 +221,41 @@ def create_drone_nodes(context, *args, **kwargs):
         else:
             print("JFI node skipped (not in real mode)")
 
-    visualization = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            PathJoinSubstitution([
-                FindPackageShare('path_visualization'),
-                'launch',
-                'path_visualization.launch.py',
-            ])
-        ]),
+    # Build parameters for path_visualization with scenario start points
+    viz_params = [
+        drones_file,  # Base drone hardware
+        obstacles_file,
+        optimizer_file,
+        map_file,
+    ]
+    # Add start_point overrides from scenario
+    start_point_params = {}
+    for i in range(num_drones):
+        drone_key = f'drone_{i}'
+        if drone_key in scenario_cfg:
+            start_point_params[f'{drone_key}.start_point_x'] = float(scenario_cfg[drone_key]['start_point_x'])
+            start_point_params[f'{drone_key}.start_point_y'] = float(scenario_cfg[drone_key]['start_point_y'])
+            start_point_params[f'{drone_key}.start_point_z'] = float(scenario_cfg[drone_key]['start_point_z'])
+
+    visualization_node = Node(
+        package='path_visualization',
+        executable='path_visualization_node',
+        name='path_visualization',
+        output='screen',
+        parameters=viz_params + [start_point_params],
+        condition=IfCondition(LaunchConfiguration('rviz_simulation'))
+    )
+
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='screen',
+        arguments=['-d', PathJoinSubstitution([
+            FindPackageShare('path_visualization'),
+            'config',
+            'rviz_config.rviz'
+        ])],
         condition=IfCondition(LaunchConfiguration('rviz_simulation'))
     )
 
@@ -223,11 +272,14 @@ def create_drone_nodes(context, *args, **kwargs):
         executable='formation_commander',
         name='formation_commander',
         output='screen',
-        parameters=[drones_file],
+        parameters=[
+            drones_file,      # Drone hardware config (mavlink_id, system settings)
+            {'scenario': scenario}  # Pass scenario name - formation_commander will load YAML directly
+        ],
         remappings=formation_remaps,
     )
 
-    immediate_actions = [visualization] + rover_nodes + jfi_nodes
+    immediate_actions = [visualization_node, rviz_node] + rover_nodes + jfi_nodes
 
     traj_nodes_delayed = TimerAction(
         period=0.0,
@@ -240,7 +292,7 @@ def create_drone_nodes(context, *args, **kwargs):
     )
 
     formation_commander_delayed = TimerAction(
-        period=5.0,
+        period=10.0,
         actions=[formation_commander],
     )
 
@@ -262,6 +314,11 @@ def generate_launch_description():
             'drone_id',
             default_value='1',
             description='Target drone ID to run (0-5)'
+        ),
+        DeclareLaunchArgument(
+            'scenario',
+            default_value='default',
+            description='Scenario name (default, test_square, test_transitions, test_crossing, custom1)'
         ),
         DeclareLaunchArgument(
             'jfi_port',

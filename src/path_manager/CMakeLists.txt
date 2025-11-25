@@ -31,6 +31,8 @@ find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(swarm_graph REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(yaml-cpp REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PolyTraj.msg"
@@ -119,11 +121,15 @@ ament_target_dependencies(formation_commander
   Eigen3
   path_optimizer
   rosidl_default_runtime
+  ament_index_cpp
 )
 target_include_directories(formation_commander PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_cpp>
   ${EIGEN3_INCLUDE_DIRS}
+)
+target_link_libraries(formation_commander
+  yaml-cpp
 )
 
 rosidl_target_interfaces(${PROJECT_NAME}_lib

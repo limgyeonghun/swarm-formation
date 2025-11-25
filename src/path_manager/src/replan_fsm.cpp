@@ -81,10 +81,16 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     node_->declare_parameter("fsm/thresh_no_replan_meter", -1.0);
     node_->declare_parameter("fsm/replan_trajectory_time", -1.0);
     node_->declare_parameter("fsm/n_seconds_ahead", -1.0);
+    node_->declare_parameter("fsm/hungarian_distance_weight", 1.0);
+    node_->declare_parameter("fsm/hungarian_crossing_penalty", 50.0);
     node_->get_parameter("fsm/thresh_replan_time", replan_thresh_);
     node_->get_parameter("fsm/thresh_no_replan_meter", no_replan_thresh_);
     node_->get_parameter("fsm/replan_trajectory_time", replan_trajectory_time_);
     node_->get_parameter("fsm/n_seconds_ahead", n_seconds_ahead_);
+    node_->get_parameter("fsm/hungarian_distance_weight", hungarian_distance_weight_);
+    node_->get_parameter("fsm/hungarian_crossing_penalty", hungarian_crossing_penalty_);
+    FSM_LOG_INFO("Hungarian assignment weights - distance: %.1f, crossing penalty: %.1f",
+                 hungarian_distance_weight_, hungarian_crossing_penalty_);
 
     node_->declare_parameter("start_point_x", 0.0);
     node_->declare_parameter("start_point_y", 0.0);
@@ -1349,18 +1355,38 @@ std::vector<int> ReplanFSM::hungarianAssignment(
     }
 
     // === HUNGARIAN ALGORITHM FOR OTHER FORMATIONS ===
-    // SIMPLIFIED: Only use Euclidean distance between current position and target formation position
-    // No complex cost functions - just assign each drone to nearest available formation spot
+    // Cost function: Euclidean distance + path crossing penalty
     RCLCPP_INFO(node_->get_logger(),
-               "[HUNGARIAN] Using Hungarian algorithm for formation: %s",
+               "[HUNGARIAN] Using Hungarian algorithm with crossing penalty for formation: %s",
                current_formation_type_.c_str());
-    log_manager_->infof("[HUNGARIAN] Using Hungarian algorithm for: %s",
+    log_manager_->infof("[HUNGARIAN] Using Hungarian algorithm with crossing penalty for: %s",
                        current_formation_type_.c_str());
 
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j < n; ++j) {
-            // Cost = Euclidean distance from current position to target formation position
-            cost_matrix[i][j] = (current_positions[i] - target_positions[j]).norm();
+            // Base cost: Euclidean distance from current position to target formation position
+            double dist_cost = (current_positions[i] - target_positions[j]).norm();
+
+            // Calculate crossing penalty for this assignment (i->j)
+            double crossing_penalty = 0.0;
+
+            // Check against all other possible assignments
+            for (int k = 0; k < n; ++k) {
+                if (k == i) continue;  // Skip self
+
+                for (int l = 0; l < n; ++l) {
+                    if (l == j) continue;  // Skip same target
+
+                    // Check if path (i->j) would cross path (k->l)
+                    if (segmentsIntersect2D(current_positions[i], target_positions[j],
+                                           current_positions[k], target_positions[l])) {
+                        crossing_penalty += hungarian_crossing_penalty_;  // Use config parameter
+                    }
+                }
+            }
+
+            // Total cost = weighted distance + crossing penalty
+            cost_matrix[i][j] = hungarian_distance_weight_ * dist_cost + crossing_penalty;
         }
     }
 
@@ -1488,6 +1514,54 @@ std::vector<int> ReplanFSM::hungarianAssignment(
     log_manager_->infof("[HUNGARIAN] Total assignment cost: %.2f", total_cost);
 
     return assignment;
+}
+
+// Helper function: Calculate orientation of ordered triplet (p, q, r)
+// Returns:
+//   0 -> p, q, r are collinear
+//   1 -> Clockwise orientation
+//   2 -> Counterclockwise orientation
+int ReplanFSM::orientation(const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r) {
+    double val = (q.y() - p.y()) * (r.x() - q.x()) - (q.x() - p.x()) * (r.y() - q.y());
+
+    if (std::abs(val) < 1e-9) return 0;  // Collinear
+    return (val > 0) ? 1 : 2;  // Clockwise or Counterclockwise
+}
+
+// Helper function: Check if point q lies on segment pr (only when collinear)
+bool ReplanFSM::onSegment(const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r) {
+    return (q.x() <= std::max(p.x(), r.x()) && q.x() >= std::min(p.x(), r.x()) &&
+            q.y() <= std::max(p.y(), r.y()) && q.y() >= std::min(p.y(), r.y()));
+}
+
+// Check if two 2D line segments (p1,q1) and (p2,q2) intersect
+// Uses orientation-based algorithm (considers only XY plane)
+bool ReplanFSM::segmentsIntersect2D(const Eigen::Vector3d& p1, const Eigen::Vector3d& q1,
+                                    const Eigen::Vector3d& p2, const Eigen::Vector3d& q2) {
+    int o1 = orientation(p1, q1, p2);
+    int o2 = orientation(p1, q1, q2);
+    int o3 = orientation(p2, q2, p1);
+    int o4 = orientation(p2, q2, q1);
+
+    // General case: segments intersect if they have different orientations
+    if (o1 != o2 && o3 != o4) {
+        return true;
+    }
+
+    // Special cases: check for collinear points lying on the segment
+    // p1, q1, p2 are collinear and p2 lies on segment p1q1
+    if (o1 == 0 && onSegment(p1, p2, q1)) return true;
+
+    // p1, q1, q2 are collinear and q2 lies on segment p1q1
+    if (o2 == 0 && onSegment(p1, q2, q1)) return true;
+
+    // p2, q2, p1 are collinear and p1 lies on segment p2q2
+    if (o3 == 0 && onSegment(p2, p1, q2)) return true;
+
+    // p2, q2, q1 are collinear and q1 lies on segment p2q2
+    if (o4 == 0 && onSegment(p2, q1, q2)) return true;
+
+    return false;  // No intersection
 }
 
 

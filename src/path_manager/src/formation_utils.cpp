@@ -49,7 +49,7 @@ std::vector<Eigen::Vector3d> FormationUtils::generateFormationPattern(
         double line_angle = 83.0 * M_PI / 180.0;
 
         for (int i = 0; i < num_drones; ++i) {
-            double line_position = -scale/2 + i * spacing;  // Start from +scale/2 and go down
+            double line_position = scale/2 - i * spacing;  // Start from +scale/2 and go down
             pattern.push_back(Eigen::Vector3d(
                 line_position * cos(line_angle),
                 line_position * sin(line_angle),

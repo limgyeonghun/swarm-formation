@@ -6,6 +6,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
+    scenario = LaunchConfiguration('scenario', default='default')
 
     # Reference path_manager package for config files
     pkg_path_manager = FindPackageShare('path_manager')
@@ -17,11 +18,18 @@ def generate_launch_description():
         'obstacles.yaml'
     ])
 
-    # Path to drones.yaml in path_manager
+    # Path to drone_hardware.yaml in path_manager
     drones_param_file = PathJoinSubstitution([
         pkg_path_manager,
         'config',
-        'drones.yaml'
+        'drone_hardware.yaml'
+    ])
+
+    # Path to scenario file (for initial positions)
+    scenario_param_file = PathJoinSubstitution([
+        pkg_path_manager,
+        'config',
+        ['scenario_', scenario, '.yaml']
     ])
 
     # Path to optimizer_params.yaml in path_manager
@@ -56,6 +64,7 @@ def generate_launch_description():
             {'use_sim_time': use_sim_time},
             obstacles_param_file,
             drones_param_file,
+            scenario_param_file,  # Add scenario file for initial positions
             optimizer_param_file,
             map_param_file
         ]
@@ -78,6 +87,11 @@ def generate_launch_description():
             'use_sim_time',
             default_value='false',
             description='Use simulation (Gazebo) clock if true'
+        ),
+        DeclareLaunchArgument(
+            'scenario',
+            default_value='default',
+            description='Scenario name for initial drone positions'
         ),
         path_visualization,
         rviz2_node
