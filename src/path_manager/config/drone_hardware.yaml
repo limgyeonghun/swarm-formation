@@ -6,7 +6,10 @@
     formation_center_y: 0.0
     formation_center_z: 0.0
 
-    distance_threshold: 7.0
+    # Global fallback for formation_similarity_threshold (if not specified in scenario)
+    # Using Laplacian-based Frobenius norm squared: ||L_current - L_desired||²_F
+    # Typical values: 0.0 (perfect match), 0.001-0.01 (good match), >0.1 (poor match)
+    formation_similarity_threshold: 0.01
 
     enable_waypoint_markers: true
     enable_global_trajectory_pub: true

@@ -26,7 +26,7 @@ namespace path_manager
   public:
     PathManager(rclcpp::Node::SharedPtr node);
 
-    void initOptimizer();
+    void initOptimizer(bool force_reinit = false);
     bool isOptimizerInitialized() const { return is_optimizer_initialized_ && poly_traj_opt_ != nullptr; }
     void getLocalTarget(const Eigen::Vector3d &start_pt,
                         const Eigen::Vector3d &global_end_pt, Eigen::Vector3d &local_target_pos,
@@ -59,13 +59,21 @@ namespace path_manager
             RCLCPP_ERROR(node_->get_logger(), "Cannot set formation: optimizer not initialized!");
             return;
         }
-        
+
         RCLCPP_INFO(node_->get_logger(), "Setting formation with %zu positions to optimizer", formation_positions.size());
         poly_traj_opt_->setFormation(formation_positions, formation_size);
-        
+
         // Reset first_call_ to true when formation changes
         first_call_ = true;
         RCLCPP_INFO(node_->get_logger(), "Reset first_call_ to true due to formation change");
+    }
+
+    void setNonholonomicWeight(double weight) {
+        if (!isOptimizerInitialized()) {
+            RCLCPP_ERROR(node_->get_logger(), "Cannot set nonholonomic weight: optimizer not initialized!");
+            return;
+        }
+        poly_traj_opt_->setNonholonomicWeight(weight);
     }
 
     TrajContainer traj_;
@@ -135,6 +143,9 @@ namespace path_manager
     int current_drone_id_;
     std::string current_formation_type_;
     std::vector<Eigen::Vector3d> current_formation_pattern_;
+
+    // Intermediate waypoint parameter
+    double intermediate_waypoint_ratio_;
 
   };
 

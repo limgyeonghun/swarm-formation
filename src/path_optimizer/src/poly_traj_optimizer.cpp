@@ -1127,7 +1127,11 @@ namespace ego_planner
     node_->declare_parameter("optimization/weight_formation", 0.0);
     node_->get_parameter("optimization/weight_formation", wei_formation_);
     wei_formation_base_ = wei_formation_;  // Store base weight for adaptive adjustment
-    node_->declare_parameter("optimization/weight_nonholonomic", 15000.0);
+
+    // Only declare if not already declared (may be declared by ReplanFSM for dynamic changes)
+    if (!node_->has_parameter("optimization/weight_nonholonomic")) {
+        node_->declare_parameter("optimization/weight_nonholonomic", 15000.0);
+    }
     node_->get_parameter("optimization/weight_nonholonomic", wei_nonholo_);
 
     node_->declare_parameter("optimization/obstacle_clearance", 0.1);

@@ -13,10 +13,10 @@ std::vector<Eigen::Vector3d> FormationUtils::generateFormationPattern(
 
     if (formation_type == "square" && num_drones == 4) {
         // Standard square formation
-        pattern.push_back(Eigen::Vector3d(-scale/2, -scale/2, 0.0));  // Drone 0: 왼쪽 아래
-        pattern.push_back(Eigen::Vector3d(-scale/2,  scale/2, 0.0));  // Drone 1: 왼쪽 위
-        pattern.push_back(Eigen::Vector3d( scale/2,  scale/2, 0.0));  // Drone 2: 오른쪽 위
-        pattern.push_back(Eigen::Vector3d( scale/2, -scale/2, 0.0));  // Drone 3: 오른쪽 아래
+        pattern.push_back(Eigen::Vector3d(-scale/2, -scale/2, 0.0));
+        pattern.push_back(Eigen::Vector3d(-scale/2,  scale/2, 0.0));
+        pattern.push_back(Eigen::Vector3d( scale/2,  scale/2, 0.0));
+        pattern.push_back(Eigen::Vector3d( scale/2, -scale/2, 0.0));
     }
     else if (formation_type == "triangle" && num_drones >= 3) {
         double h = scale * std::sqrt(3) / 2.0;
@@ -57,10 +57,17 @@ std::vector<Eigen::Vector3d> FormationUtils::generateFormationPattern(
             ));
         }
     }
-    else if (formation_type == "line_first_no_offset") {
-        // No offset version - all drones target same waypoint, formation maintained by local optimizer
+    else if (formation_type == "line_first_reverse") {
+        double spacing = (num_drones > 1) ? scale / (num_drones - 1) : 0.0;
+        double line_angle = 83.0 * M_PI / 180.0;
+
         for (int i = 0; i < num_drones; ++i) {
-            pattern.push_back(Eigen::Vector3d(0.0, 0.0, 0.0));  // Zero offset for all
+            double line_position = -scale/2 + i * spacing;  // Start from +scale/2 and go down
+            pattern.push_back(Eigen::Vector3d(
+                line_position * cos(line_angle),
+                line_position * sin(line_angle),
+                0.0
+            ));
         }
     }
     else if (formation_type == "line_second") {

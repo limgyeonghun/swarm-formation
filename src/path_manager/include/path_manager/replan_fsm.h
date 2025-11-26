@@ -148,11 +148,12 @@ private:
     bool enable_global_trajectory_pub_;
     double hungarian_distance_weight_;   // Weight for distance cost in Hungarian assignment
     double hungarian_crossing_penalty_;  // Penalty weight for path crossings in Hungarian assignment
+    double weight_nonholonomic_;         // Nonholonomic constraint weight from config (used for formation changes)
+    double pending_weight_nonholonomic_; // Pending weight to apply when optimizer is initialized
 
     // Formation manager variables
     int num_drones_;
     std::string current_formation_type_;
-    std::string prev_formation_type_;  // Track previous formation type for change detection
     double current_formation_scale_;
     Eigen::Vector3d current_formation_center_;
     bool has_formation_command_;

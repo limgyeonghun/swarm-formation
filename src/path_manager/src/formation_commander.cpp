@@ -10,6 +10,7 @@
 #include "path_optimizer/poly_traj_utils.hpp"
 #include "path_manager/hungarian_algorithm.h"
 #include "path_manager/formation_utils.h"
+#include "swarm_graph/swarm_graph.hpp"
 
 using namespace std::chrono_literals;
 
@@ -17,6 +18,8 @@ using namespace std::chrono_literals;
 struct FormationCommand {
     std::string formation_type;
     double formation_scale;
+    double distance_threshold;
+    double formation_similarity_threshold;  // RMSE threshold for same formation type
     std::vector<std::vector<double>> waypoints;
 };
 
@@ -32,15 +35,18 @@ public:
     : Node("formation_commander"),
       command_count_(0),
       current_formation_center_(0.0, 0.0, 0.0),
-      have_initial_command_(false)
+      have_initial_command_(false),
+      previous_formation_type_("")
     {
         // Declare parameters
         this->declare_parameter("num_drones", 4);
         this->declare_parameter("distance_threshold", 3.0);
+        this->declare_parameter("formation_similarity_threshold", 2.0);
 
         // Get parameters
         num_drones_ = this->get_parameter("num_drones").as_int();
         distance_threshold_ = this->get_parameter("distance_threshold").as_double();
+        formation_similarity_threshold_ = this->get_parameter("formation_similarity_threshold").as_double();
 
         // Load mission from YAML (mission.commands)
         loadMissionFromYAML();
@@ -89,6 +95,9 @@ public:
                     "Switched to distance-based formation commands (threshold: %.1f m)", distance_threshold_);
             }
         );
+
+        // Initialize SwarmGraph
+        swarm_graph_ = std::make_unique<SwarmGraph>();
 
         RCLCPP_INFO(
             this->get_logger(),
@@ -148,10 +157,70 @@ private:
         Eigen::Vector3d target_center = getTargetFormationCenter();
         double distance = (current_swarm_center - target_center).norm();
 
-        if (distance <= distance_threshold_) {
-            RCLCPP_INFO(this->get_logger(),
-                       "Distance threshold reached (%.2f <= %.2f), publishing next formation command",
-                       distance, distance_threshold_);
+        // Use the current command's distance_threshold
+        double current_threshold = (command_count_ > 0 && command_count_ <= (int)current_scenario_.size())
+                                   ? current_scenario_[command_count_ - 1].distance_threshold
+                                   : distance_threshold_;
+
+        // If distance_threshold is -1, disable distance check
+        bool distance_check_enabled = (current_threshold >= 0.0);
+        bool distance_condition_met = distance_check_enabled && (distance <= current_threshold);
+
+        // Check formation similarity when transitioning FROM previous TO current formation
+        // Compare PREVIOUS formation with CURRENT formation (not current with next)
+        bool similarity_condition_met = false;
+        if (command_count_ > 0 && command_count_ <= (int)current_scenario_.size()) {
+            const auto& current_cmd = current_scenario_[command_count_ - 1];
+            double sim_threshold = current_cmd.formation_similarity_threshold;
+
+            // Only check similarity if threshold is specified (>= 0)
+            if (sim_threshold >= 0.0) {
+                // Check if transitioning from different formation type
+                bool formation_transition = false;
+                bool current_is_line = false;
+
+                // Compare previous formation type with current formation type
+                if (!previous_formation_type_.empty()) {
+                    formation_transition = (previous_formation_type_ != current_cmd.formation_type);
+
+                    // Exclude if CURRENT formation is line (but allow LINE -> SQUARE transition)
+                    current_is_line = (current_cmd.formation_type.find("line") != std::string::npos);
+                }
+                
+                if (formation_transition && !current_is_line) {
+                    double similarity = calculateFormationSimilarity();
+                    similarity_condition_met = (similarity <= sim_threshold);
+
+                    if (similarity_condition_met) {
+                        RCLCPP_INFO(this->get_logger(),
+                                   "Formation similarity threshold reached (similarity: %.6f <= %.6f)",
+                                   similarity, sim_threshold);
+                    }
+                }
+            }
+        }
+
+        // Publish next command based on conditions
+        // If distance_threshold is -1, only use similarity condition
+        bool should_publish = false;
+        if (!distance_check_enabled) {
+            // distance_threshold is -1: only use similarity
+            should_publish = similarity_condition_met;
+            if (should_publish) {
+                RCLCPP_INFO(this->get_logger(),
+                           "Distance check disabled, using only formation similarity");
+            }
+        } else {
+            // Normal mode: either condition met
+            should_publish = (distance_condition_met || similarity_condition_met);
+            if (should_publish && distance_condition_met) {
+                RCLCPP_INFO(this->get_logger(),
+                           "Distance threshold reached (%.2f <= %.2f), publishing next formation command",
+                           distance, current_threshold);
+            }
+        }
+
+        if (should_publish) {
             publishFormationCommand();
         }
     }
@@ -204,12 +273,87 @@ private:
         return positions;
     }
 
+    // Generate target formation positions based on current command
+    std::vector<Eigen::Vector3d> generateTargetFormationPositions() {
+        if (command_count_ <= 0 || command_count_ > (int)current_scenario_.size()) {
+            RCLCPP_WARN(this->get_logger(), "Invalid command_count_ in generateTargetFormationPositions");
+            return std::vector<Eigen::Vector3d>(num_drones_, Eigen::Vector3d(0, 0, 0));
+        }
+
+        const auto& current_cmd = current_scenario_[command_count_ - 1];
+        std::string formation_type = current_cmd.formation_type;
+        double formation_scale = current_cmd.formation_scale;
+
+        // Generate formation pattern (relative positions)
+        std::vector<Eigen::Vector3d> pattern = path_manager::FormationUtils::generateFormationPattern(
+            formation_type, num_drones_, formation_scale);
+
+        // Translate pattern to current formation center
+        std::vector<Eigen::Vector3d> target_positions(num_drones_);
+        for (int i = 0; i < num_drones_; ++i) {
+            target_positions[i] = pattern[i] + current_formation_center_;
+        }
+
+        return target_positions;
+    }
+
+    // Calculate formation similarity using Laplacian-based method (from SwarmGraph)
+    // This compares the geometric structure of the formation using Normalized Laplacian matrices
+    // Returns: Frobenius norm squared ||L_current - L_desired||²_F
+    double calculateFormationSimilarity() {
+        std::vector<Eigen::Vector3d> current_positions = getCurrentDronePositions();
+
+        if (command_count_ <= 0 || command_count_ > (int)current_scenario_.size()) {
+            RCLCPP_WARN(this->get_logger(), "Invalid command_count_ in calculateFormationSimilarity");
+            return std::numeric_limits<double>::infinity();
+        }
+
+        const auto& current_cmd = current_scenario_[command_count_ - 1];
+        std::string formation_type = current_cmd.formation_type;
+        double formation_scale = current_cmd.formation_scale;
+
+        // Generate target formation pattern (relative positions from origin)
+        std::vector<Eigen::Vector3d> target_pattern = path_manager::FormationUtils::generateFormationPattern(
+            formation_type, num_drones_, formation_scale);
+
+        if (current_positions.size() != target_pattern.size()) {
+            RCLCPP_ERROR(this->get_logger(), "Size mismatch in calculateFormationSimilarity");
+            return std::numeric_limits<double>::infinity();
+        }
+
+        // Update SwarmGraph with current positions
+        if (!swarm_graph_->updateGraph(current_positions)) {
+            // If update fails (desired not set yet), set desired and try again
+            swarm_graph_->setDesiredForm(target_pattern);
+            if (!swarm_graph_->updateGraph(current_positions)) {
+                RCLCPP_ERROR(this->get_logger(), "Failed to update SwarmGraph");
+                return std::numeric_limits<double>::infinity();
+            }
+        }
+
+        // Set desired formation (target pattern)
+        swarm_graph_->setDesiredForm(target_pattern);
+
+        // Update graph again with current positions now that desired is set
+        swarm_graph_->updateGraph(current_positions);
+
+        // Calculate Frobenius norm squared: ||L_current - L_desired||²_F
+        double similarity_cost;
+        if (!swarm_graph_->calcFNorm2(similarity_cost)) {
+            RCLCPP_ERROR(this->get_logger(), "Failed to calculate formation similarity");
+            return std::numeric_limits<double>::infinity();
+        }
+
+        return similarity_cost;
+    }
+
 
     // Compute Hungarian assignment
     std::vector<int> computeHungarianAssignment(
         const std::vector<Eigen::Vector3d>& current_positions,
         const std::vector<Eigen::Vector3d>& target_positions,
-        const std::string& formation_type)
+        const std::string& formation_type,
+        const std::string& previous_formation_type)
     {
         int n = num_drones_;
 
@@ -224,19 +368,70 @@ private:
         // For other formations (square, triangle), use Hungarian algorithm
         RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Using Hungarian algorithm for: %s", formation_type.c_str());
 
-        // Create cost matrix (simple Euclidean distance)
-        auto cost_matrix = path_manager::HungarianAlgorithm::createCostMatrix(current_positions, target_positions);
+        // Check if it's the same formation type (e.g., square -> square)
+        bool same_formation = (formation_type == previous_formation_type);
 
-        // Solve Hungarian algorithm
-        auto assignment = path_manager::HungarianAlgorithm::solve(cost_matrix);
+        if (same_formation) {
+            RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Same formation detected (%s -> %s), using relative coordinate matching",
+                       previous_formation_type.c_str(), formation_type.c_str());
 
-        // Log results
-        RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Assignments:");
-        for (int i = 0; i < n; ++i) {
-            RCLCPP_INFO(this->get_logger(), "  Drone %d -> Target %d", i, assignment[i]);
+            // Calculate current center (swarm center)
+            Eigen::Vector3d current_center = Eigen::Vector3d::Zero();
+            for (const auto& pos : current_positions) {
+                current_center += pos;
+            }
+            current_center /= static_cast<double>(n);
+
+            // Calculate target center
+            Eigen::Vector3d target_center = Eigen::Vector3d::Zero();
+            for (const auto& pos : target_positions) {
+                target_center += pos;
+            }
+            target_center /= static_cast<double>(n);
+
+            // Calculate relative coordinates
+            std::vector<Eigen::Vector3d> current_relative(n);
+            std::vector<Eigen::Vector3d> target_relative(n);
+
+            for (int i = 0; i < n; ++i) {
+                current_relative[i] = current_positions[i] - current_center;
+                target_relative[i] = target_positions[i] - target_center;
+            }
+
+            // Create cost matrix based on relative coordinates
+            auto cost_matrix = path_manager::HungarianAlgorithm::createCostMatrix(current_relative, target_relative);
+
+            // Solve Hungarian algorithm
+            auto assignment = path_manager::HungarianAlgorithm::solve(cost_matrix);
+
+            // Log results
+            RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Relative coordinate assignments:");
+            for (int i = 0; i < n; ++i) {
+                RCLCPP_INFO(this->get_logger(), "  Drone %d (rel: %.2f, %.2f) -> Target %d (rel: %.2f, %.2f)",
+                           i, current_relative[i].x(), current_relative[i].y(),
+                           assignment[i], target_relative[assignment[i]].x(), target_relative[assignment[i]].y());
+            }
+
+            return assignment;
+        } else {
+            // Different formation types: use absolute position matching
+            RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Different formation (%s -> %s), using absolute coordinate matching",
+                       previous_formation_type.c_str(), formation_type.c_str());
+
+            // Create cost matrix (simple Euclidean distance)
+            auto cost_matrix = path_manager::HungarianAlgorithm::createCostMatrix(current_positions, target_positions);
+
+            // Solve Hungarian algorithm
+            auto assignment = path_manager::HungarianAlgorithm::solve(cost_matrix);
+
+            // Log results
+            RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Assignments:");
+            for (int i = 0; i < n; ++i) {
+                RCLCPP_INFO(this->get_logger(), "  Drone %d -> Target %d", i, assignment[i]);
+            }
+
+            return assignment;
         }
-
-        return assignment;
     }
 
     void publishFormationCommand()
@@ -247,6 +442,11 @@ private:
                 distance_check_timer_->cancel();
             }
             return;
+        }
+
+        // Update previous formation type BEFORE publishing new command
+        if (command_count_ > 0) {
+            previous_formation_type_ = current_scenario_[command_count_ - 1].formation_type;
         }
 
         path_manager::msg::FormationCommand msg;
@@ -412,7 +612,7 @@ private:
 
         // Compute Hungarian assignment
         auto target_assignments = computeHungarianAssignment(
-            current_positions, target_positions, msg.formation_type);
+            current_positions, target_positions, msg.formation_type, previous_formation_type_);
 
         // Add assignments to message
         msg.target_assignments.resize(num_drones_);
@@ -448,10 +648,15 @@ private:
     int command_count_;
     int num_drones_;
     double distance_threshold_;
+    double formation_similarity_threshold_;
     Eigen::Vector3d current_formation_center_;
     bool have_initial_command_;
     std::vector<TrajectoryData> drone_trajectories_;
     std::vector<FormationCommand> current_scenario_;  // Loaded scenario from YAML
+    std::string previous_formation_type_;  // Track previous formation type for relative matching
+
+    // SwarmGraph for Laplacian-based formation similarity
+    SwarmGraph::Ptr swarm_graph_;
 
     // Load mission commands from YAML
     void loadMissionFromYAML() {
@@ -482,6 +687,20 @@ private:
                 cmd.formation_type = cmd_node["formation_type"].as<std::string>();
                 cmd.formation_scale = cmd_node["formation_scale"].as<double>();
 
+                // Read distance_threshold from YAML, fallback to global parameter if not specified
+                if (cmd_node["distance_threshold"]) {
+                    cmd.distance_threshold = cmd_node["distance_threshold"].as<double>();
+                } else {
+                    cmd.distance_threshold = distance_threshold_;
+                }
+
+                // Read formation_similarity_threshold from YAML, fallback to global parameter if not specified
+                if (cmd_node["formation_similarity_threshold"]) {
+                    cmd.formation_similarity_threshold = cmd_node["formation_similarity_threshold"].as<double>();
+                } else {
+                    cmd.formation_similarity_threshold = formation_similarity_threshold_;
+                }
+
                 // Parse waypoints
                 YAML::Node waypoints_node = cmd_node["waypoints"];
                 for (size_t j = 0; j < waypoints_node.size(); j++) {
@@ -501,8 +720,9 @@ private:
             // Print loaded commands
             for (size_t i = 0; i < current_scenario_.size(); i++) {
                 const auto& cmd = current_scenario_[i];
-                RCLCPP_INFO(this->get_logger(), "  Command %zu: %s (scale: %.1f, %zu waypoints)",
-                           i, cmd.formation_type.c_str(), cmd.formation_scale, cmd.waypoints.size());
+                RCLCPP_INFO(this->get_logger(), "  Command %zu: %s (scale: %.1f, dist_th: %.1f, sim_th: %.1f, %zu waypoints)",
+                           i, cmd.formation_type.c_str(), cmd.formation_scale, cmd.distance_threshold,
+                           cmd.formation_similarity_threshold, cmd.waypoints.size());
             }
 
         } catch (const YAML::Exception& e) {

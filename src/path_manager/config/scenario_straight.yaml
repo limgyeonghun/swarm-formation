@@ -1,0 +1,57 @@
+/**:
+  ros__parameters:
+
+    drone_0:
+      start_point_x: 0.0
+      start_point_y: 0.0
+      start_point_z: 0.0
+
+    drone_1:
+      start_point_x: 0.41
+      start_point_y: 2.74
+      start_point_z: 0.0
+
+    drone_2:
+      start_point_x: 0.81
+      start_point_y: 5.5
+      start_point_z: 0.0
+
+    drone_3:
+      start_point_x: 1.2
+      start_point_y: 8.23
+      start_point_z: 0.0
+
+    # Mission scenario (used by formation_commander)
+    mission:
+      commands:
+        - formation_type: "line_first_reverse"
+          formation_scale: 4.0
+          distance_threshold: 6.0
+          waypoints:
+            - [32.5583, -5.6858, 0.0]
+
+        - formation_type: "square"
+          formation_scale: 4.0
+          distance_threshold: -1.0
+          formation_similarity_threshold: 0.05
+          waypoints:
+            - [38.468, -6.718, 0.0]
+
+        - formation_type: "square"
+          formation_scale: 4.0
+          distance_threshold: 6.0
+          waypoints:
+            - [65.1167, -11.3717, 0.0]
+
+        - formation_type: "triangle"
+          formation_scale: 4.0
+          distance_threshold: -1.0
+          formation_similarity_threshold: 0.05
+          waypoints:
+            - [71.025, -12.42, 0.0]
+
+        - formation_type: "triangle"
+          formation_scale: 4.0
+          distance_threshold: 6.0
+          waypoints:
+            - [97.675, -17.0575, 0.0]

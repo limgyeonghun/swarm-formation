@@ -155,6 +155,7 @@ namespace ego_planner
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
     void setDroneId(const int drone_id);
     void setFormation(const std::vector<Eigen::Vector3d>& formation_positions, int formation_size);
+    void setNonholonomicWeight(double weight) { wei_nonholo_ = weight; }
 
     inline ConstrainPoints getControlPoints() { return cps_; }
     inline const ConstrainPoints *getControlPointsPtr(void) { return &cps_; }

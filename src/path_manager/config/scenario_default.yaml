@@ -24,42 +24,66 @@
     # Mission scenario (used by formation_commander)
     mission:
       commands:
+        # line_first case 0 (1/4 of original trajectory)
         - formation_type: "line_first"
-          formation_scale: 1.0
+          formation_scale: 6.0
+          distance_threshold: 5.0
           waypoints:
             - [-2.92, -19.0, 0.0]
             - [-5.83, -38.0, 0.0]
             - [-8.75, -57.0, 0.0]
-
-        - formation_type: "line_first"
-          formation_scale: 1.0
-          waypoints:
-            - [-8.75, -57.0, 0.0]
             - [-8.53, -63.3, 0.0]
             - [-3.92, -66.04, 0.0]
             - [2.11, -68.35, 0.0]
-            - [7.87, -68.99, 0.0]
+            - [13.63, -69.63, 0.0]
 
+        # square case 4 (1/8 of first square - closer waypoint)
         - formation_type: "square"
           formation_scale: 2.0
+          distance_threshold: -1.0
+          formation_similarity_threshold: 0.05
           waypoints:
-            - [22.88972, -71.87321, 0.0]
+            - [21.215, -72.172, 0.0]
+
+        # square case 5 (remaining 7/8)
+        - formation_type: "square"
+          formation_scale: 2.0
+          distance_threshold: 3.5
+          waypoints:
             - [30.23262, -74.74562, 0.0]
             - [32.45039, -80.23940, 0.0]
             - [32.90863, -87.44061, 0.0]
             - [32.47298, -93.42377, 0.0]
 
+        # triangle case 6 (1/8 - closer waypoint)
+        - formation_type: "triangle"
+          formation_scale: 2.5
+          distance_threshold: -1.0
+          formation_similarity_threshold: 0.15
+          waypoints:
+            - [31.193, -99.797, 0.0]
+
+        # triangle case 7 (remaining 7/8)
         - formation_type: "triangle"
           formation_scale: 2.0
+          distance_threshold: 3.5
           waypoints:
-            - [32.47298, -93.42377, 0.0]
             - [27.85286, -116.42038, 0.0]
             - [27.01373, -122.2, 0.0]
 
+        # square case 8 (1/8 of second square - closer waypoint)
         - formation_type: "square"
           formation_scale: 2.0
+          distance_threshold: -1.0
+          formation_similarity_threshold: 0.05
           waypoints:
-            - [27.48601, -127.08222, 0.0]
-            - [38.37347, -129.20889, 0.0]
+            - [28.84694, -127.34805, 0.0]
+
+        # square case 9 (remaining 7/8)
+        - formation_type: "square"
+          formation_scale: 2.0
+          distance_threshold: 3.5
+          waypoints:
+            - [30.368, -131.621, 0.0]
             - [42.09200, -130.01768, 0.0]
             - [100.63176, -138.94522, 0.0]

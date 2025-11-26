@@ -27,7 +27,6 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
       flag_escape_emergency_(false),
       num_drones_(4),
       current_formation_type_("square"),
-      prev_formation_type_(""),  // Empty string indicates no previous formation
       current_formation_scale_(2.0),
       has_formation_command_(false)
     {
@@ -91,6 +90,15 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     node_->get_parameter("fsm/hungarian_crossing_penalty", hungarian_crossing_penalty_);
     FSM_LOG_INFO("Hungarian assignment weights - distance: %.1f, crossing penalty: %.1f",
                  hungarian_distance_weight_, hungarian_crossing_penalty_);
+
+    // Read nonholonomic weight from config (will be used for formation changes)
+    if (!node_->has_parameter("optimization/weight_nonholonomic")) {
+        node_->declare_parameter("optimization/weight_nonholonomic", 10000.0);
+    }
+    node_->get_parameter("optimization/weight_nonholonomic", weight_nonholonomic_);
+    pending_weight_nonholonomic_ = weight_nonholonomic_;  // Default: use config value
+    FSM_LOG_INFO("Nonholonomic weight from config: %.1f (will be 0 for line formations, this value for others)",
+                 weight_nonholonomic_);
 
     node_->declare_parameter("start_point_x", 0.0);
     node_->declare_parameter("start_point_y", 0.0);
@@ -701,6 +709,10 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
             path_manager_->deliverTrajToOptimizer();
             RCLCPP_INFO(node_->get_logger(), "Optimizer initialized successfully for drone %d", drone_id_);
             log_manager_->infof("Optimizer initialized successfully for drone %d", drone_id_);
+
+            // Apply pending nonholonomic weight (set by formation command)
+            path_manager_->setNonholonomicWeight(pending_weight_nonholonomic_);
+            FSM_LOG_INFO("Applied pending nonholonomic weight: %.1f", pending_weight_nonholonomic_);
         } catch (const std::exception& e) {
             RCLCPP_ERROR(node_->get_logger(), "Failed to initialize optimizer for drone %d: %s", drone_id_, e.what());
             log_manager_->errorf("Failed to initialize optimizer for drone %d: %s", drone_id_, e.what());
@@ -918,18 +930,38 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
                 formation_center.y(),
                 formation_center.z());
 
-    // Detect formation change
-    bool formation_changed = (!prev_formation_type_.empty() &&
-                             prev_formation_type_ != msg->formation_type);
+    // Detect formation change (compare with current, not prev)
+    bool formation_changed = (!current_formation_type_.empty() &&
+                             current_formation_type_ != msg->formation_type);
 
     if (formation_changed) {
         FSM_LOG_INFO("Formation change detected: %s -> %s (immediate transition)",
-                   prev_formation_type_.c_str(),
+                   current_formation_type_.c_str(),
                    msg->formation_type.c_str());
     }
 
+    // ⭐ Set nonholonomic weight based on formation type:
+    //    - Line formations (line_first, line_first_reverse, etc.): weight = 0 (disabled)
+    //    - Other formations (square, triangle, etc.): weight = config value
+    bool is_line_formation = (msg->formation_type.find("line") != std::string::npos);
+
+    if (is_line_formation) {
+        pending_weight_nonholonomic_ = 0.0;
+        FSM_LOG_INFO("Line formation (%s) - nonholonomic constraints DISABLED (weight=0)",
+                     msg->formation_type.c_str());
+        if (path_manager_ && path_manager_->isOptimizerInitialized()) {
+            path_manager_->setNonholonomicWeight(0.0);
+        }
+    } else {
+        pending_weight_nonholonomic_ = weight_nonholonomic_;
+        FSM_LOG_INFO("Non-line formation (%s) - nonholonomic constraints ENABLED (weight=%.1f)",
+                     msg->formation_type.c_str(), weight_nonholonomic_);
+        if (path_manager_ && path_manager_->isOptimizerInitialized()) {
+            path_manager_->setNonholonomicWeight(weight_nonholonomic_);
+        }
+    }
+
     // Update formation parameters
-    prev_formation_type_ = current_formation_type_;  // Save current before updating
     current_formation_type_ = msg->formation_type;
     current_formation_scale_ = msg->formation_scale;
     current_formation_center_ = formation_center;

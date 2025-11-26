@@ -32,10 +32,20 @@ namespace path_manager
         node_->declare_parameter("manager/max_acc", -1.0);
         node_->declare_parameter("manager/polyTraj_piece_length", -1.0);
         node_->declare_parameter("manager/planning_horizon", -1.0);
+        node_->declare_parameter("manager/intermediate_waypoint_ratio", 0.3);
         node_->get_parameter("manager/max_vel", max_vel_);
         node_->get_parameter("manager/max_acc", max_acc_);
         node_->get_parameter("manager/polyTraj_piece_length", poly_traj_piece_length_);
         node_->get_parameter("manager/planning_horizon", planning_horizen_);
+        node_->get_parameter("manager/intermediate_waypoint_ratio", intermediate_waypoint_ratio_);
+
+        // Clamp intermediate_waypoint_ratio to valid range (0.0, 1.0)
+        if (intermediate_waypoint_ratio_ <= 0.0 || intermediate_waypoint_ratio_ >= 1.0) {
+            RCLCPP_WARN(node_->get_logger(),
+                       "Invalid intermediate_waypoint_ratio: %.2f. Clamping to 0.3",
+                       intermediate_waypoint_ratio_);
+            intermediate_waypoint_ratio_ = 0.3;
+        }
 
         grid_map_ = std::make_shared<GridMap>();
         grid_map_->initMap(node_);
@@ -84,14 +94,18 @@ namespace path_manager
         has_valid_state_ = true;
     }
 
-    void PathManager::initOptimizer()
+    void PathManager::initOptimizer(bool force_reinit)
     {
-        if (is_optimizer_initialized_ && poly_traj_opt_)
+        if (is_optimizer_initialized_ && poly_traj_opt_ && !force_reinit)
         {
             RCLCPP_DEBUG(node_->get_logger(), "Optimizer already initialized for drone %d", traj_.local_traj.drone_id);
             return;
         }
-        
+
+        if (force_reinit && is_optimizer_initialized_) {
+            RCLCPP_INFO(node_->get_logger(), "Force reinitializing optimizer for drone %d", traj_.local_traj.drone_id);
+        }
+
         // Reset state in case of partial initialization
         is_optimizer_initialized_ = false;
         poly_traj_opt_.reset();
@@ -365,14 +379,56 @@ namespace path_manager
         // std::vector<Eigen::Vector3d> adjusted_waypoints = adjustWaypointsForFormation(waypoints, start_pos);
         std::vector<Eigen::Vector3d> adjusted_waypoints = waypoints;  // Use original waypoints directly
 
-        // Step 2: Prepare waypoints for B-spline generation
+        // Step 2: Add intermediate alignment waypoint for smoother trajectory
+        // The intermediate point is placed between start and first waypoint to ensure
+        // the global path is not too straight (nearly a direct line)
+        std::vector<Eigen::Vector3d> waypoints_with_intermediate;
+
+        if (!adjusted_waypoints.empty()) {
+            // Calculate intermediate alignment point
+            // Position it at ratio * distance from start to first waypoint
+            Eigen::Vector3d first_waypoint = adjusted_waypoints.front();
+            Eigen::Vector3d direction = (first_waypoint - start_pos).normalized();
+            double distance_to_first = (first_waypoint - start_pos).norm();
+
+            // Intermediate point: place it at intermediate_waypoint_ratio_ of the way to first waypoint
+            // Important: This must be AHEAD of start_pos (not behind)
+            Eigen::Vector3d intermediate_point = start_pos + direction * (distance_to_first * intermediate_waypoint_ratio_);
+
+            // Verify intermediate point is not behind start position
+            Eigen::Vector3d start_to_intermediate = intermediate_point - start_pos;
+            if (start_to_intermediate.dot(direction) > 0.0) {
+                // Add intermediate waypoint only if it's ahead of start
+                waypoints_with_intermediate.push_back(intermediate_point);
+
+                RCLCPP_INFO(node_->get_logger(),
+                           "Added intermediate alignment waypoint at (%.2f, %.2f, %.2f), ratio=%.2f",
+                           intermediate_point.x(), intermediate_point.y(), intermediate_point.z(),
+                           intermediate_waypoint_ratio_);
+            } else {
+                RCLCPP_WARN(node_->get_logger(),
+                           "Intermediate waypoint would be behind start position, skipping");
+            }
+        }
+
+        // Add all original waypoints after intermediate point
+        for (const auto& wp : adjusted_waypoints) {
+            waypoints_with_intermediate.push_back(wp);
+        }
+
+        // Step 3: Prepare waypoints for B-spline generation
         std::vector<Eigen::Vector3d> all_points;
         all_points.push_back(start_pos);
-        for (const auto& wp : adjusted_waypoints) {
+        for (const auto& wp : waypoints_with_intermediate) {
             all_points.push_back(wp);
         }
 
-        // Step 3: Convert Vector3d to VectorXd for playground_bspline
+        RCLCPP_INFO(node_->get_logger(),
+                   "Global trajectory: start + %zu waypoints (including %s intermediate alignment point)",
+                   waypoints_with_intermediate.size(),
+                   waypoints_with_intermediate.size() > adjusted_waypoints.size() ? "1" : "0");
+
+        // Step 4: Convert Vector3d to VectorXd for playground_bspline
         std::vector<Eigen::VectorXd> pts_vectorxd;
         if (!all_points.empty()) {
             // Start point: repeat 3 times
@@ -404,18 +460,18 @@ namespace path_manager
             return false;
         }
 
-        // Step 4: Generate B-spline trajectory using playground_bspline
+        // Step 5: Generate B-spline trajectory using playground_bspline
         std::vector<Eigen::VectorXd> b_pts = playground_bspline(pts_vectorxd);
 
         RCLCPP_INFO(node_->get_logger(), "Generated %zu B-spline points", b_pts.size());
 
-        // Step 5: Convert back to Vector3d for trajectory generation
+        // Step 6: Convert back to Vector3d for trajectory generation
         std::vector<Eigen::Vector3d> sampled_points;
         for (const auto& b_pt : b_pts) {
             sampled_points.push_back(Eigen::Vector3d(b_pt.x(), b_pt.y(), b_pt.z()));
         }
 
-        // Step 6: Convert to MINCO trajectory
+        // Step 7: Convert to MINCO trajectory
         poly_traj::MinJerkOpt globalMJO;
 
         // Create waypoint trajectory using the sampled points

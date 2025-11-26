@@ -292,7 +292,7 @@ def create_drone_nodes(context, *args, **kwargs):
     )
 
     formation_commander_delayed = TimerAction(
-        period=10.0,
+        period=5.0,
         actions=[formation_commander],
     )
 
@@ -317,8 +317,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'scenario',
-            default_value='default',
-            description='Scenario name (default, test_square, test_transitions, test_crossing, custom1)'
+            default_value='straight',
+            description='Scenario name (default, straight)'
         ),
         DeclareLaunchArgument(
             'jfi_port',
