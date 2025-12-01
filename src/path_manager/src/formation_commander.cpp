@@ -36,7 +36,9 @@ public:
       command_count_(0),
       current_formation_center_(0.0, 0.0, 0.0),
       have_initial_command_(false),
-      previous_formation_type_("")
+      previous_formation_type_(""),
+      mission_sequence_(0),
+      last_published_command_count_(-1)
     {
         // Declare parameters
         this->declare_parameter("num_drones", 4);
@@ -94,6 +96,13 @@ public:
                 RCLCPP_INFO(this->get_logger(),
                     "Switched to distance-based formation commands (threshold: %.1f m)", distance_threshold_);
             }
+        );
+
+        // Periodic republishing timer (1Hz) for robustness
+        // Continuously publishes the current mission so FSMs can recover if they miss a message
+        periodic_pub_timer_ = this->create_wall_timer(
+            1000ms,
+            std::bind(&FormationCommander::periodicRepublish, this)
         );
 
         // Initialize SwarmGraph
@@ -191,11 +200,7 @@ private:
                     double similarity = calculateFormationSimilarity();
                     similarity_condition_met = (similarity <= sim_threshold);
 
-                    if (similarity_condition_met) {
-                        RCLCPP_INFO(this->get_logger(),
-                                   "Formation similarity threshold reached (similarity: %.6f <= %.6f)",
-                                   similarity, sim_threshold);
-                    }
+                    // Similarity condition met - log removed to reduce terminal output
                 }
             }
         }
@@ -206,10 +211,7 @@ private:
         if (!distance_check_enabled) {
             // distance_threshold is -1: only use similarity
             should_publish = similarity_condition_met;
-            if (should_publish) {
-                RCLCPP_INFO(this->get_logger(),
-                           "Distance check disabled, using only formation similarity");
-            }
+            // Distance check disabled - log removed to reduce terminal output
         } else {
             // Normal mode: either condition met
             should_publish = (distance_condition_met || similarity_condition_met);
@@ -366,14 +368,13 @@ private:
         }
 
         // For other formations (square, triangle), use Hungarian algorithm
-        RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Using Hungarian algorithm for: %s", formation_type.c_str());
+        // Log removed to reduce terminal output
 
         // Check if it's the same formation type (e.g., square -> square)
         bool same_formation = (formation_type == previous_formation_type);
 
         if (same_formation) {
-            RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Same formation detected (%s -> %s), using relative coordinate matching",
-                       previous_formation_type.c_str(), formation_type.c_str());
+            // Same formation - using relative coordinate matching (log removed)
 
             // Calculate current center (swarm center)
             Eigen::Vector3d current_center = Eigen::Vector3d::Zero();
@@ -404,13 +405,7 @@ private:
             // Solve Hungarian algorithm
             auto assignment = path_manager::HungarianAlgorithm::solve(cost_matrix);
 
-            // Log results
-            RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Relative coordinate assignments:");
-            for (int i = 0; i < n; ++i) {
-                RCLCPP_INFO(this->get_logger(), "  Drone %d (rel: %.2f, %.2f) -> Target %d (rel: %.2f, %.2f)",
-                           i, current_relative[i].x(), current_relative[i].y(),
-                           assignment[i], target_relative[assignment[i]].x(), target_relative[assignment[i]].y());
-            }
+            // Relative coordinate assignments computed - detailed logs removed to reduce terminal output
 
             return assignment;
         } else {
@@ -455,6 +450,19 @@ private:
 
         // Get current command from loaded scenario
         const auto& cmd = current_scenario_[command_count_];
+
+        // Mission sequencing for robustness
+        msg.sequence = mission_sequence_;
+        msg.current_mission_id = "mission_" + std::to_string(command_count_);
+
+        // Set next mission ID
+        if (command_count_ + 1 < (int)current_scenario_.size()) {
+            msg.next_mission_id = "mission_" + std::to_string(command_count_ + 1);
+            msg.is_final = false;
+        } else {
+            msg.next_mission_id = "MISSION_END";
+            msg.is_final = true;
+        }
 
         msg.formation_type = cmd.formation_type;
         msg.formation_scale = cmd.formation_scale;
@@ -620,7 +628,7 @@ private:
             msg.target_assignments[i] = target_assignments[i];
         }
 
-        RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Target assignments added to FormationCommand");
+        // Target assignments added - log removed to reduce terminal output
 
         // ========== END HUNGARIAN ALGORITHM ==========
 
@@ -628,22 +636,52 @@ private:
 
         RCLCPP_INFO(
             this->get_logger(),
-            "Published formation command #%d: %s at (%.1f, %.1f, %.1f) scale %.1f",
+            "Published formation command #%d (seq: %d): current=%s, next=%s, final=%s at (%.1f, %.1f, %.1f) scale %.1f",
             command_count_ + 1,
-            msg.formation_type.c_str(),
+            msg.sequence,
+            msg.current_mission_id.c_str(),
+            msg.next_mission_id.c_str(),
+            msg.is_final ? "true" : "false",
             formation_center.x(),
             formation_center.y(),
             formation_center.z(),
             msg.formation_scale
         );
 
+        // Store current message for periodic republishing
+        last_published_msg_ = msg;
+        last_published_command_count_ = command_count_;
+
         command_count_++;
+        mission_sequence_++;  // Increment sequence for next NEW command
+    }
+
+    // Periodic republish for robustness - FSMs can recover if they miss a message
+    void periodicRepublish() {
+        if (last_published_command_count_ < 0) {
+            return;  // No command published yet
+        }
+
+        // Republish the last command with updated timestamp
+        last_published_msg_.header.stamp = this->now();
+        formation_cmd_pub_->publish(last_published_msg_);
+
+        // Log only occasionally to avoid spam
+        static int republish_count = 0;
+        if (++republish_count % 10 == 0) {
+            RCLCPP_DEBUG(this->get_logger(),
+                "Periodic republish (seq: %d, current: %s, next: %s)",
+                last_published_msg_.sequence,
+                last_published_msg_.current_mission_id.c_str(),
+                last_published_msg_.next_mission_id.c_str());
+        }
     }
 
     rclcpp::Publisher<path_manager::msg::FormationCommand>::SharedPtr formation_cmd_pub_;
     std::vector<rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr> trajectory_subs_;
     rclcpp::TimerBase::SharedPtr initial_timer_;
     rclcpp::TimerBase::SharedPtr distance_check_timer_;
+    rclcpp::TimerBase::SharedPtr periodic_pub_timer_;  // For periodic republishing
 
     int command_count_;
     int num_drones_;
@@ -654,6 +692,11 @@ private:
     std::vector<TrajectoryData> drone_trajectories_;
     std::vector<FormationCommand> current_scenario_;  // Loaded scenario from YAML
     std::string previous_formation_type_;  // Track previous formation type for relative matching
+
+    // For robustness: mission sequencing and periodic republishing
+    int mission_sequence_;  // Incrementing sequence number for duplicate detection
+    int last_published_command_count_;  // Track which command was last published
+    path_manager::msg::FormationCommand last_published_msg_;  // Store last message for republishing
 
     // SwarmGraph for Laplacian-based formation similarity
     SwarmGraph::Ptr swarm_graph_;

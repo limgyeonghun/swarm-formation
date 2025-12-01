@@ -159,6 +159,17 @@ private:
     bool has_formation_command_;
     SwarmGraph::Ptr swarm_graph_;
 
+    // Mission sequencing for robustness
+    int last_received_sequence_;        // Last received sequence number to detect duplicates
+    std::string current_mission_id_;    // Current mission being executed
+    std::string next_mission_id_;       // Next mission to execute
+    bool is_final_mission_;             // True if no more missions after current
+    bool need_formation_command_sub_;   // True if we need to subscribe for next mission
+
+    // Dynamic subscription management
+    void enableFormationCommandSubscription();
+    void disableFormationCommandSubscription();
+
     // Previous formation tracking for smooth transitions
     Eigen::Vector3d prev_end_pt_;  // Previous formation target endpoint
     Eigen::Vector3d prev_formation_offset_;  // Previous formation offset for this drone

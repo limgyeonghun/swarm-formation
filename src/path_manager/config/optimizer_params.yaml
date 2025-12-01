@@ -17,7 +17,7 @@
     optimization/weight_sqrvariance: 10000.0
     optimization/weight_time: 10.0               # Reduced to allow more time for smooth paths
     optimization/weight_formation: 15000.0
-    optimization/weight_nonholonomic: 1000.0   # Default (dynamically set: 0 for first formation, 5000 for others)
+    optimization/weight_nonholonomic: 800.0   # Default (dynamically set: 0 for first formation, 5000 for others)
 
     # Safety Distance Settings
     optimization/obstacle_clearance: 0.8  # Further increased safety distance from obstacles

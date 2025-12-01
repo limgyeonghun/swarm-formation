@@ -28,7 +28,12 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
       num_drones_(4),
       current_formation_type_("square"),
       current_formation_scale_(2.0),
-      has_formation_command_(false)
+      has_formation_command_(false),
+      last_received_sequence_(-1),
+      current_mission_id_(""),
+      next_mission_id_(""),
+      is_final_mission_(false),
+      need_formation_command_sub_(true)
     {
         log_manager_ = std::make_unique<swarm_formation::LogManager>(
             node->get_name(), "./logs/runtime", swarm_formation::LogManager::INFO);
@@ -185,9 +190,10 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         "formation_targets", sensor_qos,
         std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1));
 
-    formation_cmd_sub_ = node_->create_subscription<path_manager::msg::FormationCommand>(
-        "formation_command", sensor_qos,
-        std::bind(&ReplanFSM::formationCommandCallback, this, std::placeholders::_1));
+    // Formation command subscription will be created dynamically when needed
+    // Start with it enabled to receive initial mission
+    formation_cmd_sub_ = nullptr;
+    enableFormationCommandSubscription();
 
     formation_target_pub_ = node_->create_publisher<path_manager::msg::FormationTarget>(
         "formation_targets", sensor_qos);
@@ -251,6 +257,14 @@ void ReplanFSM::computeAndPublishPaths() {
     fsm_num++;
     if (fsm_num == 100) {
         fsm_num = 0;
+    }
+
+    // Check if we need to re-enable formation command subscription (safety fallback)
+    // This is a fallback in case subscription wasn't enabled during mission progression
+    // Normally, subscription is enabled immediately when next_mission_id is cleared in formationTargetCallback
+    if (next_mission_id_.empty() && !is_final_mission_ && !formation_cmd_sub_ && exec_state_ == WAIT_POSITION) {
+        FSM_LOG_INFO("Safety fallback: re-enabling formation command subscription in WAIT_POSITION state");
+        enableFormationCommandSubscription();
     }
 
     switch (exec_state_) {
@@ -683,7 +697,19 @@ void ReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_cal
 
     static std::string state_str[7] = {"INIT", "WAIT_POSITION", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START"};
 
-    RCLCPP_INFO(node_->get_logger(), "[%s]: from %s to %s", pos_call.c_str(), state_str[static_cast<int>(exec_state_)].c_str(), state_str[static_cast<int>(new_state)].c_str());
+    // Throttle frequent state transitions (EXEC_TRAJ <-> REPLAN_TRAJ)
+    static auto last_log_time = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_log_time).count();
+
+    bool should_log = (exec_state_ != new_state) &&  // State actually changed
+                      (new_state == WAIT_POSITION || new_state == SEQUENTIAL_START || new_state == GEN_NEW_TRAJ || elapsed >= 2);
+
+    if (should_log) {
+        RCLCPP_INFO(node_->get_logger(), "[%s]: from %s to %s", pos_call.c_str(), state_str[static_cast<int>(exec_state_)].c_str(), state_str[static_cast<int>(new_state)].c_str());
+        last_log_time = now;
+    }
+
     log_manager_->infof("[%s]: from %s to %s", pos_call.c_str(), state_str[static_cast<int>(exec_state_)].c_str(), state_str[static_cast<int>(new_state)].c_str());
     exec_state_ = new_state;
 }
@@ -697,8 +723,21 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         return;
     }
 
-    RCLCPP_INFO(node_->get_logger(), "Formation Target Triggered for drone %d!", drone_id_);
-    log_manager_->infof("Formation Target Triggered for drone %d!", drone_id_);
+    FSM_LOG_INFO("Formation Target Triggered for drone %d!", drone_id_);
+
+    // Mission progress: move next_mission to current, clear next
+    // This signals that we're working on the "next" mission now (which becomes current)
+    if (!next_mission_id_.empty() && next_mission_id_ != "MISSION_END") {
+        current_mission_id_ = next_mission_id_;
+        next_mission_id_.clear();  // Empty means we need new mission data
+        FSM_LOG_INFO("Mission progressed: now executing %s, next mission cleared (will request new data)",
+                    current_mission_id_.c_str());
+
+        // Re-enable subscription immediately to receive next mission command
+        if (!is_final_mission_ && !formation_cmd_sub_) {
+            enableFormationCommandSubscription();
+        }
+    }
 
     // Initialize optimizer if not already initialized
     if (!path_manager_->isOptimizerInitialized()) {
@@ -737,9 +776,6 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
             waypoints.emplace_back(pos.x, pos.y, pos.z);
         }
 
-        RCLCPP_INFO(node_->get_logger(),
-                   "Drone %d: Using %zu waypoints from formation_positions (already offset-applied)",
-                   drone_id_, waypoints.size());
         log_manager_->infof(
                    "Drone %d: Using %zu waypoints from formation_positions (already offset-applied)",
                    drone_id_, waypoints.size());
@@ -764,10 +800,10 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
                    drone_id_);
     }
 
-    RCLCPP_INFO(node_->get_logger(), "start_pt_: %.2f, %.2f, %.2f", start_pt_(0), start_pt_(1), start_pt_(2));
-    RCLCPP_INFO(node_->get_logger(), "waypoints size: %zu", waypoints.size());
+    log_manager_->infof("start_pt_: %.2f, %.2f, %.2f", start_pt_(0), start_pt_(1), start_pt_(2));
+    log_manager_->infof("waypoints size: %zu", waypoints.size());
     for (const auto& wp : waypoints) {
-        RCLCPP_INFO(node_->get_logger(), "waypoint: %.2f, %.2f, %.2f", wp(0), wp(1), wp(2));
+        log_manager_->infof("waypoint: %.2f, %.2f, %.2f", wp(0), wp(1), wp(2));
     }
 
     // Visualize waypoints in RViz (optional)
@@ -803,7 +839,7 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         }
 
         waypoint_marker_pub_->publish(marker);
-        RCLCPP_INFO(node_->get_logger(), "Drone %d: Published %zu waypoint markers to RViz (frame: %s, ns: %s)",
+        log_manager_->infof("Drone %d: Published %zu waypoint markers to RViz (frame: %s, ns: %s)",
                     drone_id_, waypoints.size(), marker.header.frame_id.c_str(), marker.ns.c_str());
     }
 
@@ -820,11 +856,8 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         // Set current formation pattern to optimizer (immediate change)
         FSM_LOG_INFO("Setting formation to optimizer: %s", current_formation_type_.c_str());
 
-        RCLCPP_INFO(node_->get_logger(), "Formation pattern for optimizer (relative coordinates):");
         log_manager_->infof("Formation pattern for optimizer (relative coordinates):");
         for (size_t i = 0; i < formation_pattern.size(); ++i) {
-            RCLCPP_INFO(node_->get_logger(), "  Drone %zu: [%.3f, %.3f, %.3f]",
-                       i, formation_pattern[i].x(), formation_pattern[i].y(), formation_pattern[i].z());
             log_manager_->infof("  Drone %zu: [%.3f, %.3f, %.3f]",
                                i, formation_pattern[i].x(), formation_pattern[i].y(), formation_pattern[i].z());
         }
@@ -839,14 +872,11 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
             msg->formation_offset.y,
             msg->formation_offset.z
         );
-        RCLCPP_INFO(node_->get_logger(),
+        log_manager_->infof(
                    "Drone %d: Saved endpoint (%.2f, %.2f, %.2f) and offset (%.2f, %.2f, %.2f) for next transition",
                    drone_id_,
                    prev_end_pt_.x(), prev_end_pt_.y(), prev_end_pt_.z(),
                    prev_formation_offset_.x(), prev_formation_offset_.y(), prev_formation_offset_.z());
-        log_manager_->infof(
-                   "Drone %d: Saved endpoint and offset for next transition",
-                   drone_id_);
 
         have_target_ = true;
         have_new_target_ = true;
@@ -907,6 +937,32 @@ bool ReplanFSM::callEmergencyStop(const Eigen::Vector3d& stop_pos) {
 }
 
 void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationCommand::SharedPtr msg) {
+    // Check for duplicate messages using sequence number
+    if (msg->sequence <= last_received_sequence_) {
+        FSM_LOG_DEBUG("Ignoring duplicate/old formation command (seq: %d, last: %d)",
+                     msg->sequence, last_received_sequence_);
+        return;
+    }
+
+    // Update sequence number
+    last_received_sequence_ = msg->sequence;
+
+    // Update mission tracking
+    current_mission_id_ = msg->current_mission_id;
+    next_mission_id_ = msg->next_mission_id;
+    is_final_mission_ = msg->is_final;
+
+    FSM_LOG_INFO("Received formation command (seq: %d): current=%s, next=%s, final=%s",
+                msg->sequence,
+                msg->current_mission_id.c_str(),
+                msg->next_mission_id.c_str(),
+                msg->is_final ? "true" : "false");
+
+    // If we have next mission info, disable subscription temporarily
+    if (next_mission_id_ != "MISSION_END" && !next_mission_id_.empty()) {
+        disableFormationCommandSubscription();
+    }
+
     // Extract waypoints first
     std::vector<Eigen::Vector3d> waypoints;
     for (const auto& wp : msg->waypoints) {
@@ -922,8 +978,7 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
         RCLCPP_WARN(node_->get_logger(), "No waypoints in FormationCommand, using origin");
     }
 
-    RCLCPP_INFO(node_->get_logger(),
-                "Received formation command: %s, scale: %.2f, center: (%.2f, %.2f, %.2f)",
+    FSM_LOG_INFO("Formation command: %s, scale: %.2f, center: (%.2f, %.2f, %.2f)",
                 msg->formation_type.c_str(),
                 msg->formation_scale,
                 formation_center.x(),
@@ -993,8 +1048,7 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
     // Use Commander's centralized assignment result
     int my_target_index = msg->target_assignments[drone_id_];
 
-    RCLCPP_INFO(node_->get_logger(),
-               "[CENTRALIZED] Drone %d assigned to target %d by Commander",
+    log_manager_->infof("[CENTRALIZED] Drone %d assigned to target %d by Commander",
                drone_id_, my_target_index);
 
     // Generate formation pattern
@@ -1006,19 +1060,16 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
     Eigen::Vector3d my_formation_offset = formation_pattern[my_target_index];
     Eigen::Vector3d my_target_position = current_formation_center_ + my_formation_offset;
 
-    RCLCPP_INFO(node_->get_logger(),
-               "Drone %d assigned to target position %d: (%.2f, %.2f, %.2f)",
+    log_manager_->infof("Drone %d assigned to target position %d: (%.2f, %.2f, %.2f)",
                drone_id_, my_target_index,
                my_target_position.x(), my_target_position.y(), my_target_position.z());
-    RCLCPP_INFO(node_->get_logger(),
-               "Drone %d formation offset: (%.2f, %.2f, %.2f)",
+    log_manager_->infof("Drone %d formation offset: (%.2f, %.2f, %.2f)",
                drone_id_, my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
 
     // Build waypoints: Apply path-normal offset for line formations
     std::vector<Eigen::Vector3d> my_waypoints;
 
-    RCLCPP_INFO(node_->get_logger(),
-               "Drone %d: Base formation offset: (%.2f, %.2f, %.2f)",
+    log_manager_->infof("Drone %d: Base formation offset: (%.2f, %.2f, %.2f)",
                drone_id_, my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
 
     // For line formations, apply offset in the normal direction of the path
@@ -1078,8 +1129,7 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
             // Apply offset in the normal direction
             applied_offset = path_normal * offset_distance;
 
-            RCLCPP_INFO(node_->get_logger(),
-                       "Drone %d WP%zu: tangent=(%.3f,%.3f) normal=(%.3f,%.3f) offset=(%.2f,%.2f)",
+            log_manager_->infof("Drone %d WP%zu: tangent=(%.3f,%.3f) normal=(%.3f,%.3f) offset=(%.2f,%.2f)",
                        drone_id_, i,
                        path_tangent.x(), path_tangent.y(),
                        path_normal.x(), path_normal.y(),
@@ -1089,8 +1139,7 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
         Eigen::Vector3d wp_with_offset = waypoints[i] + applied_offset;
         my_waypoints.push_back(wp_with_offset);
 
-        RCLCPP_INFO(node_->get_logger(),
-                   "Drone %d WP%zu: (%.2f, %.2f) + offset = (%.2f, %.2f)",
+        log_manager_->infof("Drone %d WP%zu: (%.2f, %.2f) + offset = (%.2f, %.2f)",
                    drone_id_, i,
                    waypoints[i].x(), waypoints[i].y(),
                    wp_with_offset.x(), wp_with_offset.y());
@@ -1104,8 +1153,7 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
         my_target = current_formation_center_ + my_formation_offset;
     }
 
-    RCLCPP_INFO(node_->get_logger(),
-               "Drone %d final target: (%.2f, %.2f, %.2f) with %zu waypoints",
+    log_manager_->infof("Drone %d final target: (%.2f, %.2f, %.2f) with %zu waypoints",
                drone_id_, my_target.x(), my_target.y(), my_target.z(), my_waypoints.size());
 
     // Publish formation target with my waypoints and offset
@@ -1174,8 +1222,7 @@ void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std:
             target_msg.formation_positions.push_back(waypoint_pos);
         }
 
-        RCLCPP_INFO(node_->get_logger(),
-                   "Publishing formation target with %zu waypoints for drone %d (no offset applied)",
+        log_manager_->infof("Publishing formation target with %zu waypoints for drone %d (no offset applied)",
                    waypoints.size(), drone_id_);
     } else {
         // No waypoints: use current formation center as single waypoint
@@ -1185,8 +1232,7 @@ void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std:
         formation_pos.z = current_formation_center_.z();
         target_msg.formation_positions.push_back(formation_pos);
 
-        RCLCPP_INFO(node_->get_logger(),
-                   "Publishing formation target with formation center for drone %d",
+        log_manager_->infof("Publishing formation target with formation center for drone %d",
                    drone_id_);
     }
 
@@ -1212,21 +1258,21 @@ std::vector<int> ReplanFSM::hungarianAssignment(
     }
 
     // Log input values
-    RCLCPP_INFO(node_->get_logger(), "[HUNGARIAN INPUT] Current positions:");
+    log_manager_->infof("[HUNGARIAN INPUT] Current positions:");
     for (int i = 0; i < n; ++i) {
-        RCLCPP_INFO(node_->get_logger(), "  Drone %d: (%.2f, %.2f, %.2f)",
+        log_manager_->infof("  Drone %d: (%.2f, %.2f, %.2f)",
                     i, current_positions[i].x(), current_positions[i].y(), current_positions[i].z());
     }
 
-    RCLCPP_INFO(node_->get_logger(), "[HUNGARIAN INPUT] Target positions (intermediate formation):");
+    log_manager_->infof("[HUNGARIAN INPUT] Target positions (intermediate formation):");
     for (int i = 0; i < n; ++i) {
-        RCLCPP_INFO(node_->get_logger(), "  Target %d: (%.2f, %.2f, %.2f)",
+        log_manager_->infof("  Target %d: (%.2f, %.2f, %.2f)",
                     i, target_positions[i].x(), target_positions[i].y(), target_positions[i].z());
     }
 
-    RCLCPP_INFO(node_->get_logger(), "[HUNGARIAN INPUT] Waypoints (%zu):", waypoints.size());
+    log_manager_->infof("[HUNGARIAN INPUT] Waypoints (%zu):", waypoints.size());
     for (size_t i = 0; i < waypoints.size(); ++i) {
-        RCLCPP_INFO(node_->get_logger(), "  Waypoint %zu: (%.2f, %.2f, %.2f)",
+        log_manager_->infof("  Waypoint %zu: (%.2f, %.2f, %.2f)",
                     i, waypoints[i].x(), waypoints[i].y(), waypoints[i].z());
     }
 
@@ -1423,7 +1469,7 @@ std::vector<int> ReplanFSM::hungarianAssignment(
     }
 
     // Debug: Print cost matrix
-    RCLCPP_INFO(node_->get_logger(), "[HUNGARIAN] Cost matrix:");
+    log_manager_->infof("[HUNGARIAN] Cost matrix:");
     for (int i = 0; i < n; ++i) {
         std::string row_str = "  Drone " + std::to_string(i) + ": ";
         for (int j = 0; j < n; ++j) {
@@ -1431,13 +1477,10 @@ std::vector<int> ReplanFSM::hungarianAssignment(
             snprintf(buf, sizeof(buf), "%.2f ", cost_matrix[i][j]);
             row_str += buf;
         }
-        RCLCPP_INFO(node_->get_logger(), "%s", row_str.c_str());
         log_manager_->infof("%s", row_str.c_str());
     }
 
-    RCLCPP_INFO(node_->get_logger(),
-               "[HUNGARIAN] Cost matrix computed with simple Euclidean distance");
-    log_manager_->infof("[HUNGARIAN] Cost matrix: simple Euclidean distance only");
+    log_manager_->infof("[HUNGARIAN] Cost matrix computed with simple Euclidean distance");
 
     // ===== Hungarian Algorithm Implementation =====
     // This is the O(n^3) Hungarian algorithm (Kuhn-Munkres)
@@ -1522,7 +1565,7 @@ std::vector<int> ReplanFSM::hungarianAssignment(
 
     // Log assignment and total cost with detailed information
     double total_cost = 0.0;
-    RCLCPP_INFO(node_->get_logger(), "[HUNGARIAN] Assignment result:");
+    log_manager_->infof("[HUNGARIAN] Assignment result:");
     for (int i = 0; i < n; ++i) {
         total_cost += cost_matrix[i][assignment[i]];
 
@@ -1530,19 +1573,12 @@ std::vector<int> ReplanFSM::hungarianAssignment(
         Eigen::Vector3d tgt_pos = target_positions[assignment[i]];
         double euclidean_dist = (curr_pos - tgt_pos).norm();
 
-        RCLCPP_INFO(node_->get_logger(),
-                   "[HUNGARIAN]   Drone %d (%.1f,%.1f) -> Target %d (%.1f,%.1f) | Cost: %.2f | EucDist: %.2f",
-                   i, curr_pos.x(), curr_pos.y(),
-                   assignment[i], tgt_pos.x(), tgt_pos.y(),
-                   cost_matrix[i][assignment[i]], euclidean_dist);
         log_manager_->infof(
                    "[HUNGARIAN]   Drone %d (%.1f,%.1f) -> Target %d (%.1f,%.1f) | Cost: %.2f | EucDist: %.2f",
                    i, curr_pos.x(), curr_pos.y(),
                    assignment[i], tgt_pos.x(), tgt_pos.y(),
                    cost_matrix[i][assignment[i]], euclidean_dist);
     }
-    RCLCPP_INFO(node_->get_logger(),
-               "[HUNGARIAN] Total assignment cost: %.2f", total_cost);
     log_manager_->infof("[HUNGARIAN] Total assignment cost: %.2f", total_cost);
 
     return assignment;
@@ -1596,5 +1632,29 @@ bool ReplanFSM::segmentsIntersect2D(const Eigen::Vector3d& p1, const Eigen::Vect
     return false;  // No intersection
 }
 
+// Dynamic subscription management for robustness
+void ReplanFSM::enableFormationCommandSubscription() {
+    if (!formation_cmd_sub_) {
+        rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
+        auto sensor_qos = rclcpp::QoS(
+            rclcpp::QoSInitialization(qos_profile.history, 10),
+            qos_profile
+        );
+
+        formation_cmd_sub_ = node_->create_subscription<path_manager::msg::FormationCommand>(
+            "formation_command", sensor_qos,
+            std::bind(&ReplanFSM::formationCommandCallback, this, std::placeholders::_1));
+
+        FSM_LOG_INFO("Formation command subscription ENABLED (waiting for next mission)");
+        need_formation_command_sub_ = false;
+    }
+}
+
+void ReplanFSM::disableFormationCommandSubscription() {
+    if (formation_cmd_sub_) {
+        formation_cmd_sub_.reset();
+        FSM_LOG_INFO("Formation command subscription DISABLED (mission data received)");
+    }
+}
 
 }  // namespace path_manager

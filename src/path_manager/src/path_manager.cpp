@@ -64,12 +64,13 @@ namespace path_manager
             obstacle_centers_.emplace_back(obstacle_params[i], obstacle_params[i + 1], obstacle_params[i + 2]);
         }
 
-        std::cout << "Obstacle centers: ";
-        for (const auto &obs : obstacle_centers_)
-        {
-            std::cout << "(" << obs.x() << ", " << obs.y() << ", " << obs.z() << ") ";
-        }
-        std::cout << std::endl;
+        // Obstacle centers logged to file only
+        // std::cout << "Obstacle centers: ";
+        // for (const auto &obs : obstacle_centers_)
+        // {
+        //     std::cout << "(" << obs.x() << ", " << obs.y() << ", " << obs.z() << ") ";
+        // }
+        // std::cout << std::endl;
 
         // Calculate inflation step from obstacles_inflation parameter
         int inf_step = ceil(grid_map_->getObstaclesInflation() / grid_map_->getResolution());
@@ -367,7 +368,7 @@ namespace path_manager
                                      const Eigen::Vector3d &start_acc, const std::vector<Eigen::Vector3d> &waypoints,
                                      const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
     {
-        RCLCPP_INFO(node_->get_logger(), "Planning global trajectory using playground B-spline with %zu waypoints", waypoints.size());
+        log_manager_->infof("Planning global trajectory using playground B-spline with %zu waypoints", waypoints.size());
 
         // Safety check: Need at least 1 waypoint for trajectory
         if (waypoints.empty()) {
@@ -401,8 +402,7 @@ namespace path_manager
                 // Add intermediate waypoint only if it's ahead of start
                 waypoints_with_intermediate.push_back(intermediate_point);
 
-                RCLCPP_INFO(node_->get_logger(),
-                           "Added intermediate alignment waypoint at (%.2f, %.2f, %.2f), ratio=%.2f",
+                log_manager_->infof("Added intermediate alignment waypoint at (%.2f, %.2f, %.2f), ratio=%.2f",
                            intermediate_point.x(), intermediate_point.y(), intermediate_point.z(),
                            intermediate_waypoint_ratio_);
             } else {
@@ -423,8 +423,7 @@ namespace path_manager
             all_points.push_back(wp);
         }
 
-        RCLCPP_INFO(node_->get_logger(),
-                   "Global trajectory: start + %zu waypoints (including %s intermediate alignment point)",
+        log_manager_->infof("Global trajectory: start + %zu waypoints (including %s intermediate alignment point)",
                    waypoints_with_intermediate.size(),
                    waypoints_with_intermediate.size() > adjusted_waypoints.size() ? "1" : "0");
 
@@ -463,7 +462,7 @@ namespace path_manager
         // Step 5: Generate B-spline trajectory using playground_bspline
         std::vector<Eigen::VectorXd> b_pts = playground_bspline(pts_vectorxd);
 
-        RCLCPP_INFO(node_->get_logger(), "Generated %zu B-spline points", b_pts.size());
+        log_manager_->infof("Generated %zu B-spline points", b_pts.size());
 
         // Step 6: Convert back to Vector3d for trajectory generation
         std::vector<Eigen::Vector3d> sampled_points;
@@ -510,9 +509,9 @@ namespace path_manager
         auto time_now = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
         traj_.setGlobalTraj(globalMJO.getTraj(), time_now);
         
-        RCLCPP_INFO(node_->get_logger(), "Successfully generated global trajectory with B-spline -> MINCO conversion");
-        RCLCPP_INFO(node_->get_logger(), "Final trajectory: %d segments, duration: %.3f, max_vel: %.3f", 
-                   globalMJO.getTraj().getPieceNum(), globalMJO.getTraj().getTotalDuration(), 
+        log_manager_->infof("Successfully generated global trajectory with B-spline -> MINCO conversion");
+        log_manager_->infof("Final trajectory: %d segments, duration: %.3f, max_vel: %.3f",
+                   globalMJO.getTraj().getPieceNum(), globalMJO.getTraj().getTotalDuration(),
                    globalMJO.getTraj().getMaxVelRate());
         
         return true;
@@ -617,8 +616,7 @@ void PathManager::setFormationInfo(int drone_id, const std::string& formation_ty
     current_formation_type_ = formation_type;
     current_formation_pattern_ = formation_pattern;
 
-    RCLCPP_INFO(node_->get_logger(),
-                "PathManager: Set formation info - drone_id=%d, type=%s, pattern_size=%zu",
+    log_manager_->infof("PathManager: Set formation info - drone_id=%d, type=%s, pattern_size=%zu",
                 drone_id, formation_type.c_str(), formation_pattern.size());
 }
 

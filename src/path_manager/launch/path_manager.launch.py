@@ -99,18 +99,19 @@ def create_drone_nodes(context, *args, **kwargs):
     rover_nodes  = []
     jfi_nodes    = []
 
-    # Drones to run - collect actual indices from config
-    if num_drones == 1:
+    # Drones to run - real mode runs single drone, simulation runs all
+    if real_mode:
+        # Real mode: run only the specified drone
         drones_to_run = [target_drone_id]
-        print(f"Single drone mode: running drone {target_drone_id}")
+        print(f"Real mode: running only drone {target_drone_id}")
     else:
-        # Extract actual drone indices from drones.yaml
+        # Simulation mode: run all drones from config
         drones_to_run = []
         for i in range(6):  # Check drone_0 to drone_5
             drone_key = f'drone_{i}'
             if drone_key in drone_cfg:
                 drones_to_run.append(drone_cfg[drone_key]['index'])
-        print(f"Multi-drone mode: running drones {drones_to_run}")
+        print(f"Simulation mode: running drones {drones_to_run}")
 
     # Create nodes per drone
     for drone_index in drones_to_run:
@@ -296,7 +297,15 @@ def create_drone_nodes(context, *args, **kwargs):
         actions=[formation_commander],
     )
 
-    return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed, formation_commander_delayed]
+    # Formation commander runs only on drone 0 (in real mode) or in simulation mode
+    if real_mode and target_drone_id != 0:
+        # Real mode and not drone 0: don't run formation_commander
+        print(f"Drone {target_drone_id}: formation_commander will NOT run (only drone 0 runs it in real mode)")
+        return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed]
+    else:
+        # Simulation mode or drone 0: run formation_commander
+        print(f"Formation_commander will run (simulation mode or drone 0)")
+        return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed, formation_commander_delayed]
 
 def generate_launch_description():
     return LaunchDescription([
@@ -317,7 +326,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'scenario',
-            default_value='straight',
+            default_value='default',
             description='Scenario name (default, straight)'
         ),
         DeclareLaunchArgument(
