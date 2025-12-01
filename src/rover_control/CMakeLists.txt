@@ -13,6 +13,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(path_manager REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
@@ -24,6 +25,7 @@ ament_target_dependencies(rover_control_node
   rclcpp
   px4_msgs
   nav_msgs
+  std_srvs
   path_manager
   geometry_msgs
 )

@@ -14,6 +14,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(path_manager REQUIRED)
 find_package(Eigen3 REQUIRED)
 
@@ -31,6 +32,7 @@ ament_target_dependencies(path_visualization_node
   rclcpp
   visualization_msgs
   geometry_msgs
+  std_srvs
   path_manager
   Eigen3
 )

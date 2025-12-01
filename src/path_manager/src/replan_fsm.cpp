@@ -190,6 +190,10 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         "formation_targets", sensor_qos,
         std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1));
 
+    // Create service client for jfi_comm dynamic subscription control (BEFORE enabling subscription)
+    jfi_enable_formation_cmd_client_ = node_->create_client<std_srvs::srv::SetBool>(
+        "enable_formation_cmd_send");
+
     // Formation command subscription will be created dynamically when needed
     // Start with it enabled to receive initial mission
     formation_cmd_sub_ = nullptr;
@@ -1645,7 +1649,17 @@ void ReplanFSM::enableFormationCommandSubscription() {
             "formation_command", sensor_qos,
             std::bind(&ReplanFSM::formationCommandCallback, this, std::placeholders::_1));
 
-        FSM_LOG_INFO("Formation command subscription ENABLED (waiting for next mission)");
+        // Enable jfi_comm serial send (Commander only, drone_id == 0)
+        if (drone_id_ == 0 && jfi_enable_formation_cmd_client_) {
+            auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+            request->data = true;
+
+            auto result_future = jfi_enable_formation_cmd_client_->async_send_request(request);
+            FSM_LOG_INFO("Formation command subscription ENABLED + jfi_comm send service called");
+        } else {
+            FSM_LOG_INFO("Formation command subscription ENABLED (waiting for next mission)");
+        }
+
         need_formation_command_sub_ = false;
     }
 }
@@ -1653,7 +1667,17 @@ void ReplanFSM::enableFormationCommandSubscription() {
 void ReplanFSM::disableFormationCommandSubscription() {
     if (formation_cmd_sub_) {
         formation_cmd_sub_.reset();
-        FSM_LOG_INFO("Formation command subscription DISABLED (mission data received)");
+
+        // Disable jfi_comm serial send (Commander only, drone_id == 0)
+        if (drone_id_ == 0 && jfi_enable_formation_cmd_client_) {
+            auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+            request->data = false;
+
+            auto result_future = jfi_enable_formation_cmd_client_->async_send_request(request);
+            FSM_LOG_INFO("Formation command subscription DISABLED + jfi_comm send service called (mission data received)");
+        } else {
+            FSM_LOG_INFO("Formation command subscription DISABLED (mission data received)");
+        }
     }
 }
 
