@@ -157,10 +157,18 @@ def create_drone_nodes(context, *args, **kwargs):
 
         remaps = []
         if not real_mode:
+            # Simulation mode: FSM subscribes directly to Commander's formation_command
+            # No remapping needed - FSM and Commander both use "formation_command"
             id_str = str(idx + 1)
             remaps = [
                 (f'V{id_str}/planning/broadcast_traj_send', '/planning/broadcast_traj_recv'),
                 (f'V{id_str}/j_fi/broadcast_traj_recv', '/planning/broadcast_traj_recv'),
+            ]
+        else:
+            # Real mode: FSM remaps to receive from JFI's "formation_command_serial"
+            # Commander -> "formation_command" -> JFI1 (sub) -> serial -> JFI (pub "formation_command_serial") -> FSM
+            remaps = [
+                ('formation_command', 'formation_command_serial'),
             ]
 
         replan_nodes.append(

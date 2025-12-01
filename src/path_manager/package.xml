@@ -11,7 +11,6 @@
 
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
-  <depend>std_srvs</depend>
   <depend>px4_msgs</depend>
   <depend>Eigen3</depend>
   <depend>path_optimizer</depend>

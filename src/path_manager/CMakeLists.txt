@@ -22,7 +22,6 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(std_srvs REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -56,7 +55,6 @@ add_library(${PROJECT_NAME}_lib
 ament_target_dependencies(${PROJECT_NAME}_lib
   rclcpp
   std_msgs
-  std_srvs
   px4_msgs
   nav_msgs
   Eigen3
@@ -84,7 +82,6 @@ target_link_libraries(${PROJECT_NAME}_node
 ament_target_dependencies(${PROJECT_NAME}_node
   rclcpp
   std_msgs
-  std_srvs
   px4_msgs
   nav_msgs
   path_optimizer

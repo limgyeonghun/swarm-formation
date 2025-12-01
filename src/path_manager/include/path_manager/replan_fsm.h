@@ -5,7 +5,6 @@
 #include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <visualization_msgs/msg/marker.hpp>
-#include <std_srvs/srv/set_bool.hpp>
 #include <Eigen/Dense>
 #include <mutex>
 #include <map>
@@ -166,11 +165,6 @@ private:
     std::string next_mission_id_;       // Next mission to execute
     bool is_final_mission_;             // True if no more missions after current
     bool need_formation_command_sub_;   // True if we need to subscribe for next mission
-
-    // Dynamic subscription management
-    void enableFormationCommandSubscription();
-    void disableFormationCommandSubscription();
-    rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr jfi_enable_formation_cmd_client_;
 
     // Previous formation tracking for smooth transitions
     Eigen::Vector3d prev_end_pt_;  // Previous formation target endpoint

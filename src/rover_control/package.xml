@@ -14,7 +14,6 @@
   <depend>rclcpp</depend>
   <depend>px4_msgs</depend>
   <depend>nav_msgs</depend>
-  <depend>std_srvs</depend>
   <depend>path_manager</depend>
   <depend>geometry_msgs</depend>
 

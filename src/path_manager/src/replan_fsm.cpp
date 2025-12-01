@@ -190,14 +190,9 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         "formation_targets", sensor_qos,
         std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1));
 
-    // Create service client for jfi_comm dynamic subscription control (BEFORE enabling subscription)
-    jfi_enable_formation_cmd_client_ = node_->create_client<std_srvs::srv::SetBool>(
-        "enable_formation_cmd_send");
-
-    // Formation command subscription will be created dynamically when needed
-    // Start with it enabled to receive initial mission
-    formation_cmd_sub_ = nullptr;
-    enableFormationCommandSubscription();
+    formation_cmd_sub_ = node_->create_subscription<path_manager::msg::FormationCommand>(
+        "formation_command", sensor_qos,
+        std::bind(&ReplanFSM::formationCommandCallback, this, std::placeholders::_1));
 
     formation_target_pub_ = node_->create_publisher<path_manager::msg::FormationTarget>(
         "formation_targets", sensor_qos);
@@ -264,12 +259,6 @@ void ReplanFSM::computeAndPublishPaths() {
     }
 
     // Check if we need to re-enable formation command subscription (safety fallback)
-    // This is a fallback in case subscription wasn't enabled during mission progression
-    // Normally, subscription is enabled immediately when next_mission_id is cleared in formationTargetCallback
-    if (next_mission_id_.empty() && !is_final_mission_ && !formation_cmd_sub_ && exec_state_ == WAIT_POSITION) {
-        FSM_LOG_INFO("Safety fallback: re-enabling formation command subscription in WAIT_POSITION state");
-        enableFormationCommandSubscription();
-    }
 
     switch (exec_state_) {
         case INIT: {
@@ -736,11 +725,6 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         next_mission_id_.clear();  // Empty means we need new mission data
         FSM_LOG_INFO("Mission progressed: now executing %s, next mission cleared (will request new data)",
                     current_mission_id_.c_str());
-
-        // Re-enable subscription immediately to receive next mission command
-        if (!is_final_mission_ && !formation_cmd_sub_) {
-            enableFormationCommandSubscription();
-        }
     }
 
     // Initialize optimizer if not already initialized
@@ -961,11 +945,6 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
                 msg->current_mission_id.c_str(),
                 msg->next_mission_id.c_str(),
                 msg->is_final ? "true" : "false");
-
-    // If we have next mission info, disable subscription temporarily
-    if (next_mission_id_ != "MISSION_END" && !next_mission_id_.empty()) {
-        disableFormationCommandSubscription();
-    }
 
     // Extract waypoints first
     std::vector<Eigen::Vector3d> waypoints;
@@ -1634,51 +1613,6 @@ bool ReplanFSM::segmentsIntersect2D(const Eigen::Vector3d& p1, const Eigen::Vect
     if (o4 == 0 && onSegment(p2, q1, q2)) return true;
 
     return false;  // No intersection
-}
-
-// Dynamic subscription management for robustness
-void ReplanFSM::enableFormationCommandSubscription() {
-    if (!formation_cmd_sub_) {
-        rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
-        auto sensor_qos = rclcpp::QoS(
-            rclcpp::QoSInitialization(qos_profile.history, 10),
-            qos_profile
-        );
-
-        formation_cmd_sub_ = node_->create_subscription<path_manager::msg::FormationCommand>(
-            "formation_command", sensor_qos,
-            std::bind(&ReplanFSM::formationCommandCallback, this, std::placeholders::_1));
-
-        // Enable jfi_comm serial send (Commander only, drone_id == 0)
-        if (drone_id_ == 0 && jfi_enable_formation_cmd_client_) {
-            auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
-            request->data = true;
-
-            auto result_future = jfi_enable_formation_cmd_client_->async_send_request(request);
-            FSM_LOG_INFO("Formation command subscription ENABLED + jfi_comm send service called");
-        } else {
-            FSM_LOG_INFO("Formation command subscription ENABLED (waiting for next mission)");
-        }
-
-        need_formation_command_sub_ = false;
-    }
-}
-
-void ReplanFSM::disableFormationCommandSubscription() {
-    if (formation_cmd_sub_) {
-        formation_cmd_sub_.reset();
-
-        // Disable jfi_comm serial send (Commander only, drone_id == 0)
-        if (drone_id_ == 0 && jfi_enable_formation_cmd_client_) {
-            auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
-            request->data = false;
-
-            auto result_future = jfi_enable_formation_cmd_client_->async_send_request(request);
-            FSM_LOG_INFO("Formation command subscription DISABLED + jfi_comm send service called (mission data received)");
-        } else {
-            FSM_LOG_INFO("Formation command subscription DISABLED (mission data received)");
-        }
-    }
 }
 
 }  // namespace path_manager
