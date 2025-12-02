@@ -2,3 +2,4 @@
 	path = src/j_fi
 	url = https://github.com/SUV-Lab/J-Fi.git
 	branch = rover_dev
+	ignore = dirty
