@@ -175,6 +175,16 @@ private:
     std::mutex swarm_positions_mutex_;  // Thread-safe access
 
     std::unique_ptr<swarm_formation::LogManager> log_manager_;
+
+    // Formation change delay mechanism (for real mode trajectory sync)
+    rclcpp::TimerBase::SharedPtr formation_delay_timer_;
+    struct PendingFormationTarget {
+        Eigen::Vector3d target;
+        std::vector<Eigen::Vector3d> waypoints;
+        bool formation_changed;
+        Eigen::Vector3d formation_offset;
+    };
+    std::shared_ptr<PendingFormationTarget> pending_formation_target_;
 };
 
 }  // namespace path_manager

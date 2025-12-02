@@ -747,7 +747,20 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         }
     }
 
-    start_pt_ = current_pos_;
+    // Use trajectory-based position instead of PX4 position to avoid mismatch
+    // when drone is stationary in real mode but trajectory continues in theory
+    if (have_local_traj_) {
+        LocalTrajData *info = &path_manager_->traj_.local_traj;
+        double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - info->start_time;
+        start_pt_ = info->traj.getPos(t_cur);
+        log_manager_->infof("Using trajectory position for formation change: (%.2f, %.2f, %.2f)",
+                   start_pt_(0), start_pt_(1), start_pt_(2));
+    } else {
+        // Fallback to current position if no trajectory exists yet
+        start_pt_ = current_pos_;
+        log_manager_->infof("Using current position (no trajectory yet): (%.2f, %.2f, %.2f)",
+                   start_pt_(0), start_pt_(1), start_pt_(2));
+    }
 
     // Note: Alpha increment is now handled in computeAndPublishPaths() timer callback
     // This ensures smooth, continuous transitions regardless of when formationTargetCallback is called
@@ -837,7 +850,7 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
     path_manager_->setFormationInfo(drone_id_, current_formation_type_, formation_pattern);
 
     success = path_manager_->planGlobalTraj(
-        current_pos_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+        start_pt_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
         waypoints, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
     if (success) {
@@ -1139,8 +1152,61 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
     log_manager_->infof("Drone %d final target: (%.2f, %.2f, %.2f) with %zu waypoints",
                drone_id_, my_target.x(), my_target.y(), my_target.z(), my_waypoints.size());
 
-    // Publish formation target with my waypoints and offset
-    publishFormationTarget(my_target, my_waypoints, formation_changed, my_formation_offset);
+    // ⭐ Formation change delay mechanism for real mode
+    // When formation changes in real mode, we need to wait for other drones' trajectories
+    // to arrive via serial before replanning. Without this delay, the optimizer generates
+    // overly complex trajectories (37 segments instead of 3-6) because it doesn't have
+    // complete swarm trajectory information for collision avoidance.
+    if (formation_changed && !rviz_simulation_) {
+        // Real mode with formation change: delay 300ms to allow trajectory synchronization
+        log_manager_->infof("[FORMATION SYNC] Drone %d: Formation changed in real mode, "
+                   "delaying replan by 300ms to wait for other drones' trajectories",
+                   drone_id_);
+
+        // Store pending formation target
+        pending_formation_target_ = std::make_shared<PendingFormationTarget>();
+        pending_formation_target_->target = my_target;
+        pending_formation_target_->waypoints = my_waypoints;
+        pending_formation_target_->formation_changed = formation_changed;
+        pending_formation_target_->formation_offset = my_formation_offset;
+
+        // Cancel existing timer if any
+        if (formation_delay_timer_) {
+            formation_delay_timer_->cancel();
+        }
+
+        // Create one-shot timer (300ms delay)
+        formation_delay_timer_ = node_->create_wall_timer(
+            std::chrono::milliseconds(300),
+            [this]() {
+                if (pending_formation_target_) {
+                    log_manager_->infof("[FORMATION SYNC] Drone %d: Delay finished, "
+                               "publishing formation target now", drone_id_);
+
+                    publishFormationTarget(
+                        pending_formation_target_->target,
+                        pending_formation_target_->waypoints,
+                        pending_formation_target_->formation_changed,
+                        pending_formation_target_->formation_offset
+                    );
+
+                    pending_formation_target_.reset();
+                }
+                // Cancel timer after one-shot execution
+                formation_delay_timer_->cancel();
+            }
+        );
+    } else {
+        // Simulation mode OR first formation (no change): immediate publish
+        if (formation_changed) {
+            log_manager_->infof("[FORMATION SYNC] Drone %d: Formation changed in simulation mode, "
+                       "immediate publish (no delay needed)", drone_id_);
+        } else {
+            log_manager_->infof("[FORMATION SYNC] Drone %d: First formation or no change, "
+                       "immediate publish", drone_id_);
+        }
+        publishFormationTarget(my_target, my_waypoints, formation_changed, my_formation_offset);
+    }
 }
 
 void ReplanFSM::generateFormationTargets(
