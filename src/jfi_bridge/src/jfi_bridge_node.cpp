@@ -170,19 +170,30 @@ void JfiBridgeNode::swarmCommFromSerialCallback(const jfi_comm::msg::SwarmComm::
       case TID_POLY_TRAJ: {
         RCLCPP_DEBUG(get_logger(), "[RX] PolyTraj BEFORE deserialize: payload_size=%zu", msg->payload.size());
 
-        auto poly_traj = deserializeMessage<path_manager::msg::PolyTraj>(msg->payload);
+        // Validate payload size (rough check: should be at least header + some coefficients)
+        if (msg->payload.size() < 50) {
+          RCLCPP_WARN(get_logger(), "[RX] PolyTraj payload too small (%zu bytes), likely corrupted", msg->payload.size());
+          break;
+        }
 
-        RCLCPP_DEBUG(get_logger(),
-                    "[RX] PolyTraj AFTER deserialize: drone_id=%d, traj_id=%d, coef_x=%zu, coef_y=%zu, coef_z=%zu",
-                    poly_traj.drone_id, poly_traj.traj_id,
-                    poly_traj.coef_x.size(), poly_traj.coef_y.size(), poly_traj.coef_z.size());
+        try {
+          auto poly_traj = deserializeMessage<path_manager::msg::PolyTraj>(msg->payload);
 
-        pub_poly_traj_->publish(poly_traj);
+          RCLCPP_DEBUG(get_logger(),
+                      "[RX] PolyTraj AFTER deserialize: drone_id=%d, traj_id=%d, coef_x=%zu, coef_y=%zu, coef_z=%zu",
+                      poly_traj.drone_id, poly_traj.traj_id,
+                      poly_traj.coef_x.size(), poly_traj.coef_y.size(), poly_traj.coef_z.size());
 
-        RCLCPP_DEBUG(get_logger(),
-                    "[RX] Published PolyTraj: drone_id=%d, traj_id=%d, coef_x=%zu, coef_y=%zu",
-                    poly_traj.drone_id, poly_traj.traj_id,
-                    poly_traj.coef_x.size(), poly_traj.coef_y.size());
+          pub_poly_traj_->publish(poly_traj);
+
+          RCLCPP_DEBUG(get_logger(),
+                      "[RX] Published PolyTraj: drone_id=%d, traj_id=%d, coef_x=%zu, coef_y=%zu",
+                      poly_traj.drone_id, poly_traj.traj_id,
+                      poly_traj.coef_x.size(), poly_traj.coef_y.size());
+        } catch (const std::exception& e) {
+          RCLCPP_WARN(get_logger(), "[RX] PolyTraj deserialization failed (payload_size=%zu): %s - Skipping corrupted message",
+                      msg->payload.size(), e.what());
+        }
         break;
       }
 
