@@ -212,6 +212,7 @@ def create_drone_nodes(context, *args, **kwargs):
         )
 
         if real_mode:
+            # JFI serial communication node
             jfi_nodes.append(
                 Node(
                     package='jfi_comm',
@@ -226,9 +227,21 @@ def create_drone_nodes(context, *args, **kwargs):
                     ]
                 )
             )
-            print(f"JFI node added for drone index={idx} with mavlink_id={mavlink_id}")
+            # JFI bridge node (converts between ROS messages and SwarmComm)
+            jfi_nodes.append(
+                Node(
+                    package='jfi_bridge',
+                    executable='jfi_bridge_node',
+                    name=f'jfi_bridge_drone_{i}',
+                    output='screen',
+                    parameters=[
+                        {'system_id': mavlink_id},
+                    ]
+                )
+            )
+            print(f"JFI nodes added for drone index={idx} with mavlink_id={mavlink_id}")
         else:
-            print("JFI node skipped (not in real mode)")
+            print("JFI nodes skipped (not in real mode)")
 
     # Build parameters for path_visualization with scenario start points
     viz_params = [
