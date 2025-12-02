@@ -36,6 +36,11 @@ def create_drone_nodes(context, *args, **kwargs):
     real_str = context.perform_substitution(LaunchConfiguration('real'))
     real_mode = (real_str.lower() == 'true')
 
+    # NOTE: real_mode and rviz_sim are independent:
+    # - real_mode=true: Use JFI serial communication
+    # - rviz_sim=true: Use trajectory-based position (no real PX4)
+    # - real_mode=true + rviz_sim=true: Jetson environment (serial + simulated position)
+
     # Target drone ID
     drone_id_str = context.perform_substitution(LaunchConfiguration('drone_id'))
     target_drone_id = int(drone_id_str)
@@ -156,20 +161,26 @@ def create_drone_nodes(context, *args, **kwargs):
                 params[f'{drone_key_j}.start_point_z'] = float(drone_cfg[drone_key_j]['start_point_z'])
 
         remaps = []
+        id_str = str(idx + 1)
         if not real_mode:
-            # Simulation mode: FSM subscribes directly to Commander's formation_command
-            # No remapping needed - FSM and Commander both use "formation_command"
-            id_str = str(idx + 1)
+            # Simulation mode: Remap FSM's /V{id}/formation_command to Commander's /formation_command
+            # Also remap trajectory topics to shared /planning/broadcast_traj_recv
             remaps = [
+                (f'/V{id_str}/formation_command', '/formation_command'),
                 (f'V{id_str}/planning/broadcast_traj_send', '/planning/broadcast_traj_recv'),
                 (f'V{id_str}/j_fi/broadcast_traj_recv', '/planning/broadcast_traj_recv'),
             ]
         else:
-            # Real mode: FSM remaps to receive from JFI's "formation_command_serial"
-            # Commander -> "formation_command" -> JFI1 (sub) -> serial -> JFI (pub "formation_command_serial") -> FSM
-            remaps = [
-                ('formation_command', 'formation_command_serial'),
-            ]
+            # Real mode: No remapping needed
+            # - Drone 0: Commander publishes /formation_command -> JFI0 subscribes /formation_command -> Serial
+            # - Drone 1,2,3: JFI publishes /V{id}/formation_command -> FSM subscribes /V{id}/formation_command
+            # For Drone 0 FSM: Need to remap /V1/formation_command -> /formation_command (to receive from Commander directly)
+            if idx == 0:
+                remaps = [
+                    (f'/V{id_str}/formation_command', '/formation_command'),
+                ]
+            else:
+                remaps = []
 
         replan_nodes.append(
             Node(
@@ -212,12 +223,16 @@ def create_drone_nodes(context, *args, **kwargs):
         )
 
         if real_mode:
+            # Use namespace to isolate jfi_comm topics per drone
+            jfi_namespace = f'drone_{idx}'
+
             # JFI serial communication node
             jfi_nodes.append(
                 Node(
                     package='jfi_comm',
                     executable='serial_comm_node',
                     name=f'jfi_comm_drone_{i}',
+                    namespace=jfi_namespace,
                     output='screen',
                     parameters=[
                         {'port_name': jfi_port},
@@ -228,6 +243,7 @@ def create_drone_nodes(context, *args, **kwargs):
                 )
             )
             # JFI bridge node (converts between ROS messages and SwarmComm)
+            # Bridge needs remapping to connect namespace jfi_comm with global /V{id} topics
             jfi_nodes.append(
                 Node(
                     package='jfi_bridge',
@@ -236,10 +252,14 @@ def create_drone_nodes(context, *args, **kwargs):
                     output='screen',
                     parameters=[
                         {'system_id': mavlink_id},
+                    ],
+                    remappings=[
+                        ('jfi_comm/in/packet', f'/{jfi_namespace}/jfi_comm/in/packet'),
+                        ('jfi_comm/out/packet', f'/{jfi_namespace}/jfi_comm/out/packet'),
                     ]
                 )
             )
-            print(f"JFI nodes added for drone index={idx} with mavlink_id={mavlink_id}")
+            print(f"JFI nodes added for drone index={idx} with mavlink_id={mavlink_id}, namespace={jfi_namespace}")
         else:
             print("JFI nodes skipped (not in real mode)")
 
@@ -264,8 +284,7 @@ def create_drone_nodes(context, *args, **kwargs):
         executable='path_visualization_node',
         name='path_visualization',
         output='screen',
-        parameters=viz_params + [start_point_params],
-        condition=IfCondition(LaunchConfiguration('rviz_simulation'))
+        parameters=viz_params + [start_point_params]
     )
 
     rviz_node = Node(

@@ -191,7 +191,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1));
 
     formation_cmd_sub_ = node_->create_subscription<path_manager::msg::FormationCommand>(
-        "formation_command", sensor_qos,
+        topic_prefix + "/formation_command", sensor_qos,
         std::bind(&ReplanFSM::formationCommandCallback, this, std::placeholders::_1));
 
     formation_target_pub_ = node_->create_publisher<path_manager::msg::FormationTarget>(
