@@ -89,6 +89,19 @@ std::vector<Eigen::Vector3d> FormationUtils::generateFormationPattern(
             pattern.push_back(Eigen::Vector3d(0.0, 0.0, 0.0));  // Zero offset for all
         }
     }
+    else if (formation_type == "line_test") {
+        // Horizontal line perpendicular to y-axis (travel direction)
+        double spacing = (num_drones > 1) ? scale / (num_drones - 1) : 0.0;
+
+        for (int i = 0; i < num_drones; ++i) {
+            double x_position = -scale/2 + i * spacing;  // Left to right along x-axis
+            pattern.push_back(Eigen::Vector3d(
+                x_position,
+                0.0,
+                0.0
+            ));
+        }
+    }
     else if (formation_type == "circle") {
         double angle_step = 2.0 * M_PI / num_drones;
         for (int i = 0; i < num_drones; ++i) {
