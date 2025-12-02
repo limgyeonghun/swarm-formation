@@ -1,6 +1,7 @@
 #include "jfi_bridge/jfi_bridge_node.hpp"
 #include <rclcpp/serialization.hpp>
 #include <rclcpp/serialized_message.hpp>
+#include <rcutils/error_handling.h>
 #include <sstream>
 #include <iomanip>
 
@@ -119,6 +120,7 @@ void JfiBridgeNode::polyTrajToSerialCallback(const path_manager::msg::PolyTraj::
                 msg->drone_id, msg->traj_id, payload.size());
   } catch (const std::exception& e) {
     RCLCPP_ERROR(get_logger(), "[TX] Failed to serialize PolyTraj: %s", e.what());
+    rcutils_reset_error();
   }
 }
 
@@ -147,6 +149,7 @@ void JfiBridgeNode::formationCommandToSerialCallback(const path_manager::msg::Fo
                 msg->formation_type.c_str(), msg->waypoints.size());
   } catch (const std::exception& e) {
     RCLCPP_ERROR(get_logger(), "Failed to serialize FormationCommand: %s", e.what());
+    rcutils_reset_error();
   }
 }
 
@@ -193,6 +196,7 @@ void JfiBridgeNode::swarmCommFromSerialCallback(const jfi_comm::msg::SwarmComm::
         } catch (const std::exception& e) {
           RCLCPP_WARN(get_logger(), "[RX] PolyTraj deserialization failed (payload_size=%zu): %s - Skipping corrupted message",
                       msg->payload.size(), e.what());
+          rcutils_reset_error();
         }
         break;
       }
@@ -221,5 +225,6 @@ void JfiBridgeNode::swarmCommFromSerialCallback(const jfi_comm::msg::SwarmComm::
   } catch (const std::exception& e) {
     RCLCPP_ERROR(get_logger(), "[RX] Failed to deserialize message (TID=%d, payload_size=%zu): %s",
                  msg->tid, msg->payload.size(), e.what());
+    rcutils_reset_error();
   }
 }
