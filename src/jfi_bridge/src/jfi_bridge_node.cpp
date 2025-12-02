@@ -100,12 +100,12 @@ T JfiBridgeNode::deserializeMessage(const std::vector<uint8_t>& data)
 void JfiBridgeNode::polyTrajToSerialCallback(const path_manager::msg::PolyTraj::SharedPtr msg)
 {
   try {
-    RCLCPP_INFO(get_logger(), "[TX] PolyTraj BEFORE serialize: drone_id=%d, traj_id=%d, coef_x=%zu, coef_y=%zu, coef_z=%zu",
+    RCLCPP_DEBUG(get_logger(), "[TX] PolyTraj BEFORE serialize: drone_id=%d, traj_id=%d, coef_x=%zu, coef_y=%zu, coef_z=%zu",
                 msg->drone_id, msg->traj_id, msg->coef_x.size(), msg->coef_y.size(), msg->coef_z.size());
 
     auto payload = serializeMessage(*msg);
 
-    RCLCPP_INFO(get_logger(), "[TX] PolyTraj AFTER serialize: payload_size=%zu bytes", payload.size());
+    RCLCPP_DEBUG(get_logger(), "[TX] PolyTraj AFTER serialize: payload_size=%zu bytes", payload.size());
 
     auto swarm_msg = std::make_unique<jfi_comm::msg::SwarmComm>();
     swarm_msg->header.stamp = this->get_clock()->now();
@@ -115,7 +115,7 @@ void JfiBridgeNode::polyTrajToSerialCallback(const path_manager::msg::PolyTraj::
 
     pub_to_jfi_->publish(std::move(swarm_msg));
 
-    RCLCPP_INFO(get_logger(), "[TX] Sent PolyTraj via serial: drone_id=%d, traj_id=%d, size=%zu bytes",
+    RCLCPP_DEBUG(get_logger(), "[TX] Sent PolyTraj via serial: drone_id=%d, traj_id=%d, size=%zu bytes",
                 msg->drone_id, msg->traj_id, payload.size());
   } catch (const std::exception& e) {
     RCLCPP_ERROR(get_logger(), "[TX] Failed to serialize PolyTraj: %s", e.what());
@@ -142,9 +142,9 @@ void JfiBridgeNode::formationCommandToSerialCallback(const path_manager::msg::Fo
     last_sent_formation_cmd_sequence_ = msg->sequence;
 
     RCLCPP_INFO(get_logger(),
-                "Sent FormationCommand via serial: seq=%d, mission=%s->%s, formation=%s, waypoints=%zu, size=%zu",
+                "[TX] FormationCommand: seq=%d, mission=%s->%s, formation=%s, waypoints=%zu",
                 msg->sequence, msg->current_mission_id.c_str(), msg->next_mission_id.c_str(),
-                msg->formation_type.c_str(), msg->waypoints.size(), payload.size());
+                msg->formation_type.c_str(), msg->waypoints.size());
   } catch (const std::exception& e) {
     RCLCPP_ERROR(get_logger(), "Failed to serialize FormationCommand: %s", e.what());
   }
@@ -152,10 +152,10 @@ void JfiBridgeNode::formationCommandToSerialCallback(const path_manager::msg::Fo
 
 void JfiBridgeNode::swarmCommFromSerialCallback(const jfi_comm::msg::SwarmComm::SharedPtr msg)
 {
-  RCLCPP_INFO(get_logger(), "[RX] SwarmComm received: TID=%d, src_sysid=%d, seq=%u, payload_size=%zu",
+  RCLCPP_DEBUG(get_logger(), "[RX] SwarmComm received: TID=%d, src_sysid=%d, seq=%u, payload_size=%zu",
                msg->tid, msg->src_sysid, msg->seq, msg->payload.size());
 
-  // Log first 32 bytes of payload for debugging
+  // Log first 32 bytes of payload for debugging (only in debug mode)
   std::stringstream hex_dump;
   size_t dump_size = std::min(size_t(32), msg->payload.size());
   for (size_t i = 0; i < dump_size; ++i) {
@@ -163,23 +163,23 @@ void JfiBridgeNode::swarmCommFromSerialCallback(const jfi_comm::msg::SwarmComm::
     snprintf(buf, sizeof(buf), "%02x ", msg->payload[i]);
     hex_dump << buf;
   }
-  RCLCPP_INFO(get_logger(), "[RX] Payload hex (first %zu bytes): %s", dump_size, hex_dump.str().c_str());
+  RCLCPP_DEBUG(get_logger(), "[RX] Payload hex (first %zu bytes): %s", dump_size, hex_dump.str().c_str());
 
   try {
     switch (msg->tid) {
       case TID_POLY_TRAJ: {
-        RCLCPP_INFO(get_logger(), "[RX] PolyTraj BEFORE deserialize: payload_size=%zu", msg->payload.size());
+        RCLCPP_DEBUG(get_logger(), "[RX] PolyTraj BEFORE deserialize: payload_size=%zu", msg->payload.size());
 
         auto poly_traj = deserializeMessage<path_manager::msg::PolyTraj>(msg->payload);
 
-        RCLCPP_INFO(get_logger(),
+        RCLCPP_DEBUG(get_logger(),
                     "[RX] PolyTraj AFTER deserialize: drone_id=%d, traj_id=%d, coef_x=%zu, coef_y=%zu, coef_z=%zu",
                     poly_traj.drone_id, poly_traj.traj_id,
                     poly_traj.coef_x.size(), poly_traj.coef_y.size(), poly_traj.coef_z.size());
 
         pub_poly_traj_->publish(poly_traj);
 
-        RCLCPP_INFO(get_logger(),
+        RCLCPP_DEBUG(get_logger(),
                     "[RX] Published PolyTraj: drone_id=%d, traj_id=%d, coef_x=%zu, coef_y=%zu",
                     poly_traj.drone_id, poly_traj.traj_id,
                     poly_traj.coef_x.size(), poly_traj.coef_y.size());
@@ -187,12 +187,12 @@ void JfiBridgeNode::swarmCommFromSerialCallback(const jfi_comm::msg::SwarmComm::
       }
 
       case TID_FORMATION_COMMAND: {
-        RCLCPP_INFO(get_logger(), "[RX] FormationCommand BEFORE deserialize: payload_size=%zu", msg->payload.size());
+        RCLCPP_DEBUG(get_logger(), "[RX] FormationCommand BEFORE deserialize: payload_size=%zu", msg->payload.size());
 
         auto formation_cmd = deserializeMessage<path_manager::msg::FormationCommand>(msg->payload);
 
         RCLCPP_INFO(get_logger(),
-                    "[RX] FormationCommand AFTER deserialize: seq=%d, mission=%s->%s, formation=%s, waypoints=%zu",
+                    "[RX] FormationCommand: seq=%d, mission=%s->%s, formation=%s, waypoints=%zu",
                     formation_cmd.sequence,
                     formation_cmd.current_mission_id.c_str(),
                     formation_cmd.next_mission_id.c_str(),
@@ -200,8 +200,6 @@ void JfiBridgeNode::swarmCommFromSerialCallback(const jfi_comm::msg::SwarmComm::
                     formation_cmd.waypoints.size());
 
         pub_formation_cmd_->publish(formation_cmd);
-
-        RCLCPP_INFO(get_logger(), "[RX] Published FormationCommand: seq=%d", formation_cmd.sequence);
         break;
       }
 
