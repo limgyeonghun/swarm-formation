@@ -180,6 +180,8 @@ void JfiBridgeNode::swarmCommFromSerialCallback(const jfi_comm::msg::SwarmComm::
         }
 
         try {
+          // Clear any previous error state before deserialization
+          rcutils_reset_error();
           auto poly_traj = deserializeMessage<path_manager::msg::PolyTraj>(msg->payload);
 
           RCLCPP_DEBUG(get_logger(),
@@ -204,6 +206,8 @@ void JfiBridgeNode::swarmCommFromSerialCallback(const jfi_comm::msg::SwarmComm::
       case TID_FORMATION_COMMAND: {
         RCLCPP_DEBUG(get_logger(), "[RX] FormationCommand BEFORE deserialize: payload_size=%zu", msg->payload.size());
 
+        // Clear any previous error state before deserialization
+        rcutils_reset_error();
         auto formation_cmd = deserializeMessage<path_manager::msg::FormationCommand>(msg->payload);
 
         RCLCPP_INFO(get_logger(),
