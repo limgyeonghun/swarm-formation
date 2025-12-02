@@ -93,6 +93,8 @@ T JfiBridgeNode::deserializeMessage(const std::vector<uint8_t>& data)
   std::memcpy(rcl_serialized.buffer, data.data(), data.size());
 
   T msg;
+  // Clear any previous error state before deserialization to prevent overwrite warnings
+  rcutils_reset_error();
   serializer.deserialize_message(&serialized_msg, &msg);
 
   return msg;
