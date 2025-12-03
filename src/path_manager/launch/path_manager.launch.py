@@ -333,7 +333,7 @@ def create_drone_nodes(context, *args, **kwargs):
     )
 
     formation_commander_delayed = TimerAction(
-        period=5.0,
+        period=20.0,
         actions=[formation_commander],
     )
 
@@ -366,7 +366,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'scenario',
-            default_value='default',
+            default_value='test',
             description='Scenario name (default, straight)'
         ),
         DeclareLaunchArgument(

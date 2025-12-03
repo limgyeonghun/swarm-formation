@@ -37,13 +37,32 @@ def launch_setup(context, *args, **kwargs):
         output='screen',
     )
 
-    # Rover initial positions based on your command
-    rover_poses = [
-        "-234.56,115.33,12.67,0,0,-2.98",  # Rover 0 (instance 0)
-        "-232.57,115.57,12.7,0,0,-2.99",   # Rover 1 (instance 1)
-        "-230.59,115.82,12.64,0,0,-3",     # Rover 2 (instance 2)
-        "-228.6,116.06,12.68,0,0,-3",      # Rover 3 (instance 3)
-    ]
+    # Rover initial positions based on world
+    world_spawn_positions = {
+        'c-track': [
+            "-234.56,115.33,12.67,0,0,-2.98",  # Rover 0
+            "-232.57,115.57,12.7,0,0,-2.99",   # Rover 1
+            "-230.59,115.82,12.64,0,0,-3",     # Rover 2
+            "-228.6,116.06,12.68,0,0,-3",      # Rover 3
+        ],
+        'rover': [
+            "  0.0, 0.0, 0.0, 0,0,0",    # Rover 0
+            " -2.0, 3.0, 0.0, 0,0,0",    # Rover 1
+            " -4.0, 6.0, 0.0, 0,0,0",    # Rover 2
+            " -6.0, 9.0, 0.0, 0,0,0",    # Rover 3
+        ],
+        'default': [
+            "0,0,0.5,0,0,0",    # Rover 0
+            "2,0,0.5,0,0,0",    # Rover 1
+            "4,0,0.5,0,0,0",    # Rover 2
+            "6,0,0.5,0,0,0",    # Rover 3
+        ],
+    }
+
+    # Select spawn positions based on world name
+    rover_poses = world_spawn_positions.get(world_name, world_spawn_positions['default'])
+    print(f"Using spawn positions for world '{world_name}'")
+    print(f"Spawn positions: {rover_poses}")
 
     nodes_to_start = [
         xrce_agent_process,

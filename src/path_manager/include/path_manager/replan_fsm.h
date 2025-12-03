@@ -174,16 +174,6 @@ private:
     std::map<int, Eigen::Vector3d> swarm_positions_;  // drone_id -> current position
 
     std::unique_ptr<swarm_formation::LogManager> log_manager_;
-
-    // Formation change delay mechanism (for real mode trajectory sync)
-    rclcpp::TimerBase::SharedPtr formation_delay_timer_;
-    struct PendingFormationTarget {
-        Eigen::Vector3d target;
-        std::vector<Eigen::Vector3d> waypoints;
-        bool formation_changed;
-        Eigen::Vector3d formation_offset;
-    };
-    std::shared_ptr<PendingFormationTarget> pending_formation_target_;
 };
 
 }  // namespace path_manager
