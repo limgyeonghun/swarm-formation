@@ -170,9 +170,8 @@ private:
     Eigen::Vector3d prev_end_pt_;  // Previous formation target endpoint
     Eigen::Vector3d prev_formation_offset_;  // Previous formation offset for this drone
 
-    // Swarm position tracking for Hungarian assignment
+    // Swarm position tracking for formation management
     std::map<int, Eigen::Vector3d> swarm_positions_;  // drone_id -> current position
-    std::mutex swarm_positions_mutex_;  // Thread-safe access
 
     std::unique_ptr<swarm_formation::LogManager> log_manager_;
 

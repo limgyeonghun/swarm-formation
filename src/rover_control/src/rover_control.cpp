@@ -33,9 +33,9 @@ RoverControl::RoverControl() : Node("RoverControl"), index_(0), mavlink_id_(1), 
     auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 20), qos_profile);
 
     status_sub_ = this->create_subscription<VehicleStatus>(
-        topic_prefix_out + "vehicle_status", qos, bind(&RoverControl::status_cb, this, std::placeholders::_1));
+        topic_prefix_out + "vehicle_status_v1", qos, bind(&RoverControl::status_cb, this, std::placeholders::_1));
     position_sub_ = this->create_subscription<VehicleLocalPosition>(
-        topic_prefix_out + "vehicle_local_position", qos, bind(&RoverControl::pos_cb, this, std::placeholders::_1));
+        topic_prefix_out + "vehicle_local_position_v1", qos, bind(&RoverControl::pos_cb, this, std::placeholders::_1));
     // target_sub_ = this->create_subscription<PositionCommand>(
     //     topic_prefix_in + "target_position", qos, bind(&RoverControl::target_cb, this, std::placeholders::_1));
 
@@ -163,13 +163,14 @@ void RoverControl::timer_cb()
             double adjusted_ty = target_pos_.position.y - offset_y_pt_;
             double dist = std::hypot(curr_pos_.x - adjusted_tx, curr_pos_.y - adjusted_ty);
 
-            // Only disarm if: (1) trajectory is marked as completed AND (2) we're close to target
+            // Only disarm if: (1) trajectory is marked as completed AND (2) we're close to target AND (3) it's the final mission
             bool is_trajectory_completed = (target_pos_.trajectory_flag == PositionCommand::TRAJECTORY_STATUS_COMPLETED);
+            bool is_final_mission = target_pos_.is_final_mission;
 
-            if (is_trajectory_completed && dist <= arrival_distance_threshold_ && status_.arming_state == VehicleStatus::ARMING_STATE_ARMED) {
+            if (is_trajectory_completed && is_final_mission && dist <= arrival_distance_threshold_ && status_.arming_state == VehicleStatus::ARMING_STATE_ARMED) {
                 disarm();
                 have_target_ = false;
-                RCLCPP_INFO(this->get_logger(), "Arrived at FINAL target. Distance: %.2f m <= threshold %.2f m, trajectory_flag: COMPLETED",
+                RCLCPP_INFO(this->get_logger(), "Arrived at FINAL target. Distance: %.2f m <= threshold %.2f m, trajectory_flag: COMPLETED, is_final_mission: TRUE",
                            dist, arrival_distance_threshold_);
             }
         }

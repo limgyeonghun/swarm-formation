@@ -375,7 +375,6 @@ void ReplanFSM::computeAndPublishPaths() {
                 }
                 else if ((end_pt_ - pos).norm() > no_replan_thresh_ && t_cur > replan_thresh_)
                 {
-                    RCLCPP_ERROR(node_->get_logger(), "No Replan Thresh");
                     log_manager_->errorf("No Replan Thresh");
                     changeFSMExecState(REPLAN_TRAJ, "FSM");
                 }
@@ -409,12 +408,8 @@ void ReplanFSM::computeAndPublishPaths() {
 void ReplanFSM::targetPositionCallback(const path_manager::msg::PositionCommand::SharedPtr msg) {
     Eigen::Vector3d new_pos(msg->position.x, msg->position.y, msg->position.z);
 
-    // ⭐ Update own position for Hungarian assignment (thread-safe)
-    {
-        std::lock_guard<std::mutex> lock(swarm_positions_mutex_);
-        current_pos_ = new_pos;
-        swarm_positions_[drone_id_] = new_pos;
-    }
+    current_pos_ = new_pos;
+    swarm_positions_[drone_id_] = new_pos;
 }
 
 void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
@@ -423,13 +418,9 @@ void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::S
     new_pos(1) = msg->y + offset_pt_(1);
     new_pos(2) = offset_pt_(2);
 
-    // ⭐ Update own position for Hungarian assignment (thread-safe)
-    {
-        std::lock_guard<std::mutex> lock(swarm_positions_mutex_);
-        current_pos_ = new_pos;
-        swarm_positions_[drone_id_] = new_pos;
-        have_position_ = true;
-    }
+    current_pos_ = new_pos;
+    swarm_positions_[drone_id_] = new_pos;
+    have_position_ = true;
 }
 
 void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg) {
@@ -504,11 +495,7 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
     path_manager_->traj_.swarm_traj[recv_id].duration = trajectory.getTotalDuration();
     path_manager_->traj_.swarm_traj[recv_id].start_pos = trajectory.getPos(0.0);
 
-    // ⭐ Update swarm position for Hungarian assignment
-    {
-        std::lock_guard<std::mutex> lock(swarm_positions_mutex_);
-        swarm_positions_[recv_id] = trajectory.getPos(0.0);
-    }
+    swarm_positions_[recv_id] = trajectory.getPos(0.0);
 
     if (path_manager_->checkCollision(recv_id)) {
         changeFSMExecState(REPLAN_TRAJ, "SWARM_CHECK");
@@ -527,7 +514,7 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
     }
 }
 
-void ReplanFSM::polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg) 
+void ReplanFSM::polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
 {
     if (!path_manager_) {
         RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
@@ -543,6 +530,8 @@ void ReplanFSM::polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
     const double s = data->start_time;
     msg.start_time.sec     = static_cast<int32_t>(std::floor(s));
     msg.start_time.nanosec = static_cast<uint32_t>(std::llround((s - msg.start_time.sec) * 1e9));
+
+    msg.is_final_mission = is_final_mission_;
 
     Eigen::VectorXd durs = data->traj.getDurations();
     int piece_num = data->traj.getPieceNum();
@@ -747,32 +736,37 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         }
     }
 
-    // Use trajectory-based position instead of PX4 position to avoid mismatch
-    // when drone is stationary in real mode but trajectory continues in theory
     if (have_local_traj_) {
         LocalTrajData *info = &path_manager_->traj_.local_traj;
         double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - info->start_time;
-        start_pt_ = info->traj.getPos(t_cur);
-        log_manager_->infof("Using trajectory position for formation change: (%.2f, %.2f, %.2f)",
-                   start_pt_(0), start_pt_(1), start_pt_(2));
-    } else {
-        // Fallback to current position if no trajectory exists yet
+        Eigen::Vector3d theoretical_pos = info->traj.getPos(t_cur);
+
+        // Use actual position for starting point, but zero for velocity/acceleration
+        // Reason: We don't know the actual velocity, and using theoretical velocity
+        //         (which may not match reality) can cause incorrect path generation
         start_pt_ = current_pos_;
+        start_vel_ = Eigen::Vector3d::Zero();
+        start_acc_ = Eigen::Vector3d::Zero();
+
+        double pos_error = (current_pos_ - theoretical_pos).norm();
+        log_manager_->infof("Formation change - using ACTUAL position, ZERO vel/acc (error from theory: %.2fm)",
+                   pos_error);
+        log_manager_->infof("  Actual pos: (%.2f, %.2f, %.2f), Theoretical pos: (%.2f, %.2f, %.2f)",
+                   start_pt_(0), start_pt_(1), start_pt_(2),
+                   theoretical_pos(0), theoretical_pos(1), theoretical_pos(2));
+    } else {
+        start_pt_ = current_pos_;
+        start_vel_ = Eigen::Vector3d::Zero();
+        start_acc_ = Eigen::Vector3d::Zero();
         log_manager_->infof("Using current position (no trajectory yet): (%.2f, %.2f, %.2f)",
                    start_pt_(0), start_pt_(1), start_pt_(2));
     }
-
-    // Note: Alpha increment is now handled in computeAndPublishPaths() timer callback
-    // This ensures smooth, continuous transitions regardless of when formationTargetCallback is called
 
     bool success = false;
 
     std::vector<Eigen::Vector3d> waypoints;
 
-    // ⭐ Waypoints are already calculated with offsets in formationCommandCallback
-    // Just use them directly - no need to recalculate or add intermediate points
     if (!msg->formation_positions.empty()) {
-        // Simply extract waypoints from message (already have offsets applied)
         for (const auto& pos : msg->formation_positions) {
             waypoints.emplace_back(pos.x, pos.y, pos.z);
         }
@@ -783,8 +777,6 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
 
         end_pt_ = waypoints.back();
     } else {
-        // No formation_positions: use target_position directly
-        // (target_position already has offset applied from formationCommandCallback)
         Eigen::Vector3d my_target(
             msg->target_position.x,
             msg->target_position.y,
@@ -807,7 +799,6 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         log_manager_->infof("waypoint: %.2f, %.2f, %.2f", wp(0), wp(1), wp(2));
     }
 
-    // Visualize waypoints in RViz (optional)
     if (enable_waypoint_markers_) {
         visualization_msgs::msg::Marker marker;
         marker.header.frame_id = "map";
@@ -818,7 +809,6 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         marker.action = visualization_msgs::msg::Marker::ADD;
         marker.scale.x = marker.scale.y = marker.scale.z = 0.3;  // Sphere size
 
-        // Set color based on drone_id
         if (drone_id_ == 0) {
             marker.color.r = 1.0; marker.color.g = 0.0; marker.color.b = 0.0;  // Red
         } else if (drone_id_ == 1) {
@@ -830,7 +820,6 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         }
         marker.color.a = 1.0;
 
-        // Add all waypoints
         for (const auto& wp : waypoints) {
             geometry_msgs::msg::Point p;
             p.x = wp(0);
@@ -850,7 +839,7 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
     path_manager_->setFormationInfo(drone_id_, current_formation_type_, formation_pattern);
 
     success = path_manager_->planGlobalTraj(
-        start_pt_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+        start_pt_, start_vel_, start_acc_,
         waypoints, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
     if (success) {
@@ -1152,61 +1141,12 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
     log_manager_->infof("Drone %d final target: (%.2f, %.2f, %.2f) with %zu waypoints",
                drone_id_, my_target.x(), my_target.y(), my_target.z(), my_waypoints.size());
 
-    // ⭐ Formation change delay mechanism for real mode
-    // When formation changes in real mode, we need to wait for other drones' trajectories
-    // to arrive via serial before replanning. Without this delay, the optimizer generates
-    // overly complex trajectories (37 segments instead of 3-6) because it doesn't have
-    // complete swarm trajectory information for collision avoidance.
-    if (formation_changed && !rviz_simulation_) {
-        // Real mode with formation change: delay 300ms to allow trajectory synchronization
-        log_manager_->infof("[FORMATION SYNC] Drone %d: Formation changed in real mode, "
-                   "delaying replan by 300ms to wait for other drones' trajectories",
-                   drone_id_);
-
-        // Store pending formation target
-        pending_formation_target_ = std::make_shared<PendingFormationTarget>();
-        pending_formation_target_->target = my_target;
-        pending_formation_target_->waypoints = my_waypoints;
-        pending_formation_target_->formation_changed = formation_changed;
-        pending_formation_target_->formation_offset = my_formation_offset;
-
-        // Cancel existing timer if any
-        if (formation_delay_timer_) {
-            formation_delay_timer_->cancel();
-        }
-
-        // Create one-shot timer (300ms delay)
-        formation_delay_timer_ = node_->create_wall_timer(
-            std::chrono::milliseconds(300),
-            [this]() {
-                if (pending_formation_target_) {
-                    log_manager_->infof("[FORMATION SYNC] Drone %d: Delay finished, "
-                               "publishing formation target now", drone_id_);
-
-                    publishFormationTarget(
-                        pending_formation_target_->target,
-                        pending_formation_target_->waypoints,
-                        pending_formation_target_->formation_changed,
-                        pending_formation_target_->formation_offset
-                    );
-
-                    pending_formation_target_.reset();
-                }
-                // Cancel timer after one-shot execution
-                formation_delay_timer_->cancel();
-            }
-        );
+    if (formation_changed) {
+        log_manager_->infof("[FORMATION SYNC] Drone %d: Formation changed, immediate publish", drone_id_);
     } else {
-        // Simulation mode OR first formation (no change): immediate publish
-        if (formation_changed) {
-            log_manager_->infof("[FORMATION SYNC] Drone %d: Formation changed in simulation mode, "
-                       "immediate publish (no delay needed)", drone_id_);
-        } else {
-            log_manager_->infof("[FORMATION SYNC] Drone %d: First formation or no change, "
-                       "immediate publish", drone_id_);
-        }
-        publishFormationTarget(my_target, my_waypoints, formation_changed, my_formation_offset);
+        log_manager_->infof("[FORMATION SYNC] Drone %d: First formation or no change, immediate publish", drone_id_);
     }
+    publishFormationTarget(my_target, my_waypoints, formation_changed, my_formation_offset);
 }
 
 void ReplanFSM::generateFormationTargets(

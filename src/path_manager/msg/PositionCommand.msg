@@ -29,3 +29,6 @@ uint8 TRAJECTORY_STATUS_IMPOSSIBLE = 7
 
 # Its ID number will start from 1, allowing you comparing it with 0.
 uint8 trajectory_flag
+
+# Flag to indicate if this is the final mission (for disarm decision)
+bool is_final_mission

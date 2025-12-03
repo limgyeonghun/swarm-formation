@@ -16,3 +16,6 @@ float32[] coef_x
 float32[] coef_y
 float32[] coef_z
 float32[] duration
+
+# Flag to indicate if this is the final mission (for disarm decision)
+bool is_final_mission

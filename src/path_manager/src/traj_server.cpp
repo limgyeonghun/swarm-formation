@@ -33,6 +33,7 @@ private:
     bool have_local_traj_ = false;
     int last_traj_id_ = -1;
     double traj_update_time_ = 0.0;
+    bool is_final_mission_ = false;
 };
 
 TrajServer::TrajServer() : Node("traj_server") {
@@ -73,6 +74,7 @@ void TrajServer::trajCallback(const path_manager::msg::PolyTraj::SharedPtr msg) 
         last_traj_id_ = msg->traj_id;
         traj_update_time_ = now().seconds();
     }
+    is_final_mission_ = msg->is_final_mission;
 
     local_traj_.drone_id = msg->drone_id;
     local_traj_.traj_id = msg->traj_id;
@@ -175,6 +177,7 @@ void TrajServer::publishPositionCommand() {
     msg.trajectory_flag = is_trajectory_completed ?
         path_manager::msg::PositionCommand::TRAJECTORY_STATUS_COMPLETED :
         path_manager::msg::PositionCommand::TRAJECTORY_STATUS_READY;
+    msg.is_final_mission = is_final_mission_;
 
     pos_cmd_pub_->publish(msg);
 }
