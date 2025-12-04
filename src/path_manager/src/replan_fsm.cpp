@@ -158,6 +158,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
     odom_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     timer_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    formation_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     std::string odom_topic = "/vehicle" + std::to_string(drone_id_+1) + "/target_position";
     std::string topic_prefix = "/V" + std::to_string(drone_id_+1);    
@@ -186,13 +187,19 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         topic_prefix + "/j_fi/broadcast_traj_recv", sensor_qos,
         std::bind(&ReplanFSM::recvBroadcastPolyTrajCallback, this, std::placeholders::_1));
 
+    rclcpp::SubscriptionOptions formation_target_options;
+    formation_target_options.callback_group = formation_callback_group_;
     formation_target_sub_ = node_->create_subscription<path_manager::msg::FormationTarget>(
         "formation_targets", sensor_qos,
-        std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1));
+        std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1),
+        formation_target_options);
 
+    rclcpp::SubscriptionOptions formation_cmd_options;
+    formation_cmd_options.callback_group = formation_callback_group_;
     formation_cmd_sub_ = node_->create_subscription<path_manager::msg::FormationCommand>(
         topic_prefix + "/formation_command", sensor_qos,
-        std::bind(&ReplanFSM::formationCommandCallback, this, std::placeholders::_1));
+        std::bind(&ReplanFSM::formationCommandCallback, this, std::placeholders::_1),
+        formation_cmd_options);
 
     formation_target_pub_ = node_->create_publisher<path_manager::msg::FormationTarget>(
         "formation_targets", sensor_qos);
