@@ -740,20 +740,21 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         LocalTrajData *info = &path_manager_->traj_.local_traj;
         double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - info->start_time;
         Eigen::Vector3d theoretical_pos = info->traj.getPos(t_cur);
+        Eigen::Vector3d theoretical_vel = info->traj.getVel(t_cur);
+        Eigen::Vector3d theoretical_acc = info->traj.getAcc(t_cur);
 
-        // Use actual position for starting point, but zero for velocity/acceleration
-        // Reason: We don't know the actual velocity, and using theoretical velocity
-        //         (which may not match reality) can cause incorrect path generation
-        start_pt_ = current_pos_;
-        start_vel_ = Eigen::Vector3d::Zero();
-        start_acc_ = Eigen::Vector3d::Zero();
+        // Use trajectory position for smooth formation change
+        // This prevents jumps in commanded position during formation transitions
+        start_pt_ = theoretical_pos;
+        start_vel_ = theoretical_vel;
+        start_acc_ = theoretical_acc;
 
         double pos_error = (current_pos_ - theoretical_pos).norm();
-        log_manager_->infof("Formation change - using ACTUAL position, ZERO vel/acc (error from theory: %.2fm)",
+        log_manager_->infof("Formation change - using TRAJECTORY position/vel/acc (error from actual: %.2fm)",
                    pos_error);
-        log_manager_->infof("  Actual pos: (%.2f, %.2f, %.2f), Theoretical pos: (%.2f, %.2f, %.2f)",
+        log_manager_->infof("  Trajectory pos: (%.2f, %.2f, %.2f), Actual pos: (%.2f, %.2f, %.2f)",
                    start_pt_(0), start_pt_(1), start_pt_(2),
-                   theoretical_pos(0), theoretical_pos(1), theoretical_pos(2));
+                   current_pos_(0), current_pos_(1), current_pos_(2));
     } else {
         start_pt_ = current_pos_;
         start_vel_ = Eigen::Vector3d::Zero();

@@ -33,9 +33,9 @@ RoverControl::RoverControl() : Node("RoverControl"), index_(0), mavlink_id_(1), 
     auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 20), qos_profile);
 
     status_sub_ = this->create_subscription<VehicleStatus>(
-        topic_prefix_out + "vehicle_status_v1", qos, bind(&RoverControl::status_cb, this, std::placeholders::_1));
+        topic_prefix_out + "vehicle_status", qos, bind(&RoverControl::status_cb, this, std::placeholders::_1));
     position_sub_ = this->create_subscription<VehicleLocalPosition>(
-        topic_prefix_out + "vehicle_local_position_v1", qos, bind(&RoverControl::pos_cb, this, std::placeholders::_1));
+        topic_prefix_out + "vehicle_local_position", qos, bind(&RoverControl::pos_cb, this, std::placeholders::_1));
     // target_sub_ = this->create_subscription<PositionCommand>(
     //     topic_prefix_in + "target_position", qos, bind(&RoverControl::target_cb, this, std::placeholders::_1));
 
