@@ -74,9 +74,8 @@ public:
     void formationCommandCallback(const path_manager::msg::FormationCommand::SharedPtr msg);
     void polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     void globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
-    rclcpp::CallbackGroup::SharedPtr odom_callback_group_;
-    rclcpp::CallbackGroup::SharedPtr timer_callback_group_;
-    rclcpp::CallbackGroup::SharedPtr formation_callback_group_;
+    // Single callback group for all callbacks to prevent race conditions
+    rclcpp::CallbackGroup::SharedPtr main_callback_group_;
 
 private:
     rclcpp::Node::SharedPtr node_;

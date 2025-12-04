@@ -156,9 +156,8 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
     auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
-    odom_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    timer_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    formation_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    // Create single callback group for all callbacks to prevent race conditions on shared variables
+    main_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     std::string odom_topic = "/vehicle" + std::to_string(drone_id_+1) + "/target_position";
     std::string topic_prefix = "/V" + std::to_string(drone_id_+1);    
@@ -167,12 +166,17 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     global_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>("planning/global", sensor_qos);
     broadcast_traj_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/broadcast_traj_send", sensor_qos);
 
+    rclcpp::SubscriptionOptions position_options;
+    position_options.callback_group = main_callback_group_;
+
     if (rviz_simulation_)
     {
         // Internal agent topic for simulation
         std::string target_position_topic = "/agent" + std::to_string(drone_id_) + "/target_position";
         target_position_sub_ = node_->create_subscription<path_manager::msg::PositionCommand>(
-            target_position_topic, sensor_qos, std::bind(&ReplanFSM::targetPositionCallback, this, std::placeholders::_1));
+            target_position_topic, sensor_qos,
+            std::bind(&ReplanFSM::targetPositionCallback, this, std::placeholders::_1),
+            position_options);
         have_position_ = true;  // We have initial position from parameters
     }
     else
@@ -180,22 +184,27 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         // External MAVLink topic for real PX4
         std::string px4_position_topic = "/vehicle" + std::to_string(mavlink_id_) + "/fmu/out/vehicle_local_position";
         px4_position_sub_ = node_->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-        px4_position_topic, sensor_qos, std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1));
+            px4_position_topic, sensor_qos,
+            std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1),
+            position_options);
     }
 
+    rclcpp::SubscriptionOptions broadcast_options;
+    broadcast_options.callback_group = main_callback_group_;
     broadcast_traj_sub_ = node_->create_subscription<path_manager::msg::PolyTraj>(
         topic_prefix + "/j_fi/broadcast_traj_recv", sensor_qos,
-        std::bind(&ReplanFSM::recvBroadcastPolyTrajCallback, this, std::placeholders::_1));
+        std::bind(&ReplanFSM::recvBroadcastPolyTrajCallback, this, std::placeholders::_1),
+        broadcast_options);
 
     rclcpp::SubscriptionOptions formation_target_options;
-    formation_target_options.callback_group = formation_callback_group_;
+    formation_target_options.callback_group = main_callback_group_;
     formation_target_sub_ = node_->create_subscription<path_manager::msg::FormationTarget>(
         "formation_targets", sensor_qos,
         std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1),
         formation_target_options);
 
     rclcpp::SubscriptionOptions formation_cmd_options;
-    formation_cmd_options.callback_group = formation_callback_group_;
+    formation_cmd_options.callback_group = main_callback_group_;
     formation_cmd_sub_ = node_->create_subscription<path_manager::msg::FormationCommand>(
         topic_prefix + "/formation_command", sensor_qos,
         std::bind(&ReplanFSM::formationCommandCallback, this, std::placeholders::_1),
@@ -207,7 +216,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     waypoint_marker_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
         "waypoint_markers", 10);
 
-    timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this), timer_callback_group_);
+    timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this), main_callback_group_);
 }
 
 void ReplanFSM::init()
@@ -424,6 +433,21 @@ void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::S
     new_pos(0) = msg->x + offset_pt_(0);
     new_pos(1) = msg->y + offset_pt_(1);
     new_pos(2) = offset_pt_(2);
+
+    // Sanity check: detect position jumps (likely from PX4 sensor glitches)
+    if (have_position_) {
+        double position_jump = (new_pos - current_pos_).norm();
+        const double MAX_POSITION_JUMP = 50.0;  // 50m threshold
+
+        if (position_jump > MAX_POSITION_JUMP) {
+            FSM_LOG_WARN("PX4 position jump detected! Distance: %.2fm, rejecting update. "
+                        "Old: (%.2f, %.2f, %.2f), New: (%.2f, %.2f, %.2f)",
+                        position_jump,
+                        current_pos_(0), current_pos_(1), current_pos_(2),
+                        new_pos(0), new_pos(1), new_pos(2));
+            return;  // Reject this position update
+        }
+    }
 
     current_pos_ = new_pos;
     swarm_positions_[drone_id_] = new_pos;
@@ -664,14 +688,24 @@ bool ReplanFSM::planFromLocalTraj(bool flag_use_poly_init, bool use_formation) {
     LocalTrajData *info = &path_manager_->traj_.local_traj;
     double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - path_manager_->traj_.local_traj.start_time;
 
-    // start_pt_ = current_pos_;
-    // RCLCPP_ERROR(node_->get_logger(), "start_pt_: %.2f, %.2f, %.2f", start_pt_(0), start_pt_(1), start_pt_(2));
-    start_pt_ = info->traj.getPos(t_cur);
-    start_vel_ = info->traj.getVel(t_cur);
-    start_acc_ = info->traj.getAcc(t_cur);
+    // Check if trajectory is still valid (not expired)
+    // If t_cur exceeds duration, the trajectory has expired and polynomial extrapolation would cause huge errors
+    if (t_cur > info->duration + 0.5) {  // 0.5s tolerance
+        FSM_LOG_WARN("Trajectory expired! t_cur=%.2fs > duration=%.2fs, using current_pos_ instead",
+                     t_cur, info->duration);
+        start_pt_ = current_pos_;
+        start_vel_ = Eigen::Vector3d::Zero();
+        start_acc_ = Eigen::Vector3d::Zero();
+    } else {
+        // start_pt_ = current_pos_;
+        // RCLCPP_ERROR(node_->get_logger(), "start_pt_: %.2f, %.2f, %.2f", start_pt_(0), start_pt_(1), start_pt_(2));
+        start_pt_ = info->traj.getPos(t_cur);
+        start_vel_ = info->traj.getVel(t_cur);
+        start_acc_ = info->traj.getAcc(t_cur);
+    }
 
     double t_ahead = std::min(t_cur + n_seconds_ahead_, info->duration);
-    Eigen::Vector3d desired_start_pt = info->traj.getPos(t_cur);
+    Eigen::Vector3d desired_start_pt = info->traj.getPos(std::min(t_cur, info->duration));
 
     bool success = callPathManager(flag_use_poly_init, false, use_formation);
     return success;
@@ -884,15 +918,12 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         else if (exec_state_ == EXEC_TRAJ)
             changeFSMExecState(REPLAN_TRAJ, "formationTargetCallback");
 
-        if (enable_global_trajectory_pub_) {
-            path_manager::msg::PolyTraj traj_msg;
-            globalTraj2ROSMsg(traj_msg);
-            global_path_pub_->publish(traj_msg);
-        }
+        // NOTE: Global trajectory publish removed from formationTargetCallback to prevent blocking
+        // The global trajectory will be published in computeAndPublishPaths instead
+        // This fixes the race condition that caused 20-60 second freezes during formation transitions
 
-        RCLCPP_INFO(node_->get_logger(), "Successfully generated%s global trajectory for drone %d",
-                    enable_global_trajectory_pub_ ? " and published" : "", drone_id_);
-        log_manager_->infof("Successfully generated and published global trajectory for drone %d", drone_id_);
+        RCLCPP_INFO(node_->get_logger(), "Successfully generated global trajectory for drone %d", drone_id_);
+        log_manager_->infof("Successfully generated global trajectory for drone %d", drone_id_);
     }
     else {
         RCLCPP_ERROR(node_->get_logger(), "Unable to generate global trajectory for drone %d!", drone_id_);
