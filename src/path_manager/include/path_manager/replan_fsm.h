@@ -74,8 +74,11 @@ public:
     void formationCommandCallback(const path_manager::msg::FormationCommand::SharedPtr msg);
     void polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     void globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
-    // Single callback group for all callbacks to prevent race conditions
+    // Callback groups:
+    // - main_callback_group: FSM logic, trajectory planning, formation commands
+    // - position_callback_group: Position updates (separate to avoid blocking)
     rclcpp::CallbackGroup::SharedPtr main_callback_group_;
+    rclcpp::CallbackGroup::SharedPtr position_callback_group_;
 
 private:
     rclcpp::Node::SharedPtr node_;

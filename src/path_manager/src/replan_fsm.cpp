@@ -156,18 +156,23 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
     auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
-    // Create single callback group for all callbacks to prevent race conditions on shared variables
+    // Create callback groups:
+    // - main_callback_group: For FSM logic, trajectory planning, formation commands (MutuallyExclusive)
+    // - position_callback_group: For position updates only (separate to avoid blocking)
     main_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    position_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     std::string odom_topic = "/vehicle" + std::to_string(drone_id_+1) + "/target_position";
-    std::string topic_prefix = "/V" + std::to_string(drone_id_+1);    
+    std::string topic_prefix = "/V" + std::to_string(drone_id_+1);
 
     optimized_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>("planning/trajectory", sensor_qos);
     global_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>("planning/global", sensor_qos);
     broadcast_traj_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/broadcast_traj_send", sensor_qos);
 
+    // Position callback uses separate callback group to ensure it always runs
+    // even when main callback group is blocked by long trajectory planning
     rclcpp::SubscriptionOptions position_options;
-    position_options.callback_group = main_callback_group_;
+    position_options.callback_group = position_callback_group_;
 
     if (rviz_simulation_)
     {
@@ -649,20 +654,30 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
     have_new_target_ = false;
 
     if (enable_global_trajectory_pub_) {
+        FSM_LOG_DEBUG("Publishing global trajectory...");
         path_manager::msg::PolyTraj msg2;
         globalTraj2ROSMsg(msg2);
         global_path_pub_->publish(msg2);
+        FSM_LOG_DEBUG("Global trajectory published");
     }
 
     if (plan_success) {
+        FSM_LOG_DEBUG("Publishing local trajectories...");
         path_manager::msg::PolyTraj msg;
         polyTraj2ROSMsg(msg);
 
+        FSM_LOG_DEBUG("Publishing to planning/trajectory...");
         optimized_path_pub_->publish(msg);
+        FSM_LOG_DEBUG("Published to planning/trajectory");
+
+        FSM_LOG_DEBUG("Publishing to broadcast_traj_send...");
         broadcast_traj_pub_->publish(msg);
+        FSM_LOG_DEBUG("Published to broadcast_traj_send");
+
         have_local_traj_ = true;
     }
 
+    FSM_LOG_DEBUG("callPathManager returning %s", plan_success ? "SUCCESS" : "FAILURE");
     return plan_success;
 }
 
