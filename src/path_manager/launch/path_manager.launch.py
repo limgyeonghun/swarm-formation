@@ -347,7 +347,7 @@ def create_drone_nodes(context, *args, **kwargs):
     rosbag_actions = []
     if record_bag:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        bag_dir = os.path.expanduser('~/rosbag_data')
+        bag_dir = './logs'
         bag_name = f"drone{target_drone_id}_trajectory_{timestamp}"
         bag_path = os.path.join(bag_dir, bag_name)
 
