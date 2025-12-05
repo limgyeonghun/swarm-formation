@@ -22,45 +22,47 @@ JfiBridgeNode::JfiBridgeNode()
   const std::string topic_prefix = "/V" + sid;
 
   /* -------- 3. Publishers --------------------------------------------- */
-  // Use sensor_data QoS profile (BEST_EFFORT) for all topics to match path_manager
-  // This prevents blocking when serial communication is slow
+  // Use RELIABLE QoS to match jfi_comm (which uses default RELIABLE)
+  auto qos_reliable = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+
+  // Use BEST_EFFORT for path_manager topics (original sensor_data QoS)
   rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
-  auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
+  auto qos_best_effort = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
-  // Use larger history depth for serial communication to reduce message loss
-  auto sensor_qos_large = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 50), qos_profile);
 
-  // To jfi_comm (ROS -> Serial) - sensor_qos with larger queue to prevent blocking
+
+
+  // To jfi_comm (ROS -> Serial) - RELIABLE to match jfi_comm
   pub_to_jfi_ = create_publisher<jfi_comm::msg::SwarmComm>(
-      "jfi_comm/in/packet", sensor_qos_large);
+      "jfi_comm/in/packet", qos_reliable);
 
-  // From serial to ROS - sensor_qos for path_manager
+  // From serial to ROS - BEST_EFFORT for path_manager
   pub_poly_traj_ = create_publisher<path_manager::msg::PolyTraj>(
-      topic_prefix + "/j_fi/broadcast_traj_recv", sensor_qos);
+      topic_prefix + "/j_fi/broadcast_traj_recv", qos_best_effort);
 
   pub_formation_cmd_ = create_publisher<path_manager::msg::FormationCommand>(
-      topic_prefix + "/formation_command", sensor_qos);
+      topic_prefix + "/formation_command", qos_best_effort);
 
   /* -------- 4. Subscribers -------------------------------------------- */
 
-  // From path_manager (ROS -> Serial): PolyTraj - sensor_qos
+  // From path_manager (ROS -> Serial): PolyTraj - BEST_EFFORT
   sub_poly_traj_ = create_subscription<path_manager::msg::PolyTraj>(
-      topic_prefix + "/planning/broadcast_traj_send", sensor_qos,
+      topic_prefix + "/planning/broadcast_traj_send", qos_best_effort,
       std::bind(&JfiBridgeNode::polyTrajToSerialCallback, this, std::placeholders::_1));
 
-  // From path_manager (ROS -> Serial): FormationCommand (Commander only) - sensor_qos
+  // From path_manager (ROS -> Serial): FormationCommand (Commander only) - BEST_EFFORT
   if (system_id_ == 1) {
     sub_formation_cmd_ = create_subscription<path_manager::msg::FormationCommand>(
-        "formation_command", sensor_qos,
+        "formation_command", qos_best_effort,
         std::bind(&JfiBridgeNode::formationCommandToSerialCallback, this, std::placeholders::_1));
     RCLCPP_INFO(get_logger(), "Commander mode: Subscribed to 'formation_command'");
   } else {
     RCLCPP_INFO(get_logger(), "Follower mode: Not subscribing to formation_command");
   }
 
-  // From jfi_comm (Serial -> ROS) - sensor_qos_large to match publisher QoS
+  // From jfi_comm (Serial -> ROS) - RELIABLE to match jfi_comm
   sub_from_jfi_ = create_subscription<jfi_comm::msg::SwarmComm>(
-      "jfi_comm/out/packet", sensor_qos_large,
+      "jfi_comm/out/packet", qos_reliable,
       std::bind(&JfiBridgeNode::swarmCommFromSerialCallback, this, std::placeholders::_1));
 
   RCLCPP_INFO(get_logger(), "JFi Bridge Node initialized successfully");
