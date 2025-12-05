@@ -1,6 +1,7 @@
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
     OpaqueFunction,
     TimerAction,
@@ -15,6 +16,8 @@ from launch_ros.substitutions import FindPackageShare
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 import yaml
 import glob
+import os
+from datetime import datetime
 
 def load_yaml_file(file_path):
     with open(file_path, 'r') as file:
@@ -35,6 +38,9 @@ def create_drone_nodes(context, *args, **kwargs):
 
     real_str = context.perform_substitution(LaunchConfiguration('real'))
     real_mode = (real_str.lower() == 'true')
+
+    record_bag_str = context.perform_substitution(LaunchConfiguration('record_bag'))
+    record_bag = (record_bag_str.lower() == 'true')
 
     # NOTE: real_mode and rviz_sim are independent:
     # - real_mode=true: Use JFI serial communication
@@ -337,15 +343,43 @@ def create_drone_nodes(context, *args, **kwargs):
         actions=[formation_commander],
     )
 
+    # ROSbag recording (optional)
+    rosbag_actions = []
+    if record_bag:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bag_dir = os.path.expanduser('~/rosbag_data')
+        bag_name = f"drone{target_drone_id}_trajectory_{timestamp}"
+        bag_path = os.path.join(bag_dir, bag_name)
+
+        # Create directory if it doesn't exist
+        os.makedirs(bag_dir, exist_ok=True)
+
+        # Target position topic for this drone
+        target_position_topic = f'/agent{target_drone_id}/target_position'
+
+        print(f"ROSbag recording enabled: {bag_path}")
+        print(f"Recording topics: /opt_trajectory, {target_position_topic}")
+        rosbag_process = ExecuteProcess(
+            cmd=['ros2', 'bag', 'record',
+                 '-o', bag_path,
+                 '/opt_trajectory',
+                 target_position_topic],
+            output='screen',
+            shell=False
+        )
+        rosbag_actions = [rosbag_process]
+    else:
+        print("ROSbag recording disabled")
+
     # Formation commander runs only on drone 0 (in real mode) or in simulation mode
     if real_mode and target_drone_id != 0:
         # Real mode and not drone 0: don't run formation_commander
         print(f"Drone {target_drone_id}: formation_commander will NOT run (only drone 0 runs it in real mode)")
-        return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed]
+        return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed] + rosbag_actions
     else:
         # Simulation mode or drone 0: run formation_commander
         print(f"Formation_commander will run (simulation mode or drone 0)")
-        return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed, formation_commander_delayed]
+        return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed, formation_commander_delayed] + rosbag_actions
 
 def generate_launch_description():
     return LaunchDescription([
@@ -378,6 +412,11 @@ def generate_launch_description():
             'jfi_baud_rate',
             default_value='115200',
             description='JFI serial port baud rate'
+        ),
+        DeclareLaunchArgument(
+            'record_bag',
+            default_value='false',
+            description='Enable rosbag recording for trajectory topics'
         ),
         OpaqueFunction(function=create_drone_nodes),
     ])

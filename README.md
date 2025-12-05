@@ -32,6 +32,6 @@ ros2 launch path_manager path_manager.launch.py real:=false rviz_simulation:=tru
 ### Real Hardware Mode
 ```bash
 # Launch with rover ID 2 and real hardware
-ros2 launch path_manager path_manager.launch.py drone_id:=2 real:=true
+ros2 launch path_manager path_manager.launch.py drone_id:=2 real:=true record_bag:=true
 
 ```
