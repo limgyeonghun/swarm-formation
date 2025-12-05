@@ -401,7 +401,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'scenario',
             default_value='test',
-            description='Scenario name (default, straight)'
+            description='Scenario name (default, straight, test)'
         ),
         DeclareLaunchArgument(
             'jfi_port',

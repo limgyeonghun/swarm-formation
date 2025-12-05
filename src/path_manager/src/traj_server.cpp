@@ -26,13 +26,9 @@ private:
 
     LocalTrajData local_traj_;
     int drone_id_;
-    double n_seconds_ahead_;
-    double rampup_duration_;
-    double initial_lookahead_offset_;
     bool rviz_simulation_;
     bool have_local_traj_ = false;
     int last_traj_id_ = -1;
-    double traj_update_time_ = 0.0;
     bool is_final_mission_ = false;
 };
 
@@ -43,15 +39,6 @@ TrajServer::TrajServer() : Node("traj_server") {
 
     declare_parameter("rviz_simulation", false);
     get_parameter("rviz_simulation", rviz_simulation_);
-
-    declare_parameter("fsm/n_seconds_ahead", -1.0);
-    get_parameter("fsm/n_seconds_ahead", n_seconds_ahead_);
-
-    declare_parameter("fsm/rampup_duration", 1.0);
-    get_parameter("fsm/rampup_duration", rampup_duration_);
-
-    declare_parameter("fsm/initial_lookahead_offset", 0.3);
-    get_parameter("fsm/initial_lookahead_offset", initial_lookahead_offset_);
 
     rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
     auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
@@ -69,10 +56,8 @@ TrajServer::TrajServer() : Node("traj_server") {
 void TrajServer::trajCallback(const path_manager::msg::PolyTraj::SharedPtr msg) {
     if (msg->drone_id != drone_id_) return;
 
-    // Track trajectory update for ramp-up logic
     if (msg->traj_id != last_traj_id_) {
         last_traj_id_ = msg->traj_id;
-        traj_update_time_ = now().seconds();
     }
     is_final_mission_ = msg->is_final_mission;
 
@@ -97,75 +82,65 @@ void TrajServer::trajCallback(const path_manager::msg::PolyTraj::SharedPtr msg) 
     local_traj_.traj = poly_traj::Trajectory(dura, cMats);
     local_traj_.duration = local_traj_.traj.getTotalDuration();
     have_local_traj_ = true;
-
-    // RCLCPP_INFO(get_logger(), "Received new trajectory for drone %d, duration: %.2f", drone_id_, local_traj_.duration);
 }
 
 void TrajServer::publishPositionCommand() {
     if (!have_local_traj_) return;
 
-    static rclcpp::Time prev_ros_time{};
-    static std::chrono::steady_clock::time_point prev_wall_tp{};
-
     const rclcpp::Time now_ros = now();
-    const auto now_wall = std::chrono::steady_clock::now();
-
-    prev_ros_time = now_ros;
-    prev_wall_tp = now_wall;
-
     double t_cur = now_ros.seconds() - local_traj_.start_time;
-    t_cur = std::min(local_traj_.duration, t_cur);
 
-    double t_ahead = (t_cur + n_seconds_ahead_);
-    Eigen::Vector3d speed_cmd_pos = local_traj_.traj.getPos(t_ahead);
-    Eigen::Vector3d speed_cmd_vel = local_traj_.traj.getVel(t_ahead);
-    Eigen::Vector3d speed_cmd_acc = local_traj_.traj.getAcc(t_ahead);
+    Eigen::Vector3d pos, vel, acc;
 
-    // Dynamic lookahead for direction to prevent oscillation at initial ramp-up
-    double elapsed_since_update = now_ros.seconds() - traj_update_time_;
-    double direction_lookahead = 0.0;
-
-    if (elapsed_since_update < rampup_duration_) {
-        // Gradually decrease the lookahead offset during ramp-up period
-        double rampup_factor = 1.0 - (elapsed_since_update / rampup_duration_);
-        direction_lookahead = initial_lookahead_offset_ * rampup_factor;
+    // Similar to Swarm-Formation logic
+    if (t_cur < local_traj_.duration && t_cur >= 0.0) {
+        // Normal execution: sample trajectory at current time
+        pos = local_traj_.traj.getPos(t_cur);
+        vel = local_traj_.traj.getVel(t_cur);
+        acc = local_traj_.traj.getAcc(t_cur);
+    } else if (t_cur >= local_traj_.duration) {
+        // Trajectory finished: hover at end
+        pos = local_traj_.traj.getPos(local_traj_.duration);
+        vel.setZero();
+        acc.setZero();
+    } else {
+        // t_cur < 0: trajectory not started yet, don't publish
+        return;
     }
 
-    Eigen::Vector3d direction_cmd_pos = local_traj_.traj.getPos(t_cur + direction_lookahead);
-
-    // Eigen::Vector3d jerk = local_traj_.traj.getJerk(t_ahead);
-
+    // Calculate yaw from velocity
     double yaw = 0.0;
     double yaw_dot = 0.0;
 
-    if (speed_cmd_vel.norm() > 1e-3) {
-        yaw = std::atan2(speed_cmd_vel(1), speed_cmd_vel(0));
+    if (vel.norm() > 1e-3) {
+        yaw = std::atan2(vel(1), vel(0));
     }
 
+    // Publish position command
     path_manager::msg::PositionCommand msg{};
     msg.header.stamp = now_ros;
     msg.header.frame_id = "odom";
 
-    msg.position.x = speed_cmd_pos(0);
-    msg.position.y = speed_cmd_pos(1);
-    msg.position.z = speed_cmd_pos(2);
+    msg.position.x = pos(0);
+    msg.position.y = pos(1);
+    msg.position.z = pos(2);
 
-    msg.velocity.x = speed_cmd_vel(0);
-    msg.velocity.y = speed_cmd_vel(1);
-    msg.velocity.z = speed_cmd_vel(2);
+    msg.velocity.x = vel(0);
+    msg.velocity.y = vel(1);
+    msg.velocity.z = vel(2);
 
-    msg.acceleration.x = speed_cmd_acc(0);
-    msg.acceleration.y = speed_cmd_acc(1);
-    msg.acceleration.z = speed_cmd_acc(2);
+    msg.acceleration.x = acc(0);
+    msg.acceleration.y = acc(1);
+    msg.acceleration.z = acc(2);
 
     msg.jerk.x = NAN;
     msg.jerk.y = NAN;
     msg.jerk.z = NAN;
 
-    // Lookahead point on trajectory (for direction calculation, prevents corner cutting)
-    msg.lookahead_point.x = direction_cmd_pos.x();
-    msg.lookahead_point.y = direction_cmd_pos.y();
-    msg.lookahead_point.z = direction_cmd_pos.z();
+    // No separate lookahead - use same position
+    msg.lookahead_point.x = pos.x();
+    msg.lookahead_point.y = pos.y();
+    msg.lookahead_point.z = pos.z();
 
     msg.yaw = yaw;
     msg.yaw_dot = yaw_dot;

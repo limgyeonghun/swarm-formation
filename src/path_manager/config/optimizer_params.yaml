@@ -43,10 +43,7 @@
     # FSM Parameters
     fsm/thresh_replan_time: 0.25
     fsm/thresh_no_replan_meter: 1.0
-    fsm/replan_trajectory_time: 0.01
-    fsm/n_seconds_ahead: 0.5      # Lookahead distance on trajectory for direction (prevents corner cutting)
-    fsm/rampup_duration: 1.5      # Duration over which to ramp up to full speed after trajectory update
-    fsm/initial_lookahead_offset: 0.3  # Initial offset added to lookahead point on trajectory after update
+    fsm/replan_trajectory_time: 0.05
 
     # Hungarian Assignment Parameters
     fsm/hungarian_distance_weight: 1.0     # Weight for distance cost (default: 1.0)

@@ -75,9 +75,12 @@ public:
     void polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     void globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     // Callback groups:
-    // - main_callback_group: FSM logic, trajectory planning, formation commands
-    // - position_callback_group: Position updates (separate to avoid blocking)
-    rclcpp::CallbackGroup::SharedPtr main_callback_group_;
+    // - timer_callback_group: FSM timer only (MutuallyExclusive, dedicated for 10ms timer)
+    // - subscription_callback_group: Formation and broadcast subscriptions (MutuallyExclusive)
+    // - position_callback_group: Position updates (MutuallyExclusive, separate to avoid blocking)
+    // This separation prevents timer stalls when subscriptions are processing
+    rclcpp::CallbackGroup::SharedPtr timer_callback_group_;
+    rclcpp::CallbackGroup::SharedPtr subscription_callback_group_;
     rclcpp::CallbackGroup::SharedPtr position_callback_group_;
 
 private:

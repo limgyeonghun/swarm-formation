@@ -156,11 +156,16 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
     auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
-    // Create callback groups:
-    // - main_callback_group: For FSM logic, trajectory planning, formation commands (MutuallyExclusive)
-    // - position_callback_group: For position updates only (separate to avoid blocking)
-    main_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    // Create callback groups with dedicated separation to prevent timer stalls:
+    // - timer_callback_group: FSM timer only (MutuallyExclusive, runs independently)
+    // - subscription_callback_group: Formation/broadcast callbacks (MutuallyExclusive)
+    // - position_callback_group: Position updates (MutuallyExclusive, separate to avoid blocking)
+    // With MultiThreadedExecutor, these groups can run in parallel threads
+    timer_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    subscription_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     position_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    FSM_LOG_INFO("Callback groups created: timer, subscription, position (all MutuallyExclusive)");
 
     std::string odom_topic = "/vehicle" + std::to_string(drone_id_+1) + "/target_position";
     std::string topic_prefix = "/V" + std::to_string(drone_id_+1);
@@ -195,21 +200,21 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     }
 
     rclcpp::SubscriptionOptions broadcast_options;
-    broadcast_options.callback_group = main_callback_group_;
+    broadcast_options.callback_group = subscription_callback_group_;
     broadcast_traj_sub_ = node_->create_subscription<path_manager::msg::PolyTraj>(
         topic_prefix + "/j_fi/broadcast_traj_recv", sensor_qos,
         std::bind(&ReplanFSM::recvBroadcastPolyTrajCallback, this, std::placeholders::_1),
         broadcast_options);
 
     rclcpp::SubscriptionOptions formation_target_options;
-    formation_target_options.callback_group = main_callback_group_;
+    formation_target_options.callback_group = subscription_callback_group_;
     formation_target_sub_ = node_->create_subscription<path_manager::msg::FormationTarget>(
         "formation_targets", sensor_qos,
         std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1),
         formation_target_options);
 
     rclcpp::SubscriptionOptions formation_cmd_options;
-    formation_cmd_options.callback_group = main_callback_group_;
+    formation_cmd_options.callback_group = subscription_callback_group_;
     formation_cmd_sub_ = node_->create_subscription<path_manager::msg::FormationCommand>(
         topic_prefix + "/formation_command", sensor_qos,
         std::bind(&ReplanFSM::formationCommandCallback, this, std::placeholders::_1),
@@ -221,7 +226,8 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     waypoint_marker_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
         "waypoint_markers", 10);
 
-    timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this), main_callback_group_);
+    timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this), timer_callback_group_);
+    FSM_LOG_INFO("FSM timer created with dedicated callback group (10ms period)");
 }
 
 void ReplanFSM::init()
@@ -278,6 +284,19 @@ void ReplanFSM::computeAndPublishPaths() {
     if (fsm_num == 100) {
         fsm_num = 0;
     }
+
+    // DEBUG: Track FSM timer execution timing
+    static auto last_call_time = std::chrono::high_resolution_clock::now();
+    auto current_call_time = std::chrono::high_resolution_clock::now();
+    auto time_since_last_call = std::chrono::duration_cast<std::chrono::milliseconds>(
+        current_call_time - last_call_time).count();
+
+    // Log if timer was delayed significantly (> 50ms, should be ~10ms)
+    if (time_since_last_call > 50) {
+        FSM_LOG_WARN("[TIMER DELAY] FSM timer delayed by %ld ms (expected ~10ms) - state: %d",
+                     time_since_last_call, static_cast<int>(exec_state_));
+    }
+    last_call_time = current_call_time;
 
     // Check if we need to re-enable formation command subscription (safety fallback)
 
@@ -460,6 +479,9 @@ void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::S
 }
 
 void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg) {
+    auto callback_start = std::chrono::high_resolution_clock::now();
+    FSM_LOG_DEBUG("[CALLBACK START] recvBroadcastPolyTrajCallback");
+
     if (!path_manager_) {
         RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
         log_manager_->errorf("PathManager is not initialized!");
@@ -548,6 +570,10 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
             }
         }
     }
+
+    auto callback_end = std::chrono::high_resolution_clock::now();
+    auto callback_duration = std::chrono::duration_cast<std::chrono::microseconds>(callback_end - callback_start).count();
+    FSM_LOG_DEBUG("[CALLBACK END] recvBroadcastPolyTrajCallback (took %ld us)", callback_duration);
 }
 
 void ReplanFSM::polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
@@ -628,6 +654,8 @@ void ReplanFSM::globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
 }
 
 bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTraj, bool use_formation) {
+    auto replan_start = std::chrono::high_resolution_clock::now();
+
     path_manager_->getLocalTarget(start_pt_, end_pt_, local_target_pt_, local_target_vel_, t_to_target_);
 
     Eigen::Vector3d desired_start_pt, desired_start_vel, desired_start_acc;
@@ -645,11 +673,18 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
         desired_start_acc = start_acc_;
     }
 
-    bool plan_success = path_manager_-> computeAndOptimizePath( 
+    auto optimize_start = std::chrono::high_resolution_clock::now();
+    FSM_LOG_DEBUG("[TIMING] Starting computeAndOptimizePath (use_formation=%d)", use_formation);
+
+    bool plan_success = path_manager_-> computeAndOptimizePath(
         desired_start_pt, desired_start_vel, desired_start_acc,
         desired_start_time, local_target_pt_, local_target_vel_,
         (have_new_target_ || flag_use_poly_init),
         flag_randomPolyTraj, use_formation, have_local_traj_);
+
+    auto optimize_end = std::chrono::high_resolution_clock::now();
+    auto optimize_duration = std::chrono::duration_cast<std::chrono::milliseconds>(optimize_end - optimize_start).count();
+    FSM_LOG_DEBUG("[TIMING] computeAndOptimizePath took %ld ms", optimize_duration);
 
     have_new_target_ = false;
 
@@ -667,12 +702,23 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
         polyTraj2ROSMsg(msg);
 
         FSM_LOG_DEBUG("Publishing to planning/trajectory...");
+        auto pub_start_1 = std::chrono::high_resolution_clock::now();
         optimized_path_pub_->publish(msg);
-        FSM_LOG_DEBUG("Published to planning/trajectory");
+        auto pub_end_1 = std::chrono::high_resolution_clock::now();
+        auto pub_duration_1 = std::chrono::duration_cast<std::chrono::microseconds>(pub_end_1 - pub_start_1).count();
+        FSM_LOG_DEBUG("Published to planning/trajectory (took %ld us)", pub_duration_1);
 
         FSM_LOG_DEBUG("Publishing to broadcast_traj_send...");
+        auto pub_start_2 = std::chrono::high_resolution_clock::now();
         broadcast_traj_pub_->publish(msg);
-        FSM_LOG_DEBUG("Published to broadcast_traj_send");
+        auto pub_end_2 = std::chrono::high_resolution_clock::now();
+        auto pub_duration_2 = std::chrono::duration_cast<std::chrono::microseconds>(pub_end_2 - pub_start_2).count();
+        FSM_LOG_DEBUG("Published to broadcast_traj_send (took %ld us)", pub_duration_2);
+
+        // Warn if publishing took too long (potential blocking issue)
+        if (pub_duration_2 > 1000) { // > 1ms
+            FSM_LOG_WARN("[PUBLISH DELAY] broadcast_traj_send publish took %ld us", pub_duration_2);
+        }
 
         have_local_traj_ = true;
     }
@@ -703,20 +749,24 @@ bool ReplanFSM::planFromLocalTraj(bool flag_use_poly_init, bool use_formation) {
     LocalTrajData *info = &path_manager_->traj_.local_traj;
     double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - path_manager_->traj_.local_traj.start_time;
 
-    // Check if trajectory is still valid (not expired)
-    // If t_cur exceeds duration, the trajectory has expired and polynomial extrapolation would cause huge errors
-    if (t_cur > info->duration + 0.5) {  // 0.5s tolerance
-        FSM_LOG_WARN("Trajectory expired! t_cur=%.2fs > duration=%.2fs, using current_pos_ instead",
+    // Always use trajectory position for consistency and continuity
+    // If trajectory expired, clamp to duration to get the hover endpoint
+    // This avoids race conditions with current_pos_ (updated by different callback group)
+    // and ensures smooth velocity/acceleration continuity
+    double t_clamped = std::min(t_cur, info->duration);
+
+    start_pt_ = info->traj.getPos(t_clamped);
+    start_vel_ = info->traj.getVel(t_clamped);
+    start_acc_ = info->traj.getAcc(t_clamped);
+
+    // Log if trajectory expired (indicates timer was delayed)
+    if (t_cur > info->duration) {
+        FSM_LOG_WARN("Trajectory expired! t_cur=%.2fs > duration=%.2fs, using trajectory endpoint (clamped)",
                      t_cur, info->duration);
-        start_pt_ = current_pos_;
-        start_vel_ = Eigen::Vector3d::Zero();
-        start_acc_ = Eigen::Vector3d::Zero();
-    } else {
-        // start_pt_ = current_pos_;
-        // RCLCPP_ERROR(node_->get_logger(), "start_pt_: %.2f, %.2f, %.2f", start_pt_(0), start_pt_(1), start_pt_(2));
-        start_pt_ = info->traj.getPos(t_cur);
-        start_vel_ = info->traj.getVel(t_cur);
-        start_acc_ = info->traj.getAcc(t_cur);
+        FSM_LOG_DEBUG("  Trajectory endpoint: (%.2f, %.2f, %.2f), Current pos: (%.2f, %.2f, %.2f), Error: %.2fm",
+                     start_pt_(0), start_pt_(1), start_pt_(2),
+                     current_pos_(0), current_pos_(1), current_pos_(2),
+                     (start_pt_ - current_pos_).norm());
     }
 
     double t_ahead = std::min(t_cur + n_seconds_ahead_, info->duration);
@@ -753,6 +803,8 @@ void ReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_cal
 }
 
 void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg) {
+    auto callback_start = std::chrono::high_resolution_clock::now();
+
     if (msg->drone_id != drone_id_) {
         return;
     }
@@ -762,6 +814,7 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
     }
 
     FSM_LOG_INFO("Formation Target Triggered for drone %d!", drone_id_);
+    FSM_LOG_INFO("[TIMING] Formation target callback started");
 
     // Mission progress: move next_mission to current, clear next
     // This signals that we're working on the "next" mission now (which becomes current)
@@ -774,13 +827,21 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
 
     // Initialize optimizer if not already initialized
     if (!path_manager_->isOptimizerInitialized()) {
+        auto opt_init_start = std::chrono::high_resolution_clock::now();
         try {
             RCLCPP_INFO(node_->get_logger(), "Initializing optimizer for drone %d...", drone_id_);
             log_manager_->infof("Initializing optimizer for drone %d...", drone_id_);
+            FSM_LOG_INFO("[TIMING] Optimizer initialization started");
+
             path_manager_->initOptimizer();
             path_manager_->deliverTrajToOptimizer();
+
+            auto opt_init_end = std::chrono::high_resolution_clock::now();
+            auto opt_init_duration = std::chrono::duration_cast<std::chrono::milliseconds>(opt_init_end - opt_init_start).count();
+
             RCLCPP_INFO(node_->get_logger(), "Optimizer initialized successfully for drone %d", drone_id_);
             log_manager_->infof("Optimizer initialized successfully for drone %d", drone_id_);
+            FSM_LOG_INFO("[TIMING] Optimizer initialization took %ld ms", opt_init_duration);
 
             // Apply pending nonholonomic weight (set by formation command)
             path_manager_->setNonholonomicWeight(pending_weight_nonholonomic_);
@@ -891,13 +952,20 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
     }
 
     // Set formation info to PathManager for outer/inner line calculation
+    auto formation_setup_start = std::chrono::high_resolution_clock::now();
     std::vector<Eigen::Vector3d> formation_pattern =
         generateFormationPattern(current_formation_type_, num_drones_, current_formation_scale_);
     path_manager_->setFormationInfo(drone_id_, current_formation_type_, formation_pattern);
 
+    auto global_traj_start = std::chrono::high_resolution_clock::now();
+    FSM_LOG_INFO("[TIMING] Starting global trajectory planning");
     success = path_manager_->planGlobalTraj(
         start_pt_, start_vel_, start_acc_,
         waypoints, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+
+    auto global_traj_end = std::chrono::high_resolution_clock::now();
+    auto global_traj_duration = std::chrono::duration_cast<std::chrono::milliseconds>(global_traj_end - global_traj_start).count();
+    FSM_LOG_INFO("[TIMING] Global trajectory planning took %ld ms", global_traj_duration);
 
     if (success) {
         // Set current formation pattern to optimizer (immediate change)
@@ -944,6 +1012,10 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         RCLCPP_ERROR(node_->get_logger(), "Unable to generate global trajectory for drone %d!", drone_id_);
         log_manager_->errorf("Unable to generate global trajectory for drone %d!", drone_id_);
     }
+
+    auto callback_end = std::chrono::high_resolution_clock::now();
+    auto callback_duration = std::chrono::duration_cast<std::chrono::milliseconds>(callback_end - callback_start).count();
+    FSM_LOG_INFO("[TIMING] Formation target callback completed in %ld ms", callback_duration);
 }
 bool ReplanFSM::isMapReady(const Eigen::Vector3d& start_pos) {
     if (!path_manager_) {
@@ -981,6 +1053,9 @@ bool ReplanFSM::callEmergencyStop(const Eigen::Vector3d& stop_pos) {
 }
 
 void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationCommand::SharedPtr msg) {
+    auto callback_start = std::chrono::high_resolution_clock::now();
+    FSM_LOG_DEBUG("[CALLBACK START] formationCommandCallback (seq: %d)", msg->sequence);
+
     // Check for duplicate messages using sequence number
     if (msg->sequence <= last_received_sequence_) {
         FSM_LOG_DEBUG("Ignoring duplicate/old formation command (seq: %d, last: %d)",
@@ -1201,6 +1276,10 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
         log_manager_->infof("[FORMATION SYNC] Drone %d: First formation or no change, immediate publish", drone_id_);
     }
     publishFormationTarget(my_target, my_waypoints, formation_changed, my_formation_offset);
+
+    auto callback_end = std::chrono::high_resolution_clock::now();
+    auto callback_duration = std::chrono::duration_cast<std::chrono::milliseconds>(callback_end - callback_start).count();
+    FSM_LOG_DEBUG("[CALLBACK END] formationCommandCallback (took %ld ms)", callback_duration);
 }
 
 void ReplanFSM::generateFormationTargets(

@@ -231,19 +231,37 @@ namespace path_manager
         if (have_local_traj && use_formation)
         {
             double delta_replan_time = trajectory_start_time - rclcpp::Clock(RCL_ROS_TIME).now().seconds();
+            if (enable_debug_logs_) {
+                log_manager_->infof("[TIMING] delta_replan_time=%.3f ms (trajectory_start_time=%.3f, now=%.3f)",
+                                   delta_replan_time * 1000, trajectory_start_time, rclcpp::Clock(RCL_ROS_TIME).now().seconds());
+            }
             if (delta_replan_time > 0)
             {
-                // RCLCPP_INFO(node_->get_logger(), "Waiting for %.2f seconds to sync start time", delta_replan_time);
+                if (enable_debug_logs_) {
+                    log_manager_->infof("[TIMING] Sleeping for %.3f ms to sync trajectory start time", delta_replan_time * 1000);
+                }
                 rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::duration<double>(delta_replan_time)));
             }
+            auto set_traj_start = std::chrono::high_resolution_clock::now();
             traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(), trajectory_start_time, traj_.local_traj.drone_id);
+            auto set_traj_end = std::chrono::high_resolution_clock::now();
+            auto set_traj_duration = std::chrono::duration_cast<std::chrono::milliseconds>(set_traj_end - set_traj_start).count();
+            if (enable_debug_logs_) {
+                log_manager_->infof("[TIMING] setLocalTraj took %ld ms", set_traj_duration);
+            }
         }
         else
         {
+            auto set_traj_start = std::chrono::high_resolution_clock::now();
             traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(), rclcpp::Clock(RCL_ROS_TIME).now().seconds(), traj_.local_traj.drone_id);
+            auto set_traj_end = std::chrono::high_resolution_clock::now();
+            auto set_traj_duration = std::chrono::duration_cast<std::chrono::milliseconds>(set_traj_end - set_traj_start).count();
+            if (enable_debug_logs_) {
+                log_manager_->infof("[TIMING] setLocalTraj took %ld ms", set_traj_duration);
+            }
         }
-        
+
         if (enable_debug_logs_) {
             log_manager_->infof("=== DRONE %d REPLAN COMPLETED SUCCESSFULLY ===", 
                                traj_.local_traj.drone_id);
