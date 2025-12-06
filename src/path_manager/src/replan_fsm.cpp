@@ -368,11 +368,20 @@ void ReplanFSM::computeAndPublishPaths() {
 
         case REPLAN_TRAJ:
         {
+            FSM_LOG_INFO("[DEBUG REPLAN] Starting REPLAN_TRAJ at time %.3f",
+                         rclcpp::Clock(RCL_ROS_TIME).now().seconds());
+            auto replan_start = std::chrono::high_resolution_clock::now();
+
             bool success;
             if (flag_replan_astar_)
                 success = planFromLocalTraj(true, false);
             else
                 success = planFromLocalTraj(false, true);
+
+            auto replan_end = std::chrono::high_resolution_clock::now();
+            auto replan_duration = std::chrono::duration_cast<std::chrono::milliseconds>(replan_end - replan_start).count();
+            FSM_LOG_INFO("[DEBUG REPLAN] planFromLocalTraj took %ld ms, success=%d",
+                         replan_duration, success);
 
             if (success)
             {
@@ -804,6 +813,7 @@ void ReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_cal
 
 void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg) {
     auto callback_start = std::chrono::high_resolution_clock::now();
+    double ros_time_start = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
 
     if (msg->drone_id != drone_id_) {
         return;
@@ -813,8 +823,11 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         return;
     }
 
-    FSM_LOG_INFO("Formation Target Triggered for drone %d!", drone_id_);
-    FSM_LOG_INFO("[TIMING] Formation target callback started");
+    FSM_LOG_INFO("[DEBUG TARGET] formationTargetCallback STARTED for drone %d at time %.3f!",
+                 drone_id_, ros_time_start);
+    FSM_LOG_INFO("[DEBUG TARGET] Message header timestamp: %.3f, delay: %.3f ms",
+                 msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9,
+                 (ros_time_start - (msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9)) * 1000);
 
     // Mission progress: move next_mission to current, clear next
     // This signals that we're working on the "next" mission now (which becomes current)
@@ -1015,7 +1028,9 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
 
     auto callback_end = std::chrono::high_resolution_clock::now();
     auto callback_duration = std::chrono::duration_cast<std::chrono::milliseconds>(callback_end - callback_start).count();
-    FSM_LOG_INFO("[TIMING] Formation target callback completed in %ld ms", callback_duration);
+    double ros_time_end = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
+    FSM_LOG_INFO("[DEBUG TARGET] formationTargetCallback COMPLETED in %ld ms at time %.3f (total elapsed: %.3f ms)",
+                 callback_duration, ros_time_end, (ros_time_end - ros_time_start) * 1000);
 }
 bool ReplanFSM::isMapReady(const Eigen::Vector3d& start_pos) {
     if (!path_manager_) {
@@ -1054,7 +1069,8 @@ bool ReplanFSM::callEmergencyStop(const Eigen::Vector3d& stop_pos) {
 
 void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationCommand::SharedPtr msg) {
     auto callback_start = std::chrono::high_resolution_clock::now();
-    FSM_LOG_DEBUG("[CALLBACK START] formationCommandCallback (seq: %d)", msg->sequence);
+    FSM_LOG_INFO("[DEBUG FORMATION] formationCommandCallback STARTED (seq: %d) at time %.3f",
+                 msg->sequence, rclcpp::Clock(RCL_ROS_TIME).now().seconds());
 
     // Check for duplicate messages using sequence number
     if (msg->sequence <= last_received_sequence_) {
@@ -1279,7 +1295,8 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
 
     auto callback_end = std::chrono::high_resolution_clock::now();
     auto callback_duration = std::chrono::duration_cast<std::chrono::milliseconds>(callback_end - callback_start).count();
-    FSM_LOG_DEBUG("[CALLBACK END] formationCommandCallback (took %ld ms)", callback_duration);
+    FSM_LOG_INFO("[DEBUG FORMATION] formationCommandCallback COMPLETED (took %ld ms) at time %.3f",
+                 callback_duration, rclcpp::Clock(RCL_ROS_TIME).now().seconds());
 }
 
 void ReplanFSM::generateFormationTargets(

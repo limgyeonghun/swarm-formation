@@ -188,6 +188,13 @@ def create_drone_nodes(context, *args, **kwargs):
             else:
                 remaps = []
 
+        # Add namespace to isolate each rover's internal topics (prevent ROS2 cross-talk)
+        # formation_targets is internal loopback, must be isolated per rover
+        internal_remaps = [
+            ('formation_targets', f'/drone_{idx}/formation_targets'),
+        ]
+        all_remaps = remaps + internal_remaps
+
         replan_nodes.append(
             Node(
                 package='path_manager',
@@ -195,7 +202,7 @@ def create_drone_nodes(context, *args, **kwargs):
                 name=f'replan_fsm_drone_{i}',
                 output='screen',
                 parameters=[params, obstacles_file, optimizer_file, drones_file, map_file],
-                remappings=remaps,
+                remappings=all_remaps,
             )
         )
 
@@ -357,13 +364,20 @@ def create_drone_nodes(context, *args, **kwargs):
         # Target position topic for this drone
         target_position_topic = f'/agent{target_drone_id}/target_position'
 
+        # Formation debugging topics (this rover only - namespace isolated!)
+        vid = target_drone_id + 1
+        formation_cmd_topic = f'/V{vid}/formation_command'  # From serial (jfi_bridge)
+        formation_target_topic = f'/drone_{target_drone_id}/formation_targets'  # Internal loopback (namespaced)
+
         print(f"ROSbag recording enabled: {bag_path}")
-        print(f"Recording topics: /opt_trajectory, {target_position_topic}")
+        print(f"Recording: /opt_trajectory, {target_position_topic}, formation debug topics")
         rosbag_process = ExecuteProcess(
             cmd=['ros2', 'bag', 'record',
                  '-o', bag_path,
                  '/opt_trajectory',
-                 target_position_topic],
+                 target_position_topic,
+                 formation_cmd_topic,
+                 formation_target_topic],
             output='screen',
             shell=False
         )
