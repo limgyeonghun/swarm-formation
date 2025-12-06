@@ -291,7 +291,7 @@ def create_drone_nodes(context, *args, **kwargs):
     visualization_node = Node(
         package='path_visualization',
         executable='path_visualization_node',
-        name='path_visualization',
+        name=f'path_visualization_{target_drone_id}',
         output='screen',
         parameters=viz_params + [start_point_params]
     )
@@ -370,7 +370,6 @@ def create_drone_nodes(context, *args, **kwargs):
         rosbag_process = ExecuteProcess(
             cmd=['ros2', 'bag', 'record',
                  '-o', bag_path,
-                 '/opt_trajectory',
                  target_position_topic,
                  formation_cmd_topic,
                  formation_target_topic],
