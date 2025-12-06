@@ -209,7 +209,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     rclcpp::SubscriptionOptions formation_target_options;
     formation_target_options.callback_group = subscription_callback_group_;
     formation_target_sub_ = node_->create_subscription<path_manager::msg::FormationTarget>(
-        "formation_targets", sensor_qos,
+        topic_prefix + "/formation_target", sensor_qos,
         std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1),
         formation_target_options);
 
@@ -221,7 +221,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         formation_cmd_options);
 
     formation_target_pub_ = node_->create_publisher<path_manager::msg::FormationTarget>(
-        "formation_targets", sensor_qos);
+        topic_prefix + "/formation_target", sensor_qos);
 
     waypoint_marker_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
         "waypoint_markers", 10);

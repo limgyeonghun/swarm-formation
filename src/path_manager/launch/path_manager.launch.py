@@ -188,12 +188,8 @@ def create_drone_nodes(context, *args, **kwargs):
             else:
                 remaps = []
 
-        # Add namespace to isolate each rover's internal topics (prevent ROS2 cross-talk)
-        # formation_targets is internal loopback, must be isolated per rover
-        internal_remaps = [
-            ('formation_targets', f'/drone_{idx}/formation_targets'),
-        ]
-        all_remaps = remaps + internal_remaps
+        # No additional remapping needed - formation_targets now uses topic_prefix directly
+        all_remaps = remaps
 
         replan_nodes.append(
             Node(
@@ -367,7 +363,7 @@ def create_drone_nodes(context, *args, **kwargs):
         # Formation debugging topics (this rover only - namespace isolated!)
         vid = target_drone_id + 1
         formation_cmd_topic = f'/V{vid}/formation_command'  # From serial (jfi_bridge)
-        formation_target_topic = f'/drone_{target_drone_id}/formation_targets'  # Internal loopback (namespaced)
+        formation_target_topic = f'/V{vid}/formation_target'  # Internal loopback (topic_prefix)
 
         print(f"ROSbag recording enabled: {bag_path}")
         print(f"Recording: /opt_trajectory, {target_position_topic}, formation debug topics")
