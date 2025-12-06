@@ -293,7 +293,8 @@ def create_drone_nodes(context, *args, **kwargs):
         executable='path_visualization_node',
         name=f'path_visualization_{target_drone_id}',
         output='screen',
-        parameters=viz_params + [start_point_params]
+        parameters=viz_params + [start_point_params],
+        condition=IfCondition(LaunchConfiguration('enable_visualization'))
     )
 
     rviz_node = Node(
@@ -426,6 +427,11 @@ def generate_launch_description():
             'record_bag',
             default_value='false',
             description='Enable rosbag recording for trajectory topics'
+        ),
+        DeclareLaunchArgument(
+            'enable_visualization',
+            default_value='false',
+            description='Enable path visualization node'
         ),
         OpaqueFunction(function=create_drone_nodes),
     ])

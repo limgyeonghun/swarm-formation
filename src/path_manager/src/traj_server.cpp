@@ -45,10 +45,11 @@ TrajServer::TrajServer() : Node("traj_server") {
 
     // Internal agent topic (0,1,2,3...), not to be confused with external vehicle mavlink_id
     std::string pos_cmd_topic = "/agent" + std::to_string(drone_id_) + "/target_position";
+    std::string topic_prefix = "/V" + std::to_string(drone_id_+1);
     pos_cmd_pub_ = create_publisher<path_manager::msg::PositionCommand>(pos_cmd_topic, sensor_qos);
 
     traj_sub_ = create_subscription<path_manager::msg::PolyTraj>(
-        "planning/trajectory", sensor_qos, std::bind(&TrajServer::trajCallback, this, std::placeholders::_1));
+        topic_prefix + "/planning/trajectory", sensor_qos, std::bind(&TrajServer::trajCallback, this, std::placeholders::_1));
 
     timer_ = create_wall_timer(10ms, std::bind(&TrajServer::publishPositionCommand, this));
 }

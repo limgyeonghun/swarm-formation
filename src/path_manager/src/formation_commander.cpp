@@ -66,19 +66,17 @@ public:
             "formation_command", sensor_qos
         );
 
-        // Subscribe to trajectories for distance checking
-        for (int i = 0; i < num_drones_; ++i) {
-            std::string topic_prefix = "/V" + std::to_string(i + 1);
-            auto traj_sub = this->create_subscription<path_manager::msg::PolyTraj>(
-                topic_prefix + "/planning/broadcast_traj_send", sensor_qos,
-                [this, i](const path_manager::msg::PolyTraj::SharedPtr msg) {
-                    this->trajectoryCallback(msg, i);
-                }
-            );
-            trajectory_subs_.push_back(traj_sub);
-        }
+        // Subscribe to verified trajectories from FSM1 (all drones)
+        // FSM1 publishes both its own trajectory and received trajectories after validation
+        auto traj_sub = this->create_subscription<path_manager::msg::PolyTraj>(
+            "/for_commander/trajectories", sensor_qos,
+            [this](const path_manager::msg::PolyTraj::SharedPtr msg) {
+                this->trajectoryCallback(msg, msg->drone_id);
+            }
+        );
+        trajectory_subs_.push_back(traj_sub);
 
-        drone_trajectories_.resize(num_drones_);
+        drone_trajectories_.resize(num_drones_);  // Track all drones
 
         // Publish first command after 2 seconds, then switch to distance-based
         initial_timer_ = this->create_wall_timer(

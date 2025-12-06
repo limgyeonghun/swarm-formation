@@ -170,9 +170,15 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     std::string odom_topic = "/vehicle" + std::to_string(drone_id_+1) + "/target_position";
     std::string topic_prefix = "/V" + std::to_string(drone_id_+1);
 
-    optimized_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>("planning/trajectory", sensor_qos);
-    global_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>("planning/global", sensor_qos);
+    optimized_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/trajectory", sensor_qos);
+    global_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/global", sensor_qos);
     broadcast_traj_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/broadcast_traj_send", sensor_qos);
+
+    // Only FSM1 (drone_id == 0) publishes verified trajectories to formation_commander
+    if (drone_id_ == 0) {
+        verified_traj_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>("/for_commander/trajectories", sensor_qos);
+        FSM_LOG_INFO("FSM1: Created verified trajectory publisher for formation_commander");
+    }
 
     // Position callback uses separate callback group to ensure it always runs
     // even when main callback group is blocked by long trajectory planning
@@ -564,6 +570,11 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
 
     swarm_positions_[recv_id] = trajectory.getPos(0.0);
 
+    // Publish verified trajectory to formation_commander (other drones' trajectories, FSM1 only)
+    if (verified_traj_pub_) {
+        verified_traj_pub_->publish(*msg);
+    }
+
     if (path_manager_->checkCollision(recv_id)) {
         changeFSMExecState(REPLAN_TRAJ, "SWARM_CHECK");
     }
@@ -720,6 +731,9 @@ bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTra
         FSM_LOG_DEBUG("Publishing to broadcast_traj_send...");
         auto pub_start_2 = std::chrono::high_resolution_clock::now();
         broadcast_traj_pub_->publish(msg);
+        if (verified_traj_pub_) {
+            verified_traj_pub_->publish(msg);  // Also publish to formation_commander (own trajectory, FSM1 only)
+        }
         auto pub_end_2 = std::chrono::high_resolution_clock::now();
         auto pub_duration_2 = std::chrono::duration_cast<std::chrono::microseconds>(pub_end_2 - pub_start_2).count();
         FSM_LOG_DEBUG("Published to broadcast_traj_send (took %ld us)", pub_duration_2);
@@ -1063,6 +1077,9 @@ bool ReplanFSM::callEmergencyStop(const Eigen::Vector3d& stop_pos) {
     polyTraj2ROSMsg(msg);
     optimized_path_pub_->publish(msg);
     broadcast_traj_pub_->publish(msg);
+    if (verified_traj_pub_) {
+        verified_traj_pub_->publish(msg);  // Also publish to formation_commander (FSM1 only)
+    }
 
     return true;
 }
