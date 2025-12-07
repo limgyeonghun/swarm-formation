@@ -1,16 +1,16 @@
 /**:
   ros__parameters:
-    # Grid Map Basic Settings (2D for Rover) - Optimized for formation path
+    # Grid Map Basic Settings (2D for Rover) - Optimized for all scenarios
     grid_map/resolution: 0.1
-    grid_map/map_size_x: 190.0  # Optimized: reduced from 250.0 (51.9% memory savings)
-    grid_map/map_size_y: 190.0  # Optimized: reduced from 300.0
+    grid_map/map_size_x: 150.0  # Covers X[-8.75 ~ 100.63] with margin
+    grid_map/map_size_y: 200.0  # Covers Y[-138.94 ~ 40.0] with margin
     grid_map/map_size_z: 1.0    # Minimal height for 2D operation
     grid_map/frame_id: "world"
 
-    # grid_map/map_origin_x: -30.81  # Custom origin X (default: -size/2 = -95.0)
-    # grid_map/map_origin_y: -163.16 # Custom origin Y (default: -size/2 = -95.0)
-    grid_map/map_origin_x: 0.0  # Custom origin X (default: -size/2 = -95.0)
-    grid_map/map_origin_y: 0.0 # Custom origin Y (default: -size/2 = -95.0)
+    # All scenarios coverage: X[-8.75 ~ 100.63], Y[-138.94 ~ 40.0]
+    # With margins: X[-20 ~ 130], Y[-150 ~ 50]
+    grid_map/map_origin_x: -20.0  # Covers X range with margin
+    grid_map/map_origin_y: -150.0 # Covers Y range with margin
 
     # Obstacle and Collision Settings
     grid_map/obstacles_inflation: 0.8  # 1.6m x 1.6m x 1.6m cubic obstacle

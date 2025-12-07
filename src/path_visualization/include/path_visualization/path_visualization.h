@@ -60,8 +60,8 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr road_boundary_pub_;
   std::vector<rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr> position_pubs_;
   std::vector<rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr> position_marker_pubs_;
-  rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr optimized_path_sub_;
-  rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr global_path_sub_;
+  std::vector<rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr> optimized_path_subs_;
+  std::vector<rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr> global_path_subs_;
   std::vector<rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr> simple_path_subs_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr log_timer_;

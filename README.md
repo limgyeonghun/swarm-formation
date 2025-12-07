@@ -26,7 +26,7 @@ A ROS 2-based swarm formation control system for autonomous drones/rovers with r
 ### Simulation Mode
 ```bash
 # Launch with rovers in simulation mode
-ros2 launch path_manager path_manager.launch.py real:=false rviz_simulation:=true
+ros2 launch path_manager path_manager.launch.py real:=false rviz_simulation:=true enable_visualization:=true
 ```
 
 ### Real Hardware Mode

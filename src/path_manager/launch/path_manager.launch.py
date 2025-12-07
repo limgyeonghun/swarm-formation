@@ -410,7 +410,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'scenario',
-            default_value='test',
+            default_value='default',
             description='Scenario name (default, straight, test)'
         ),
         DeclareLaunchArgument(

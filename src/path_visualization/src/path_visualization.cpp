@@ -58,36 +58,47 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   position_marker_pubs_.resize(num_drones_);
   drone_data_.resize(num_drones_);
   simple_path_subs_.resize(num_drones_);
+  optimized_path_subs_.resize(num_drones_);
+  global_path_subs_.resize(num_drones_);
 
   for (int drone_id = 0; drone_id < num_drones_; ++drone_id)
   {
-    std::string position_topic = "/drone_" + std::to_string(drone_id) + "/current_position";
+    // Match FSM topic naming: /V1, /V2, etc. (drone_id+1)
+    std::string topic_prefix = "/V" + std::to_string(drone_id + 1);
+
+    std::string position_topic = topic_prefix + "/current_position";
     position_pubs_[drone_id] = this->create_publisher<geometry_msgs::msg::PointStamped>(position_topic, sensor_qos);
     position_marker_pubs_[drone_id] = this->create_publisher<visualization_msgs::msg::Marker>(
         "position_markers_drone_" + std::to_string(drone_id), sensor_qos);
 
-    std::string simple_path_topic = "/drone_" + std::to_string(drone_id) + "/simple_path";
+    std::string simple_path_topic = topic_prefix + "/simple_path";
     simple_path_subs_[drone_id] = this->create_subscription<nav_msgs::msg::Path>(
         simple_path_topic, sensor_qos,
         [this, drone_id](const nav_msgs::msg::Path::SharedPtr msg)
         { this->simplePathCallback(msg, drone_id); });
+
+    // Subscribe to per-drone optimized trajectory (match FSM naming)
+    std::string optimized_traj_topic = topic_prefix + "/planning/trajectory";
+    optimized_path_subs_[drone_id] = this->create_subscription<path_manager::msg::PolyTraj>(
+        optimized_traj_topic, sensor_qos,
+        std::bind(&PathVisualization::optimizedPathCallback, this, std::placeholders::_1));
+
+    // Subscribe to per-drone global path (match FSM naming)
+    std::string global_path_topic = topic_prefix + "/planning/global";
+    global_path_subs_[drone_id] = this->create_subscription<path_manager::msg::PolyTraj>(
+        global_path_topic, sensor_qos,
+        std::bind(&PathVisualization::globalPathCallback, this, std::placeholders::_1));
 
     drone_data_[drone_id].start_pt = Eigen::Vector3d(
         drone_params_[drone_id].start_x,
         drone_params_[drone_id].start_y,
         drone_params_[drone_id].start_z);
 
+    RCLCPP_INFO(this->get_logger(), "Drone %d: Subscribed to %s and %s",
+                drone_id, optimized_traj_topic.c_str(), global_path_topic.c_str());
     RCLCPP_INFO(this->get_logger(), "Drone %d: Initial position set to (%.2f, %.2f, %.2f)",
                 drone_id, drone_data_[drone_id].start_pt.x(), drone_data_[drone_id].start_pt.y(), drone_data_[drone_id].start_pt.z());
   }
-
-  optimized_path_sub_ = this->create_subscription<path_manager::msg::PolyTraj>(
-      "/planning/trajectory", sensor_qos,
-      std::bind(&PathVisualization::optimizedPathCallback, this, std::placeholders::_1));
-
-  global_path_sub_ = this->create_subscription<path_manager::msg::PolyTraj>(
-      "/planning/global", sensor_qos,
-      std::bind(&PathVisualization::globalPathCallback, this, std::placeholders::_1));
 
   timer_ = this->create_wall_timer(10ms, std::bind(&PathVisualization::updatePosition, this));
   log_timer_ = this->create_wall_timer(150ms, std::bind(&PathVisualization::logPositions, this));
