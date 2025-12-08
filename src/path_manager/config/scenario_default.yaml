@@ -26,7 +26,7 @@
       commands:
         # line_first case 0 (1/4 of original trajectory)
         - formation_type: "line_first"
-          formation_scale: 6.0
+          formation_scale: 5.0
           distance_threshold: 5.0
           waypoints:
             - [-2.92, -19.0, 0.0]
@@ -77,13 +77,13 @@
           distance_threshold: -1.0
           formation_similarity_threshold: 0.05
           waypoints:
-            - [28.84694, -127.34805, 0.0]
+            - [28.84694, -127.34805, 0.0] 
 
         # square case 9 (remaining 7/8)
         - formation_type: "square"
           formation_scale: 2.0
           distance_threshold: 3.5
           waypoints:
-            - [30.368, -131.621, 0.0]
-            - [42.09200, -130.01768, 0.0]
+            - [35.46947, -128.682865, 0.0]
+            - [42.09200, -130.01768, 0.0] 
             - [100.63176, -138.94522, 0.0]
