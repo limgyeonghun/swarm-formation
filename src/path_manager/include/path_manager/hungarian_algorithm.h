@@ -102,6 +102,22 @@ public:
         const Eigen::Vector3d& line_direction);
 
     /**
+     * @brief Generate random assignment for ablation study
+     *
+     * @param n Number of drones
+     * @return std::vector<int> Random permutation assignment
+     */
+    static std::vector<int> randomAssignment(int n);
+
+    /**
+     * @brief Generate identity assignment (i -> i) for ablation study
+     *
+     * @param n Number of drones
+     * @return std::vector<int> Identity assignment [0,1,2,...]
+     */
+    static std::vector<int> identityAssignment(int n);
+
+    /**
      * @brief Apply assignment to reorder target positions
      *
      * @param assignment Assignment vector from solve()

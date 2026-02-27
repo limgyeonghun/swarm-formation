@@ -1,0 +1,73 @@
+/**:
+  ros__parameters:
+
+    # Start positions for 8 UGVs (constant inter-drone spacing: 3.14m)
+    # Circle radius: 4.0m, Square scale: 8.0m
+    # Positioned at 22.5, -22.5, -67.5, -112.5, -157.5, -202.5, -247.5, -292.5 degrees (matches circle formation)
+    drone_0:
+      start_point_x: 3.70
+      start_point_y: 1.53
+      start_point_z: 0.0
+
+    drone_1:
+      start_point_x: 3.70
+      start_point_y: -1.53
+      start_point_z: 0.0
+
+    drone_2:
+      start_point_x: 1.53
+      start_point_y: -3.70
+      start_point_z: 0.0
+
+    drone_3:
+      start_point_x: -1.53
+      start_point_y: -3.70
+      start_point_z: 0.0
+
+    drone_4:
+      start_point_x: -3.70
+      start_point_y: -1.53
+      start_point_z: 0.0
+
+    drone_5:
+      start_point_x: -3.70
+      start_point_y: 1.53
+      start_point_z: 0.0
+
+    drone_6:
+      start_point_x: -1.53
+      start_point_y: 3.70
+      start_point_z: 0.0
+
+    drone_7:
+      start_point_x: 1.53
+      start_point_y: 3.70
+      start_point_z: 0.0
+
+    # Scalability test scenario: Start from circle, transition to square_perimeter
+    mission:
+      commands:
+        # Initial circle formation (constant spacing: 3.14m per drone)
+        # 8 drones positioned at vertices
+        - formation_type: "circle"
+          formation_scale: 4.0
+          distance_threshold: 5.0
+          formation_similarity_threshold: -0.1
+          waypoints:
+            - [0.0, -20.0, 0.0]
+
+        # Transform to square perimeter formation (constant spacing: 4.0m per drone)
+        - formation_type: "square_perimeter"
+          formation_scale: 8.0
+          distance_threshold: -1.0
+          formation_similarity_threshold: 0.01
+          waypoints:
+            - [0.0, -26.0, 0.0]
+
+        # Continue with square perimeter formation
+        - formation_type: "square_perimeter"
+          formation_scale: 8.0
+          distance_threshold: 5.0
+          formation_similarity_threshold: -0.1
+          waypoints:
+            - [0.0, -50.0, 0.0]

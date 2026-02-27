@@ -1,0 +1,84 @@
+/**:
+  ros__parameters:
+
+    # Start positions for 10 UGVs (decagon vertices, radius 5m)
+    # Positioned at 0, 36, 72, 108, 144, 180, 216, 252, 288, 324 degrees
+    drone_0:
+      start_point_x: 4.76
+      start_point_y: 1.55
+      start_point_z: 0.0
+
+    drone_1:
+      start_point_x: 4.76
+      start_point_y: -1.55
+      start_point_z: 0.0
+
+    drone_2:
+      start_point_x: 2.94
+      start_point_y: -4.05
+      start_point_z: 0.0
+
+    drone_3:
+      start_point_x: 0.0
+      start_point_y: -5.0
+      start_point_z: 0.0
+
+    drone_4:
+      start_point_x: -2.94
+      start_point_y: -4.05
+      start_point_z: 0.0
+
+    drone_5:
+      start_point_x: -4.76
+      start_point_y: -1.55
+      start_point_z: 0.0
+
+    drone_6:
+      start_point_x: -4.76
+      start_point_y: 1.55
+      start_point_z: 0.0
+
+    drone_7:
+      start_point_x: -2.94
+      start_point_y: 4.05
+      start_point_z: 0.0
+
+    drone_8:
+      start_point_x: 0.0
+      start_point_y: 5.0
+      start_point_z: 0.0
+
+    drone_9:
+      start_point_x: 2.94
+      start_point_y: 4.05
+      start_point_z: 0.0
+
+    # Scalability test scenario: Start from circle, transition to triangle
+    mission:
+      commands:
+        # Initial circle formation (matches decagon vertex positions, radius 5m)
+        # 10 drones positioned at vertices
+        - formation_type: "circle"
+          formation_scale: 5.0
+          distance_threshold: 5.0
+          formation_similarity_threshold: -0.1
+          waypoints:
+            - [0.0, -20.0, 0.0]
+
+        # Transform to square perimeter formation (10 drones on edges only)
+        - formation_type: "square_perimeter"
+          formation_scale: 10.0
+          distance_threshold: -1.0
+          formation_similarity_threshold: 0.02
+          waypoints:
+            - [0.0, -28.0, 0.0]
+
+        # Continue with square perimeter formation
+        - formation_type: "square_perimeter"
+          formation_scale: 10.0
+          distance_threshold: 5.0
+          formation_similarity_threshold: -0.1
+          waypoints:
+            - [0.0, -50.0, 0.0]
+
+

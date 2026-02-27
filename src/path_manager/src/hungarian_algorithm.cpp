@@ -1,5 +1,8 @@
 #include "path_manager/hungarian_algorithm.h"
 #include <iostream>
+#include <random>
+#include <algorithm>
+#include <numeric>
 
 namespace path_manager {
 
@@ -488,6 +491,26 @@ std::vector<int> HungarianAlgorithm::orderPreservingMatch(
     // Use Hungarian algorithm to find optimal assignment based on distance
     // This naturally preserves spatial relationships without explicitly enforcing order
     return solve(cost_matrix);
+}
+
+std::vector<int> HungarianAlgorithm::randomAssignment(int n) {
+    // Create identity assignment first
+    std::vector<int> assignment(n);
+    std::iota(assignment.begin(), assignment.end(), 0);
+
+    // Shuffle randomly using system random device
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::shuffle(assignment.begin(), assignment.end(), gen);
+
+    return assignment;
+}
+
+std::vector<int> HungarianAlgorithm::identityAssignment(int n) {
+    // Identity assignment: drone i -> target i
+    std::vector<int> assignment(n);
+    std::iota(assignment.begin(), assignment.end(), 0);
+    return assignment;
 }
 
 } // namespace path_manager

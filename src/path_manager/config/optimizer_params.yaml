@@ -51,3 +51,10 @@
 
     # Global Path Intermediate Waypoint Parameters
     manager/intermediate_waypoint_ratio: 0.3  # Ratio of distance from start to place intermediate waypoint (0.0-1.0, must be < 1.0)
+
+    # ===== ABLATION STUDY CONFIGURATION =====
+    ablation/assignment_method: "hungarian"
+    ablation/enable_bspline: true
+    ablation/enable_alignment: true
+    ablation/enable_crossing_detection: true
+    ablation/enable_metrics_logging: true

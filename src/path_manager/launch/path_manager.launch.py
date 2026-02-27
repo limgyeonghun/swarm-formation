@@ -76,11 +76,19 @@ def create_drone_nodes(context, *args, **kwargs):
     map_file = PathJoinSubstitution([pkg_share, 'config', 'map.yaml'])
 
     # Load base drone hardware configuration
-    drones_file = PathJoinSubstitution([pkg_share, 'config', 'drone_hardware.yaml'])
+    # For scalability scenarios, use corresponding drone_hardware_N.yaml
+    if scenario.startswith('scalability_'):
+        num_agents = scenario.split('_')[1]  # Extract '6', '8', or '10'
+        hardware_filename = f'drone_hardware_{num_agents}.yaml'
+        print(f"Scalability scenario detected: using {hardware_filename}")
+    else:
+        hardware_filename = 'drone_hardware.yaml'
+
+    drones_file = PathJoinSubstitution([pkg_share, 'config', hardware_filename])
     drones_params = load_yaml_file(context.perform_substitution(drones_file))
     drone_cfg = drones_params['/**']['ros__parameters']
     num_drones = drone_cfg.get('num_drones', 1)
-    print(f"Loaded drone hardware config: drone_hardware.yaml (num_drones={num_drones})")
+    print(f"Loaded drone hardware config: {hardware_filename} (num_drones={num_drones})")
 
     # Load scenario-specific configuration (initial positions + mission)
     scenario_filename = f'scenario_{scenario}.yaml'
@@ -118,7 +126,7 @@ def create_drone_nodes(context, *args, **kwargs):
     else:
         # Simulation mode: run all drones from config
         drones_to_run = []
-        for i in range(6):  # Check drone_0 to drone_5
+        for i in range(num_drones):  # Check all drones based on num_drones
             drone_key = f'drone_{i}'
             if drone_key in drone_cfg:
                 drones_to_run.append(drone_cfg[drone_key]['index'])
@@ -129,7 +137,7 @@ def create_drone_nodes(context, *args, **kwargs):
         target_cfg = None
         target_key_index = 0
 
-        for i in range(6):  # drone_0 .. drone_5
+        for i in range(num_drones):  # Check all drones based on num_drones
             drone_key = f'drone_{i}'
             if drone_key in drone_cfg:
                 if drone_cfg[drone_key]['index'] == drone_index:
@@ -139,7 +147,7 @@ def create_drone_nodes(context, *args, **kwargs):
                     break
 
         if target_cfg is None:
-            print(f"Error: index {drone_index} not found in drones.yaml")
+            print(f"Error: index {drone_index} not found in {hardware_filename}")
             continue
 
         cfg = target_cfg

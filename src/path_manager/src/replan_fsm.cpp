@@ -1,5 +1,6 @@
 #include "path_manager/replan_fsm.h"
 #include "path_manager/formation_utils.h"
+#include "path_manager/hungarian_algorithm.h"
 #include <cmath>
 #include <sys/resource.h>
 #include <numeric>
@@ -105,6 +106,27 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     FSM_LOG_INFO("Nonholonomic weight from config: %.1f (will be 0 for line formations, this value for others)",
                  weight_nonholonomic_);
 
+    // Ablation study configuration
+    node_->declare_parameter("ablation/assignment_method", "hungarian");
+    node_->declare_parameter("ablation/enable_bspline", true);
+    node_->declare_parameter("ablation/enable_alignment", true);
+    node_->declare_parameter("ablation/enable_crossing_detection", true);
+    node_->declare_parameter("ablation/enable_metrics_logging", true);
+
+    node_->get_parameter("ablation/assignment_method", ablation_assignment_method_);
+    node_->get_parameter("ablation/enable_bspline", ablation_enable_bspline_);
+    node_->get_parameter("ablation/enable_alignment", ablation_enable_alignment_);
+    node_->get_parameter("ablation/enable_crossing_detection", ablation_enable_crossing_detection_);
+    node_->get_parameter("ablation/enable_metrics_logging", ablation_enable_metrics_logging_);
+
+    FSM_LOG_INFO("===== ABLATION STUDY CONFIGURATION =====");
+    FSM_LOG_INFO("  Assignment method: %s", ablation_assignment_method_.c_str());
+    FSM_LOG_INFO("  B-spline smoothing: %s", ablation_enable_bspline_ ? "enabled" : "disabled");
+    FSM_LOG_INFO("  Alignment waypoints: %s", ablation_enable_alignment_ ? "enabled" : "disabled");
+    FSM_LOG_INFO("  Crossing detection: %s", ablation_enable_crossing_detection_ ? "enabled" : "disabled");
+    FSM_LOG_INFO("  Metrics logging: %s", ablation_enable_metrics_logging_ ? "enabled" : "disabled");
+    FSM_LOG_INFO("========================================");
+
     node_->declare_parameter("start_point_x", 0.0);
     node_->declare_parameter("start_point_y", 0.0);
     node_->declare_parameter("start_point_z", 0.0);
@@ -140,7 +162,13 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
     // Initialize PathManager in constructor to avoid nullptr access
     path_manager_ = std::make_shared<PathManager>(node_);
-    
+
+    // Configure PathManager with ablation study settings
+    path_manager_->setAblationConfig(ablation_enable_bspline_, ablation_enable_alignment_);
+    FSM_LOG_INFO("PathManager configured with ablation settings: B-spline=%s, Alignment=%s",
+                 ablation_enable_bspline_ ? "enabled" : "disabled",
+                 ablation_enable_alignment_ ? "enabled" : "disabled");
+
     // Initialize SwarmGraph for formation management
     swarm_graph_ = std::make_unique<SwarmGraph>();
 
@@ -198,7 +226,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     else
     {
         // External MAVLink topic for real PX4
-        std::string px4_position_topic = "/vehicle" + std::to_string(mavlink_id_) + "/fmu/out/vehicle_local_position";
+        std::string px4_position_topic = "/vehicle" + std::to_string(mavlink_id_) + "/fmu/out/vehicle_local_position_v1";
         px4_position_sub_ = node_->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
             px4_position_topic, sensor_qos,
             std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1),
@@ -986,8 +1014,19 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
 
     auto global_traj_start = std::chrono::high_resolution_clock::now();
     FSM_LOG_INFO("[TIMING] Starting global trajectory planning");
+
+    // ABLATION STUDY: For direct path (no B-spline), use zero initial velocity/acceleration
+    // to ensure straight-line motion without curves
+    Eigen::Vector3d planning_start_vel = start_vel_;
+    Eigen::Vector3d planning_start_acc = start_acc_;
+    if (!ablation_enable_bspline_) {
+        planning_start_vel = Eigen::Vector3d::Zero();
+        planning_start_acc = Eigen::Vector3d::Zero();
+        FSM_LOG_INFO("[ABLATION] Direct path mode: forcing zero initial velocity/acceleration for straight trajectory");
+    }
+
     success = path_manager_->planGlobalTraj(
-        start_pt_, start_vel_, start_acc_,
+        start_pt_, planning_start_vel, planning_start_acc,
         waypoints, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
     auto global_traj_end = std::chrono::high_resolution_clock::now();
@@ -1536,6 +1575,30 @@ std::vector<int> ReplanFSM::hungarianAssignment(
         }
     }
 
+    // === ABLATION STUDY: ASSIGNMENT METHOD SELECTION ===
+    if (ablation_assignment_method_ == "random") {
+        RCLCPP_INFO(node_->get_logger(), "[ABLATION] Using RANDOM assignment");
+        log_manager_->infof("[ABLATION] Using RANDOM assignment");
+        return HungarianAlgorithm::randomAssignment(n);
+    } else if (ablation_assignment_method_ == "identity") {
+        RCLCPP_INFO(node_->get_logger(), "[ABLATION] Using IDENTITY assignment (i->i)");
+        log_manager_->infof("[ABLATION] Using IDENTITY assignment (i->i)");
+        return HungarianAlgorithm::identityAssignment(n);
+    }
+
+    // === ORDER-PRESERVING ASSIGNMENT FOR CIRCLE FORMATIONS ===
+    // For circle formations, always use order-preserving assignment
+    // Circle formation from regular polygon vertices should maintain order
+    if (current_formation_type_ == "circle") {
+        RCLCPP_INFO(node_->get_logger(),
+                   "[ASSIGNMENT] Using order-preserving (identity) assignment for circle formation");
+        log_manager_->infof("[ASSIGNMENT] Order-preserving for circle formation");
+
+        std::vector<int> assignment(n);
+        std::iota(assignment.begin(), assignment.end(), 0);
+        return assignment;
+    }
+
     // === ORDER-PRESERVING ASSIGNMENT FOR LINE FORMATIONS ===
     // For line formations, preserve ordering along the line direction
     // This prevents drones from crossing paths and maintains stable formation
@@ -1737,6 +1800,18 @@ std::vector<int> ReplanFSM::hungarianAssignment(
     }
     log_manager_->infof("[HUNGARIAN] Total assignment cost: %.2f", total_cost);
 
+    // Count and log path crossings for ablation study
+    if (ablation_enable_crossing_detection_) {
+        int crossing_count = countPathCrossings(current_positions, target_positions, assignment);
+        log_manager_->infof("[ABLATION METRIC] Path crossings: %d", crossing_count);
+
+        // Store metrics for ablation study
+        if (ablation_enable_metrics_logging_) {
+            current_metrics_.path_crossing_count = crossing_count;
+            current_metrics_.assignment = assignment;
+        }
+    }
+
     return assignment;
 }
 
@@ -1786,6 +1861,34 @@ bool ReplanFSM::segmentsIntersect2D(const Eigen::Vector3d& p1, const Eigen::Vect
     if (o4 == 0 && onSegment(p2, q1, q2)) return true;
 
     return false;  // No intersection
+}
+
+// Count actual path crossings given assignment
+int ReplanFSM::countPathCrossings(const std::vector<Eigen::Vector3d>& current_positions,
+                                   const std::vector<Eigen::Vector3d>& target_positions,
+                                   const std::vector<int>& assignment) {
+    int crossing_count = 0;
+    int n = current_positions.size();
+
+    // Check all pairs of paths
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            // Path i: current_positions[i] -> target_positions[assignment[i]]
+            // Path j: current_positions[j] -> target_positions[assignment[j]]
+
+            if (segmentsIntersect2D(current_positions[i], target_positions[assignment[i]],
+                                   current_positions[j], target_positions[assignment[j]])) {
+                crossing_count++;
+
+                if (ablation_enable_crossing_detection_) {
+                    log_manager_->infof("[CROSSING] Paths intersect: Drone %d->%d crosses Drone %d->%d",
+                                       i, assignment[i], j, assignment[j]);
+                }
+            }
+        }
+    }
+
+    return crossing_count;
 }
 
 }  // namespace path_manager

@@ -14,7 +14,9 @@ namespace path_manager
           is_optimizer_initialized_(false),
           first_call_(true),
           current_drone_id_(-1),
-          current_formation_type_("")
+          current_formation_type_(""),
+          ablation_enable_bspline_(true),
+          ablation_enable_alignment_(true)
     {
         log_manager_ = std::make_shared<swarm_formation::LogManager>(
             node_->get_name(), "./logs/runtime", swarm_formation::LogManager::INFO);
@@ -399,11 +401,11 @@ namespace path_manager
         std::vector<Eigen::Vector3d> adjusted_waypoints = waypoints;  // Use original waypoints directly
 
         // Step 2: Add intermediate alignment waypoint for smoother trajectory
-        // The intermediate point is placed between start and first waypoint to ensure
-        // the global path is not too straight (nearly a direct line)
+        // ABLATION STUDY: Only add if BOTH alignment AND bspline are enabled
+        // (intermediate point only makes sense with bspline smoothing)
         std::vector<Eigen::Vector3d> waypoints_with_intermediate;
 
-        if (!adjusted_waypoints.empty()) {
+        if (ablation_enable_alignment_ && ablation_enable_bspline_ && !adjusted_waypoints.empty()) {
             // Calculate intermediate alignment point
             // Position it at ratio * distance from start to first waypoint
             Eigen::Vector3d first_waypoint = adjusted_waypoints.front();
@@ -420,13 +422,17 @@ namespace path_manager
                 // Add intermediate waypoint only if it's ahead of start
                 waypoints_with_intermediate.push_back(intermediate_point);
 
-                log_manager_->infof("Added intermediate alignment waypoint at (%.2f, %.2f, %.2f), ratio=%.2f",
+                log_manager_->infof("[ABLATION] Added intermediate alignment waypoint at (%.2f, %.2f, %.2f), ratio=%.2f",
                            intermediate_point.x(), intermediate_point.y(), intermediate_point.z(),
                            intermediate_waypoint_ratio_);
             } else {
                 RCLCPP_WARN(node_->get_logger(),
                            "Intermediate waypoint would be behind start position, skipping");
             }
+        } else if (!ablation_enable_alignment_ || !ablation_enable_bspline_) {
+            log_manager_->infof("[ABLATION] Intermediate alignment waypoint DISABLED (alignment=%s, bspline=%s)",
+                       ablation_enable_alignment_ ? "on" : "off",
+                       ablation_enable_bspline_ ? "on" : "off");
         }
 
         // Add all original waypoints after intermediate point
@@ -477,15 +483,24 @@ namespace path_manager
             return false;
         }
 
-        // Step 5: Generate B-spline trajectory using playground_bspline
-        std::vector<Eigen::VectorXd> b_pts = playground_bspline(pts_vectorxd);
-
-        log_manager_->infof("Generated %zu B-spline points", b_pts.size());
-
-        // Step 6: Convert back to Vector3d for trajectory generation
+        // Step 5: Generate B-spline trajectory (or use direct path based on ablation config)
         std::vector<Eigen::Vector3d> sampled_points;
-        for (const auto& b_pt : b_pts) {
-            sampled_points.push_back(Eigen::Vector3d(b_pt.x(), b_pt.y(), b_pt.z()));
+
+        if (ablation_enable_bspline_) {
+            // B-spline smoothing enabled
+            std::vector<Eigen::VectorXd> b_pts = playground_bspline(pts_vectorxd);
+            log_manager_->infof("[ABLATION] Generated %zu B-spline points (smoothing enabled)", b_pts.size());
+
+            // Convert back to Vector3d
+            for (const auto& b_pt : b_pts) {
+                sampled_points.push_back(Eigen::Vector3d(b_pt.x(), b_pt.y(), b_pt.z()));
+            }
+        } else {
+            // Direct path without B-spline smoothing (ablation study)
+            log_manager_->infof("[ABLATION] Using DIRECT path (B-spline smoothing disabled)");
+
+            // Use waypoints directly without smoothing
+            sampled_points = all_points;
         }
 
         // Step 7: Convert to MINCO trajectory

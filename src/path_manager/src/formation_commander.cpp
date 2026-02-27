@@ -365,11 +365,24 @@ private:
             return assignment;
         }
 
+        // For circle formations, use order-preserving assignment ONLY for circle->circle
+        // For other transitions, use Hungarian for optimal distance-based matching
+        if (formation_type == "circle" && (previous_formation_type == "circle" || previous_formation_type.empty())) {
+            RCLCPP_INFO(this->get_logger(), "[HUNGARIAN] Order-preserving for circle formation (%s -> %s)",
+                       previous_formation_type.empty() ? "initial" : previous_formation_type.c_str(),
+                       formation_type.c_str());
+            std::vector<int> assignment(n);
+            std::iota(assignment.begin(), assignment.end(), 0);
+            return assignment;
+        }
+
         // For other formations (square, triangle), use Hungarian algorithm
         // Log removed to reduce terminal output
 
         // Check if it's the same formation type (e.g., square -> square)
-        bool same_formation = (formation_type == previous_formation_type);
+        // Special case: If previous is empty and current is circle, treat as same formation
+        bool same_formation = (formation_type == previous_formation_type) ||
+                             (previous_formation_type.empty() && formation_type == "circle");
 
         if (same_formation) {
             // Same formation - using relative coordinate matching (log removed)

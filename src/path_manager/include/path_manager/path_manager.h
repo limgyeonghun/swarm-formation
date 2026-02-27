@@ -76,6 +76,12 @@ namespace path_manager
         poly_traj_opt_->setNonholonomicWeight(weight);
     }
 
+    // Ablation study configuration
+    void setAblationConfig(bool enable_bspline, bool enable_alignment) {
+        ablation_enable_bspline_ = enable_bspline;
+        ablation_enable_alignment_ = enable_alignment;
+    }
+
     TrajContainer traj_;
 
     void updateRobotState(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& local_target_pt);
@@ -146,6 +152,10 @@ namespace path_manager
 
     // Intermediate waypoint parameter
     double intermediate_waypoint_ratio_;
+
+    // Ablation study configuration
+    bool ablation_enable_bspline_;
+    bool ablation_enable_alignment_;
 
   };
 

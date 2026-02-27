@@ -1,0 +1,49 @@
+/**:
+  ros__parameters:
+    num_drones: 8
+
+    formation_center_x: 0.0
+    formation_center_y: 0.0
+    formation_center_z: 0.0
+
+    # Global fallback for formation_similarity_threshold (if not specified in scenario)
+    # Using Laplacian-based Frobenius norm squared: ||L_current - L_desired||²_F
+    # Typical values: 0.0 (perfect match), 0.001-0.01 (good match), >0.1 (poor match)
+    formation_similarity_threshold: 0.01
+
+    enable_waypoint_markers: true
+    enable_global_trajectory_pub: true
+
+    # Drone hardware mapping (start_point defined in scenario files)
+    drone_0:
+      index: 0          # Internal agent index (0,1,2,3...) -> /agent0/target_position
+      mavlink_id: 1     # External MAVLink ID (can be non-consecutive) -> /vehicle1/fmu/...
+
+    drone_1:
+      index: 1          # Internal: /agent1/...
+      mavlink_id: 2     # External: /vehicle2/fmu/...
+
+    drone_2:
+      index: 2          # Internal: /agent2/...
+      mavlink_id: 3     # External: /vehicle3/fmu/...
+
+    drone_3:
+      index: 3          # Internal: /agent3/...
+      mavlink_id: 4     # External: /vehicle4/fmu/...
+
+    drone_4:
+      index: 4          # Internal: /agent4/...
+      mavlink_id: 5     # External: /vehicle5/fmu/...
+
+    drone_5:
+      index: 5          # Internal: /agent5/...
+      mavlink_id: 6     # External: /vehicle6/fmu/...
+
+    drone_6:
+      index: 6          # Internal: /agent6/...
+      mavlink_id: 7     # External: /vehicle7/fmu/...
+
+    drone_7:
+      index: 7          # Internal: /agent7/...
+      mavlink_id: 8     # External: /vehicle8/fmu/...
+

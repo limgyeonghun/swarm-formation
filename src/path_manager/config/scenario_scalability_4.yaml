@@ -1,0 +1,52 @@
+/**:
+  ros__parameters:
+
+    # Start positions for 4 UGVs (constant inter-drone spacing: 3.14m)
+    # Circle radius: 2.0m, Square scale: 4.0m
+    # Positioned at 45, -45, -135, -225 degrees (matches circle formation)
+    drone_0:
+      start_point_x: 1.41
+      start_point_y: 1.41
+      start_point_z: 0.0
+
+    drone_1:
+      start_point_x: 1.41
+      start_point_y: -1.41
+      start_point_z: 0.0
+
+    drone_2:
+      start_point_x: -1.41
+      start_point_y: -1.41
+      start_point_z: 0.0
+
+    drone_3:
+      start_point_x: -1.41
+      start_point_y: 1.41
+      start_point_z: 0.0
+
+    # Scalability test scenario: Start from circle, transition to square_wide
+    mission:
+      commands:
+        # Initial circle formation (4 drones positioned on circle, looks like square)
+        - formation_type: "circle"
+          formation_scale: 2.0
+          distance_threshold: 5.0
+          formation_similarity_threshold: -0.1
+          waypoints:
+            - [0.0, -20.0, 0.0]
+
+        # Transform to wide rectangular formation (2x2 grid stretched horizontally)
+        - formation_type: "square_wide"
+          formation_scale: 2.0
+          distance_threshold: -1.0
+          formation_similarity_threshold: 0.05
+          waypoints:
+            - [0.0, -28.0, 0.0]
+
+        # Continue with wide rectangular formation
+        - formation_type: "square_wide"
+          formation_scale: 2.0
+          distance_threshold: 5.0
+          formation_similarity_threshold: -0.1
+          waypoints:
+            - [0.0, -50.0, 0.0]

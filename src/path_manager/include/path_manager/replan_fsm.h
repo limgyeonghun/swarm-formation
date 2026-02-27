@@ -108,6 +108,11 @@ private:
     int orientation(const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r);
     bool onSegment(const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r);
 
+    // Count actual path crossings given assignment
+    int countPathCrossings(const std::vector<Eigen::Vector3d>& current_positions,
+                           const std::vector<Eigen::Vector3d>& target_positions,
+                           const std::vector<int>& assignment);
+
     std::shared_ptr<PathManager> path_manager_;
 
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr optimized_path_pub_;
@@ -179,6 +184,24 @@ private:
 
     // Swarm position tracking for formation management
     std::map<int, Eigen::Vector3d> swarm_positions_;  // drone_id -> current position
+
+    // Ablation study configuration
+    std::string ablation_assignment_method_;  // "random", "identity", "hungarian"
+    bool ablation_enable_bspline_;
+    bool ablation_enable_alignment_;
+    bool ablation_enable_crossing_detection_;
+    bool ablation_enable_metrics_logging_;
+
+    // Ablation study metrics
+    struct FormationTransitionMetrics {
+        double transition_start_time;
+        double transition_end_time;
+        double total_distance;
+        int path_crossing_count;
+        std::vector<double> formation_errors;  // Sampled formation errors during transition
+        std::vector<int> assignment;  // Final assignment used
+    };
+    FormationTransitionMetrics current_metrics_;
 
     std::unique_ptr<swarm_formation::LogManager> log_manager_;
 };

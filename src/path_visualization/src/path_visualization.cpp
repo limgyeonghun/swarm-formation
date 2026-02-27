@@ -24,8 +24,16 @@ std::tuple<float, float, float> getDroneColor(int drone_id)
     return {1.0f, 0.0f, 1.0f}; // magenta
   case 5:
     return {0.0f, 1.0f, 1.0f}; // cyan
+  case 6:
+    return {1.0f, 0.5f, 0.0f}; // orange
+  case 7:
+    return {0.5f, 0.0f, 0.5f}; // purple
+  case 8:
+    return {0.0f, 0.5f, 0.5f}; // teal
+  case 9:
+    return {0.5f, 0.5f, 0.0f}; // olive
   default:
-    return {0.5f, 0.5f, 0.5f}; // gray for any id >=6
+    return {0.5f, 0.5f, 0.5f}; // gray for any id >=10
   }
 };
 
