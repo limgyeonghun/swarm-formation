@@ -25,6 +25,11 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   node_->declare_parameter("grid_map/road_width", 8.0);
   node_->declare_parameter("grid_map/road_margin", 0.5);
 
+  // Threat zone parameters
+  node_->declare_parameter("grid_map/use_threat_zones", false);
+  node_->declare_parameter("grid_map/threat_cost_weight", 1.0);
+  node_->declare_parameter("threat_zones", std::vector<double>());
+
   mp_.resolution_ = node_->get_parameter("grid_map/resolution").as_double();
   double x_size = node_->get_parameter("grid_map/map_size_x").as_double();
   double y_size = node_->get_parameter("grid_map/map_size_y").as_double();
@@ -42,6 +47,10 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   mp_.road_width_ = node_->get_parameter("grid_map/road_width").as_double();
   mp_.road_margin_ = node_->get_parameter("grid_map/road_margin").as_double();
 
+  // Threat zone parameters
+  mp_.use_threat_zones_ = node_->get_parameter("grid_map/use_threat_zones").as_bool();
+  mp_.threat_cost_weight_ = node_->get_parameter("grid_map/threat_cost_weight").as_double();
+
   auto road_segments = node_->get_parameter("grid_map/road_segments").as_double_array();
   if (road_segments.size() % 5 == 0) {
     for (size_t i = 0; i < road_segments.size(); i += 5) {
@@ -55,6 +64,22 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
     }
   } else
     RCLCPP_WARN(node_->get_logger(), "Invalid road segments data. Each segment should have 5 values (including width).");
+
+  // Load threat zones
+  auto threat_zones_array = node_->get_parameter("threat_zones").as_double_array();
+  if (threat_zones_array.size() % 6 == 0 && threat_zones_array.size() > 0) {
+    for (size_t i = 0; i < threat_zones_array.size(); i += 6) {
+      ThreatZone zone;
+      zone.center = Eigen::Vector3d(threat_zones_array[i], threat_zones_array[i + 1], threat_zones_array[i + 2]);
+      zone.detection_range = threat_zones_array[i + 3];
+      zone.engagement_range = threat_zones_array[i + 4];
+      zone.max_threat_level = threat_zones_array[i + 5];
+      zone.name = "ThreatZone_" + std::to_string(i / 6);
+      mp_.threat_zones_.push_back(zone);
+    }
+  } else if (threat_zones_array.size() > 0) {
+    RCLCPP_WARN(node_->get_logger(), "Invalid threat zones data. Each zone should have 6 values (cx, cy, cz, detection, engagement, threat).");
+  }
 
   std::cout << "GridMap parameters: " << std::endl;
   std::cout << "  resolution: " << mp_.resolution_ << std::endl;
@@ -79,6 +104,15 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   std::cout << "  road_margin: " << mp_.road_margin_ << std::endl;
   std::cout << "  map_origin_x: " << node_->get_parameter("grid_map/map_origin_x").as_double() << std::endl;
   std::cout << "  map_origin_y: " << node_->get_parameter("grid_map/map_origin_y").as_double() << std::endl;
+  std::cout << "  use_threat_zones: " << mp_.use_threat_zones_ << std::endl;
+  std::cout << "  threat_cost_weight: " << mp_.threat_cost_weight_ << std::endl;
+  std::cout << "  threat_zones: " << mp_.threat_zones_.size() << " zones" << std::endl;
+  for (size_t i = 0; i < mp_.threat_zones_.size(); ++i) {
+    const auto& zone = mp_.threat_zones_[i];
+    std::cout << "    zone " << i << ": center=(" << zone.center.x() << "," << zone.center.y() << "," << zone.center.z()
+              << "), detection=" << zone.detection_range << "m, engagement=" << zone.engagement_range
+              << "m, threat=" << zone.max_threat_level << std::endl;
+  }
 
   mp_.local_bound_inflate_ = std::max(mp_.resolution_, mp_.local_bound_inflate_);
   mp_.resolution_inv_ = 1.0 / mp_.resolution_;
@@ -125,6 +159,7 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   md_.distance_buffer_all_.resize(buffer_size, 10000.0);
   md_.tmp_buffer1_.resize(buffer_size, 0.0);
   md_.tmp_buffer2_.resize(buffer_size, 0.0);
+  md_.threat_buffer_.resize(buffer_size, 0.0);
 
   distance_buffer_local_.clear();
   local_esdf_min_ = Eigen::Vector3i(0, 0, 0);
@@ -719,4 +754,149 @@ void GridMap::evaluateFirstGrad(const Eigen::Vector3d& pos, Eigen::Vector3d& gra
   getSurroundDistance(sur_pts, dists);
 
   interpolateTrilinearFirstGrad(dists, diff, grad);
+}
+
+// ============================================================================
+// Threat Zone Functions (Air Defense Penetration)
+// ============================================================================
+
+void GridMap::addThreatZone(const ThreatZone& zone) {
+  mp_.threat_zones_.push_back(zone);
+  RCLCPP_INFO(node_->get_logger(),
+              "Added threat zone '%s' at (%.2f, %.2f, %.2f): detection=%.1fm, engagement=%.1fm, threat=%.1f",
+              zone.name.c_str(), zone.center.x(), zone.center.y(), zone.center.z(),
+              zone.detection_range, zone.engagement_range, zone.max_threat_level);
+
+  // Update threat field after adding new zone
+  updateThreatField();
+}
+
+void GridMap::clearThreatZones() {
+  mp_.threat_zones_.clear();
+
+  // Reset threat buffer to zero
+  std::fill(md_.threat_buffer_.begin(), md_.threat_buffer_.end(), 0.0);
+
+  RCLCPP_INFO(node_->get_logger(), "All threat zones cleared");
+}
+
+void GridMap::updateThreatField() {
+  if (!mp_.use_threat_zones_ || mp_.threat_zones_.empty()) {
+    return;
+  }
+
+  auto start_time = rclcpp::Clock().now();
+
+  // Reset threat buffer
+  std::fill(md_.threat_buffer_.begin(), md_.threat_buffer_.end(), 0.0);
+
+  // For each voxel in the map
+  for (int x = 0; x < mp_.map_voxel_num_(0); ++x) {
+    for (int y = 0; y < mp_.map_voxel_num_(1); ++y) {
+      for (int z = 0; z < mp_.map_voxel_num_(2); ++z) {
+        Eigen::Vector3i idx(x, y, z);
+        Eigen::Vector3d pos;
+        indexToPos(idx, pos);
+
+        // Calculate cumulative threat from all zones
+        double total_threat = 0.0;
+
+        for (const auto& zone : mp_.threat_zones_) {
+          Eigen::Vector3d diff = pos - zone.center;
+          double dist = diff.norm();
+
+          // Gaussian decay within engagement range (high threat)
+          if (dist < zone.engagement_range) {
+            double sigma = zone.engagement_range / 3.0;  // 99.7% within 3*sigma
+            double normalized_dist = dist / sigma;
+            total_threat += zone.max_threat_level * exp(-0.5 * normalized_dist * normalized_dist);
+          }
+          // Linear decay in detection range (medium threat)
+          else if (dist < zone.detection_range) {
+            double ratio = (dist - zone.engagement_range) /
+                          (zone.detection_range - zone.engagement_range);
+            total_threat += zone.max_threat_level * 0.3 * (1.0 - ratio);
+          }
+          // Outside detection range: no threat
+        }
+
+        // Store threat level in buffer
+        int idx_addr = toAddress(idx);
+        md_.threat_buffer_[idx_addr] = total_threat;
+      }
+    }
+  }
+
+  auto end_time = rclcpp::Clock().now();
+  double elapsed_ms = (end_time - start_time).seconds() * 1000.0;
+
+  RCLCPP_INFO(node_->get_logger(),
+              "Threat field updated for %zu zones in %.2f ms",
+              mp_.threat_zones_.size(), elapsed_ms);
+}
+
+double GridMap::getThreatLevel(const Eigen::Vector3d& pos) const {
+  if (!mp_.use_threat_zones_ || mp_.threat_zones_.empty()) {
+    return 0.0;
+  }
+
+  // Real-time calculation (more accurate for positions between voxels)
+  double total_threat = 0.0;
+
+  for (const auto& zone : mp_.threat_zones_) {
+    Eigen::Vector3d diff = pos - zone.center;
+    double dist = diff.norm();
+
+    // Gaussian decay within engagement range
+    if (dist < zone.engagement_range) {
+      double sigma = zone.engagement_range / 3.0;
+      double normalized_dist = dist / sigma;
+      total_threat += zone.max_threat_level * exp(-0.5 * normalized_dist * normalized_dist);
+    }
+    // Linear decay in detection range
+    else if (dist < zone.detection_range) {
+      double ratio = (dist - zone.engagement_range) /
+                    (zone.detection_range - zone.engagement_range);
+      total_threat += zone.max_threat_level * 0.3 * (1.0 - ratio);
+    }
+  }
+
+  return total_threat;
+}
+
+Eigen::Vector3d GridMap::getThreatGradient(const Eigen::Vector3d& pos) const {
+  if (!mp_.use_threat_zones_ || mp_.threat_zones_.empty()) {
+    return Eigen::Vector3d::Zero();
+  }
+
+  Eigen::Vector3d grad = Eigen::Vector3d::Zero();
+
+  for (const auto& zone : mp_.threat_zones_) {
+    Eigen::Vector3d diff = pos - zone.center;
+    double dist = diff.norm();
+
+    if (dist < 1e-6) continue;  // Avoid division by zero at center
+
+    Eigen::Vector3d dir = diff / dist;  // Normalized direction (pointing away from threat)
+
+    // Gradient of Gaussian: d/dx[exp(-0.5*(x/σ)²)] = -(x/σ²)*exp(-0.5*(x/σ)²)
+    if (dist < zone.engagement_range) {
+      double sigma = zone.engagement_range / 3.0;
+      double sigma_sq = sigma * sigma;
+      double normalized_dist = dist / sigma;
+      double gaussian = exp(-0.5 * normalized_dist * normalized_dist);
+
+      // Gradient magnitude (negative because threat decreases away from center)
+      double grad_magnitude = -zone.max_threat_level * (dist / sigma_sq) * gaussian;
+      grad += grad_magnitude * dir;
+    }
+    // Gradient of linear decay
+    else if (dist < zone.detection_range) {
+      double range_diff = zone.detection_range - zone.engagement_range;
+      double grad_magnitude = -zone.max_threat_level * 0.3 / range_diff;
+      grad += grad_magnitude * dir;
+    }
+  }
+
+  return grad;
 }

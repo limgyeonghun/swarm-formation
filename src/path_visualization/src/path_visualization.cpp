@@ -41,7 +41,10 @@ PathVisualization::PathVisualization() : Node("path_visualization")
 
   // Load obstacle parameters from obstacles.yaml
   loadObstacleParameters();
-  
+
+  // Load threat zone parameters
+  loadThreatZones();
+
   // Load road boundary parameters from map.yaml
   loadRoadParameters();
 
@@ -53,6 +56,7 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   global_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("global_trajectory", sensor_qos);
   simple_path_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("simple_path_trajectory", sensor_qos);
   road_boundary_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("road_boundary", sensor_qos);
+  threat_field_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("threat_field", sensor_qos);
 
   position_pubs_.resize(num_drones_);
   position_marker_pubs_.resize(num_drones_);
@@ -115,6 +119,13 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   if (true)
   {
     publishRoadBoundaries();
+  }
+
+  // Publish threat field if enabled
+  if (enable_threat_zones_)
+  {
+    threat_field_timer_ = this->create_wall_timer(2000ms, std::bind(&PathVisualization::publishThreatField, this));
+    publishThreatField(); // Initial publish
   }
 }
 
@@ -658,4 +669,208 @@ void PathVisualization::publishRoadBoundaries()
     road_boundary_pub_->publish(right_marker);
 
   }
+}
+
+void PathVisualization::loadThreatZones()
+{
+  this->declare_parameter("enable_threat_zones", false);
+  this->declare_parameter("threat_visualization_resolution", 2.0);
+  this->declare_parameter("threat_zones", std::vector<double>());
+
+  this->get_parameter("enable_threat_zones", enable_threat_zones_);
+  this->get_parameter("threat_visualization_resolution", threat_visualization_resolution_);
+
+  std::vector<double> threat_zones_flat;
+  if (this->get_parameter("threat_zones", threat_zones_flat)) {
+    // Format: [center_x, center_y, center_z, detection_range, engagement_range, max_threat_level, ...]
+    if (threat_zones_flat.size() % 6 != 0) {
+      RCLCPP_ERROR(this->get_logger(), "Invalid threat_zones format: size must be multiple of 6");
+      return;
+    }
+
+    for (size_t i = 0; i < threat_zones_flat.size(); i += 6) {
+      ThreatZoneViz zone;
+      zone.center = Eigen::Vector3d(threat_zones_flat[i], threat_zones_flat[i + 1], threat_zones_flat[i + 2]);
+      zone.detection_range = threat_zones_flat[i + 3];
+      zone.engagement_range = threat_zones_flat[i + 4];
+      zone.max_threat_level = threat_zones_flat[i + 5];
+      zone.name = "ThreatZone_" + std::to_string(i / 6);
+      threat_zones_.push_back(zone);
+    }
+  }
+
+  RCLCPP_INFO(this->get_logger(), "Threat zones visualization: %s", enable_threat_zones_ ? "enabled" : "disabled");
+  if (enable_threat_zones_) {
+    RCLCPP_INFO(this->get_logger(), "Loaded %zu threat zones (resolution: %.1fm):",
+                threat_zones_.size(), threat_visualization_resolution_);
+    for (size_t i = 0; i < threat_zones_.size(); ++i) {
+      const auto& zone = threat_zones_[i];
+      RCLCPP_INFO(this->get_logger(), "  Zone %zu: center=(%.1f, %.1f, %.1f), detection=%.1fm, engagement=%.1fm, threat=%.1f",
+                  i, zone.center.x(), zone.center.y(), zone.center.z(),
+                  zone.detection_range, zone.engagement_range, zone.max_threat_level);
+    }
+  }
+}
+
+void PathVisualization::publishThreatField()
+{
+  if (!enable_threat_zones_ || threat_zones_.empty()) {
+    return;
+  }
+
+  // Helper function: Calculate threat level at a given position (Gaussian decay)
+  auto calculateThreat = [this](const Eigen::Vector3d& pos) -> double {
+    double total_threat = 0.0;
+    for (const auto& zone : threat_zones_) {
+      Eigen::Vector3d diff = pos - zone.center;
+      double dist = diff.norm();
+
+      // Gaussian decay within engagement range
+      if (dist < zone.engagement_range) {
+        double sigma = zone.engagement_range / 3.0;
+        double normalized_dist = dist / sigma;
+        total_threat += zone.max_threat_level * exp(-0.5 * normalized_dist * normalized_dist);
+      }
+      // Linear decay in detection range
+      else if (dist < zone.detection_range) {
+        double ratio = (dist - zone.engagement_range) /
+                      (zone.detection_range - zone.engagement_range);
+        total_threat += zone.max_threat_level * 0.3 * (1.0 - ratio);
+      }
+    }
+    return total_threat;
+  };
+
+  // Helper function: Convert threat level to RGB color (gradient visualization)
+  auto threatToColor = [](double threat, double max_threat) -> std::tuple<float, float, float> {
+    // Normalize threat to [0, 1]
+    double normalized = std::min(threat / max_threat, 1.0);
+
+    // Color gradient: Blue (safe) -> Green -> Yellow -> Red (dangerous)
+    float r, g, b;
+    if (normalized < 0.25) {
+      // Blue to Cyan
+      float t = normalized / 0.25;
+      r = 0.0;
+      g = t * 0.5;
+      b = 1.0;
+    } else if (normalized < 0.5) {
+      // Cyan to Green
+      float t = (normalized - 0.25) / 0.25;
+      r = 0.0;
+      g = 0.5 + t * 0.5;
+      b = 1.0 - t;
+    } else if (normalized < 0.75) {
+      // Green to Yellow
+      float t = (normalized - 0.5) / 0.25;
+      r = t;
+      g = 1.0;
+      b = 0.0;
+    } else {
+      // Yellow to Red
+      float t = (normalized - 0.75) / 0.25;
+      r = 1.0;
+      g = 1.0 - t;
+      b = 0.0;
+    }
+    return {r, g, b};
+  };
+
+  // Find max threat for normalization
+  double max_threat_value = 0.0;
+  for (const auto& zone : threat_zones_) {
+    max_threat_value = std::max(max_threat_value, zone.max_threat_level);
+  }
+
+  // Visualize threat zones using triangle mesh with gradient coloring
+  // Create sphere surface as triangulated mesh for smooth gradient
+  auto marker = createMarker("threat_field", 0, visualization_msgs::msg::Marker::TRIANGLE_LIST,
+                            1.0, 1.0, 0.0, 0.0, 0.5);
+  marker.lifetime = rclcpp::Duration::from_seconds(3.0);
+
+  for (const auto& zone : threat_zones_) {
+    // Create multiple concentric sphere shells at different radii
+    int num_radial_layers = 5;  // Number of concentric shells
+    int num_latitude = 16;      // Latitude divisions
+    int num_longitude = 32;     // Longitude divisions
+
+    for (int layer = 0; layer < num_radial_layers; ++layer) {
+      double radius_ratio = (layer + 1.0) / num_radial_layers;
+      double radius = zone.detection_range * radius_ratio;
+
+      // Generate sphere mesh using latitude/longitude grid
+      for (int lat = 0; lat < num_latitude; ++lat) {
+        for (int lon = 0; lon < num_longitude; ++lon) {
+          // Calculate 4 corners of current quad
+          double phi1 = M_PI * lat / num_latitude;
+          double phi2 = M_PI * (lat + 1) / num_latitude;
+          double theta1 = 2.0 * M_PI * lon / num_longitude;
+          double theta2 = 2.0 * M_PI * (lon + 1) / num_longitude;
+
+          // Four vertices of the quad
+          Eigen::Vector3d v1(radius * sin(phi1) * cos(theta1),
+                             radius * sin(phi1) * sin(theta1),
+                             radius * cos(phi1));
+          Eigen::Vector3d v2(radius * sin(phi1) * cos(theta2),
+                             radius * sin(phi1) * sin(theta2),
+                             radius * cos(phi1));
+          Eigen::Vector3d v3(radius * sin(phi2) * cos(theta2),
+                             radius * sin(phi2) * sin(theta2),
+                             radius * cos(phi2));
+          Eigen::Vector3d v4(radius * sin(phi2) * cos(theta1),
+                             radius * sin(phi2) * sin(theta1),
+                             radius * cos(phi2));
+
+          // Calculate threat and color for each vertex
+          auto getVertexColor = [&](const Eigen::Vector3d& local_pos) {
+            Eigen::Vector3d world_pos = zone.center + local_pos;
+            double threat = calculateThreat(world_pos);
+
+            auto [r, g, b] = threatToColor(threat, max_threat_value);
+            std_msgs::msg::ColorRGBA color;
+            color.r = r;
+            color.g = g;
+            color.b = b;
+            double normalized_threat = std::min(threat / max_threat_value, 1.0);
+            color.a = 0.01 + normalized_threat * 0.35;  // 0.15~0.5
+            return color;
+          };
+
+          // Skip if all vertices have very low threat
+          double avg_threat = (calculateThreat(zone.center + v1) +
+                              calculateThreat(zone.center + v2) +
+                              calculateThreat(zone.center + v3) +
+                              calculateThreat(zone.center + v4)) / 4.0;
+          if (avg_threat < 1.0) continue;
+
+          // Create two triangles for this quad
+          geometry_msgs::msg::Point p1, p2, p3, p4;
+          p1.x = zone.center.x() + v1.x(); p1.y = zone.center.y() + v1.y(); p1.z = zone.center.z() + v1.z();
+          p2.x = zone.center.x() + v2.x(); p2.y = zone.center.y() + v2.y(); p2.z = zone.center.z() + v2.z();
+          p3.x = zone.center.x() + v3.x(); p3.y = zone.center.y() + v3.y(); p3.z = zone.center.z() + v3.z();
+          p4.x = zone.center.x() + v4.x(); p4.y = zone.center.y() + v4.y(); p4.z = zone.center.z() + v4.z();
+
+          // Triangle 1: v1, v2, v3
+          marker.points.push_back(p1);
+          marker.points.push_back(p2);
+          marker.points.push_back(p3);
+          marker.colors.push_back(getVertexColor(v1));
+          marker.colors.push_back(getVertexColor(v2));
+          marker.colors.push_back(getVertexColor(v3));
+
+          // Triangle 2: v1, v3, v4
+          marker.points.push_back(p1);
+          marker.points.push_back(p3);
+          marker.points.push_back(p4);
+          marker.colors.push_back(getVertexColor(v1));
+          marker.colors.push_back(getVertexColor(v3));
+          marker.colors.push_back(getVertexColor(v4));
+        }
+      }
+    }
+  }
+
+  threat_field_pub_->publish(marker);
+
+  RCLCPP_DEBUG(this->get_logger(), "Published threat field with %zu triangles", marker.points.size() / 3);
 }

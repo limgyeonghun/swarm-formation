@@ -84,10 +84,17 @@ private:
     }
     inline bool checkOccupancy_esdf2D(const Eigen::Vector3d &pos){
         const double dist = 0.15;
-        if (grid_map_->getDistance(pos) < dist ) 
+        if (grid_map_->getDistance(pos) < dist )
             return true;
         else
             return false;
+    }
+
+    inline double getThreatCost(const Eigen::Vector3d &pos) {
+        // Get threat level from grid_map and convert to path cost
+        double threat = grid_map_->getThreatLevel(pos);
+        // Threat cost is added to g-score during A* search
+        return threat * 0.1;  // Adjust weight as needed
     }
     
     // inline bool checkOccupancy(const Eigen::Vector3d &pos) { 

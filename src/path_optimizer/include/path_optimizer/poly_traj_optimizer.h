@@ -107,6 +107,7 @@ namespace ego_planner
     double wei_formation_;
     double wei_formation_base_;  // Base formation weight (from config)
     double wei_nonholo_;  // Weight for nonholonomic constraint cost (rover-specific)
+    double wei_threat_;   // Weight for threat zone cost (air defense penetration)
 
     double obs_clearance_;
     double swarm_clearance_;
@@ -205,6 +206,11 @@ namespace ego_planner
                            const Eigen::Vector3d &p,
                            Eigen::Vector3d &gradp,
                            double &costp);
+
+    bool threatGradCostP(const int i_dp,
+                         const Eigen::Vector3d &p,
+                         Eigen::Vector3d &gradp,
+                         double &costp);
 
     bool swarmGradCostP(const int i_dp,
                         const double t,

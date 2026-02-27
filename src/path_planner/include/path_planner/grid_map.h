@@ -19,6 +19,20 @@ struct RoadSegment {
   double width;
 };
 
+// Threat zone structure for air defense systems (SAM, AAA, etc.)
+struct ThreatZone {
+  Eigen::Vector3d center;           // Center position of threat zone
+  double detection_range;            // Detection radius (m)
+  double engagement_range;           // Engagement/kill radius (m)
+  double max_threat_level;           // Maximum threat level (0-100)
+  std::string name;                  // Zone name for debugging
+
+  // Optional: elliptical range (different horizontal/vertical)
+  bool use_elliptical = false;
+  double horizontal_range;
+  double vertical_range;
+};
+
 struct MappingParameters {
   /* map properties */
   Eigen::Vector3d map_origin_, map_size_;
@@ -43,6 +57,11 @@ struct MappingParameters {
   std::vector<RoadSegment> road_segments_;
   double road_width_ = 8.0;
   double road_margin_ = 0.5;
+
+  // Threat zone parameters for air defense penetration
+  bool use_threat_zones_ = false;
+  std::vector<ThreatZone> threat_zones_;
+  double threat_cost_weight_ = 1.0;  // Weight for A* path planning
 };
 
 struct MappingData {
@@ -54,11 +73,14 @@ struct MappingData {
   std::vector<double> distance_buffer_neg_;
   std::vector<double> distance_buffer_all_;
   std::vector<double> tmp_buffer1_, tmp_buffer2_;
-  
+
+  // Threat field buffer (continuous threat level at each voxel)
+  std::vector<double> threat_buffer_;
+
   // Local bound for ESDF updates
   Eigen::Vector3i local_bound_min_, local_bound_max_;
   bool local_updated_ = false;
-  
+
   bool esdf_need_update_ = false;
   double esdf_time_ = 0.0;
   double max_esdf_time_ = 0.0;
@@ -88,6 +110,14 @@ public:
 
   void evaluateEDT(const Eigen::Vector3d& pos, double& dist);
   void evaluateFirstGrad(const Eigen::Vector3d& pos, Eigen::Vector3d& grad);
+
+  // Threat zone management
+  void addThreatZone(const ThreatZone& zone);
+  void clearThreatZones();
+  void updateThreatField();
+  double getThreatLevel(const Eigen::Vector3d& pos) const;
+  Eigen::Vector3d getThreatGradient(const Eigen::Vector3d& pos) const;
+  const std::vector<ThreatZone>& getThreatZones() const { return mp_.threat_zones_; }
 
   inline void posToIndex(const Eigen::Vector3d& pos, Eigen::Vector3i& id);
   inline void indexToPos(const Eigen::Vector3i& id, Eigen::Vector3d& pos);

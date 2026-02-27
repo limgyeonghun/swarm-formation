@@ -193,6 +193,22 @@ Visualization Manager:
       Scale X: 0.3
       Scale Y: 0.3
       Scale Z: 0.3
+    - Class: rviz_default_plugins/Marker  # (/threat_field)
+      Enabled: true
+      Name: Threat Field (Air Defense)
+      Topic:
+        Value: /threat_field
+        Depth: 50
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+      Namespaces:
+        threat_field: true
+      Alpha: 0.3
+      Scale X: 1.0
+      Scale Y: 1.0
+      Scale Z: 1.0
     - Class: rviz_default_plugins/Marker  # (/waypoint_markers)
       Enabled: true
       Name: Waypoint Markers

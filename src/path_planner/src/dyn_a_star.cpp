@@ -340,7 +340,10 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
             }
 
             double static_cost = neighbor_costs_ordered[i];
-            tentative_gScore = current->gScore + static_cost;
+
+            // Add threat cost if threat zones are enabled
+            double threat_cost = getThreatCost(Index2Coord(neighborPtr->index));
+            tentative_gScore = current->gScore + static_cost + threat_cost;
 
             if (!flag_explored)
             {
@@ -505,7 +508,10 @@ bool AStar::AstarSearch2D(const double step_size, Vector3d start_pt, Vector3d en
                 } else {
                     static_cost = 1.0;
                 }
-                tentative_gScore = current->gScore + static_cost;
+
+                // Add threat cost if threat zones are enabled
+                double threat_cost = getThreatCost(Index2Coord(neighborPtr->index));
+                tentative_gScore = current->gScore + static_cost + threat_cost;
 
                 if (!flag_explored)
                 {

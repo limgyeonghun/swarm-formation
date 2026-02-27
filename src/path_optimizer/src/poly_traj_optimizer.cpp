@@ -459,6 +459,15 @@ namespace ego_planner
             }
         }
 
+        // Threat zone cost calculation (soft constraint for air defense penetration)
+        if (threatGradCostP(i_dp, pos, gradp, costp)) {
+            gradViolaPc = beta0 * gradp.transpose();
+            gradViolaPt = alpha * gradp.transpose() * vel;
+            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+            gdT(i) += omg * (costp / K + step * gradViolaPt);
+            costs(0) += omg * step * costp;  // Add to obstacle cost for logging
+        }
+
         double gradt, grad_prev_t;
 
         // Swarm collision cost calculation - now computed for every point for maximum accuracy
@@ -672,6 +681,34 @@ namespace ego_planner
 
       costp = wei_obs_ * pow(dist_err, 3);
       gradp = -wei_obs_ * 3.0 * pow(dist_err, 2) * dist_grad;
+    }
+
+    return ret;
+  }
+
+  bool PolyTrajOptimizer::threatGradCostP(const int i_dp,
+                                          const Eigen::Vector3d &p,
+                                          Eigen::Vector3d &gradp,
+                                          double &costp)
+  {
+    if (i_dp == 0 || i_dp >= cps_.cp_size * 2 / 3)
+      return false;
+
+    bool ret = false;
+    gradp.setZero();
+    costp = 0;
+
+    // Get threat level and gradient from grid map
+    double threat = grid_map_->getThreatLevel(p);
+
+    if (threat > 0.01) // Only penalize significant threats
+    {
+      ret = true;
+      Eigen::Vector3d threat_grad = grid_map_->getThreatGradient(p);
+
+      // Quadratic cost: increases smoothly with threat level
+      costp = wei_threat_ * pow(threat, 2);
+      gradp = wei_threat_ * 2.0 * threat * threat_grad;
     }
 
     return ret;
@@ -1133,6 +1170,9 @@ namespace ego_planner
         node_->declare_parameter("optimization/weight_nonholonomic", 15000.0);
     }
     node_->get_parameter("optimization/weight_nonholonomic", wei_nonholo_);
+
+    node_->declare_parameter("optimization/weight_threat", 100.0);
+    node_->get_parameter("optimization/weight_threat", wei_threat_);
 
     node_->declare_parameter("optimization/obstacle_clearance", 0.1);
     node_->get_parameter("optimization/obstacle_clearance", obs_clearance_);

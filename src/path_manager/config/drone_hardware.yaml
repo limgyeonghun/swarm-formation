@@ -1,6 +1,6 @@
 /**:
   ros__parameters:
-    num_drones: 4
+    num_drones: 1
 
     formation_center_x: 0.0
     formation_center_y: 0.0
@@ -18,16 +18,3 @@
     drone_0:
       index: 0          # Internal agent index (0,1,2,3...) -> /agent0/target_position
       mavlink_id: 1     # External MAVLink ID (can be non-consecutive) -> /vehicle1/fmu/...
-
-    drone_1:
-      index: 1          # Internal: /agent1/...
-      mavlink_id: 2     # External: /vehicle5/fmu/...
-
-    drone_2:
-      index: 2          # Internal: /agent2/...
-      mavlink_id: 3     # External: /vehicle7/fmu/...
-
-    drone_3:
-      index: 3          # Internal: /agent3/...
-      mavlink_id: 4     # External: /vehicle9/fmu/...
-
