@@ -741,136 +741,249 @@ void PathVisualization::publishThreatField()
     return total_threat;
   };
 
+  // Helper function: Calculate threat gradient at a given position
+  auto getThreatGradient = [this](const Eigen::Vector3d& pos) -> Eigen::Vector3d {
+    Eigen::Vector3d grad = Eigen::Vector3d::Zero();
+
+    for (const auto& zone : threat_zones_) {
+      Eigen::Vector3d diff = pos - zone.center;
+      double dist = diff.norm();
+
+      if (dist < 1e-6) continue;  // Avoid division by zero at center
+
+      Eigen::Vector3d dir = diff / dist;  // Normalized direction (pointing away from threat)
+
+      // Gradient of Gaussian decay
+      if (dist < zone.engagement_range) {
+        double sigma = zone.engagement_range / 3.0;
+        double sigma_sq = sigma * sigma;
+        double normalized_dist = dist / sigma;
+        double gaussian = exp(-0.5 * normalized_dist * normalized_dist);
+
+        // Gradient magnitude (negative because threat decreases away from center)
+        double grad_magnitude = -zone.max_threat_level * (dist / sigma_sq) * gaussian;
+        grad += dir * grad_magnitude;
+      }
+      // Gradient of linear decay
+      else if (dist < zone.detection_range) {
+        double range_diff = zone.detection_range - zone.engagement_range;
+        double grad_magnitude = -zone.max_threat_level * 0.3 / range_diff;
+        grad += dir * grad_magnitude;
+      }
+    }
+
+    return grad;
+  };
+
   // Helper function: Convert threat level to RGB color (gradient visualization)
   auto threatToColor = [](double threat, double max_threat) -> std::tuple<float, float, float> {
     // Normalize threat to [0, 1]
     double normalized = std::min(threat / max_threat, 1.0);
 
-    // Color gradient: Blue (safe) -> Green -> Yellow -> Red (dangerous)
+    // Apply power function to make high threat areas more prominent
+    // This creates stronger contrast in overlapping zones
+    normalized = std::pow(normalized, 0.7);  // Makes mid-high values stand out more
+
+    // Color gradient: Blue (safe) -> Cyan -> Green -> Yellow -> Orange -> Red (dangerous)
+    // Using more saturated, vivid colors for better visibility
     float r, g, b;
-    if (normalized < 0.25) {
-      // Blue to Cyan
-      float t = normalized / 0.25;
+    if (normalized < 0.2) {
+      // Deep Blue to Cyan (very low threat)
+      float t = normalized / 0.2;
       r = 0.0;
-      g = t * 0.5;
+      g = t * 0.7;
       b = 1.0;
-    } else if (normalized < 0.5) {
-      // Cyan to Green
-      float t = (normalized - 0.25) / 0.25;
+    } else if (normalized < 0.4) {
+      // Cyan to Green (low threat)
+      float t = (normalized - 0.2) / 0.2;
       r = 0.0;
-      g = 0.5 + t * 0.5;
+      g = 0.7 + t * 0.3;
       b = 1.0 - t;
-    } else if (normalized < 0.75) {
-      // Green to Yellow
-      float t = (normalized - 0.5) / 0.25;
+    } else if (normalized < 0.6) {
+      // Green to Yellow (medium threat)
+      float t = (normalized - 0.4) / 0.2;
       r = t;
       g = 1.0;
       b = 0.0;
-    } else {
-      // Yellow to Red
-      float t = (normalized - 0.75) / 0.25;
+    } else if (normalized < 0.8) {
+      // Yellow to Orange (high threat)
+      float t = (normalized - 0.6) / 0.2;
       r = 1.0;
-      g = 1.0 - t;
+      g = 1.0 - t * 0.5;  // Keep some green for orange
+      b = 0.0;
+    } else {
+      // Orange to Deep Red (very high threat)
+      float t = (normalized - 0.8) / 0.2;
+      r = 1.0;
+      g = 0.5 * (1.0 - t);  // Fade green to get deep red
       b = 0.0;
     }
     return {r, g, b};
   };
 
-  // Find max threat for normalization
+  // Visualize threat zones with smooth gradient spheres using TRIANGLE_LIST
+  // One sphere per zone with vertex colors for seamless gradient
+
+  int marker_id = 0;
+
+  // Find max threat for color normalization
+  // Since calculateThreat() sums all zones, max possible threat is sum of all max_threat_levels
+  // This ensures consistent color mapping between single zones and overlapping zones
   double max_threat_value = 0.0;
   for (const auto& zone : threat_zones_) {
-    max_threat_value = std::max(max_threat_value, zone.max_threat_level);
+    max_threat_value += zone.max_threat_level;  // Sum all zones (not just max)
   }
 
-  // Visualize threat zones using triangle mesh with gradient coloring
-  // Create sphere surface as triangulated mesh for smooth gradient
-  auto marker = createMarker("threat_field", 0, visualization_msgs::msg::Marker::TRIANGLE_LIST,
-                            1.0, 1.0, 0.0, 0.0, 0.5);
-  marker.lifetime = rclcpp::Duration::from_seconds(3.0);
+  RCLCPP_INFO(this->get_logger(),
+              "Max threat value for color normalization: %.1f (sum of all zones)",
+              max_threat_value);
+
+  // 1. Draw radar bases (small and subtle)
+  for (const auto& zone : threat_zones_) {
+    auto base_marker = createMarker("threat_field", marker_id++,
+                                    visualization_msgs::msg::Marker::CYLINDER,
+                                    1.0, 0.4, 0.4, 0.4, 0.9);
+    base_marker.lifetime = rclcpp::Duration::from_seconds(5.0);
+    base_marker.scale.x = 1.0;
+    base_marker.scale.y = 1.0;
+    base_marker.scale.z = 2.0;
+    base_marker.pose.position.x = zone.center.x();
+    base_marker.pose.position.y = zone.center.y();
+    base_marker.pose.position.z = zone.center.z();
+    threat_field_pub_->publish(base_marker);
+  }
+
+  // 2. Draw smooth gradient spheres using multiple concentric layers
+  // Create gradient from outside (blue/safe) to inside (red/dangerous)
+  int num_latitude = 24;   // Latitude divisions (vertical)
+  int num_longitude = 32;  // Longitude divisions (horizontal)
+
+  // Define concentric sphere layers (from outside to inside)
+  // More layers = smoother gradient
+  std::vector<double> layer_ratios = {1.0, 0.85, 0.70, 0.55, 0.40, 0.25, 0.10};
 
   for (const auto& zone : threat_zones_) {
-    // Create multiple concentric sphere shells at different radii
-    int num_radial_layers = 5;  // Number of concentric shells
-    int num_latitude = 16;      // Latitude divisions
-    int num_longitude = 32;     // Longitude divisions
+    // Draw each layer from outside to inside
+    for (double ratio : layer_ratios) {
+      // Create TRIANGLE_LIST marker for this layer
+      auto gradient_sphere = createMarker("threat_field", marker_id++,
+                                         visualization_msgs::msg::Marker::TRIANGLE_LIST,
+                                         1.0, 1.0, 0.0, 0.0, 1.0);  // Scale=1, default color (will be overridden per vertex)
+      gradient_sphere.lifetime = rclcpp::Duration::from_seconds(5.0);
 
-    for (int layer = 0; layer < num_radial_layers; ++layer) {
-      double radius_ratio = (layer + 1.0) / num_radial_layers;
-      double radius = zone.detection_range * radius_ratio;
+      double sphere_radius = zone.detection_range * ratio;  // Scale radius by layer ratio
 
-      // Generate sphere mesh using latitude/longitude grid
-      for (int lat = 0; lat < num_latitude; ++lat) {
-        for (int lon = 0; lon < num_longitude; ++lon) {
-          // Calculate 4 corners of current quad
-          double phi1 = M_PI * lat / num_latitude;
-          double phi2 = M_PI * (lat + 1) / num_latitude;
-          double theta1 = 2.0 * M_PI * lon / num_longitude;
-          double theta2 = 2.0 * M_PI * (lon + 1) / num_longitude;
+    // Generate sphere mesh with gradient colors
+    // Use latitude/longitude parameterization
+    for (int lat = 0; lat < num_latitude; ++lat) {
+      for (int lon = 0; lon < num_longitude; ++lon) {
+        // Calculate angles for this quad
+        double phi1 = M_PI * lat / num_latitude;       // Current latitude
+        double phi2 = M_PI * (lat + 1) / num_latitude; // Next latitude
+        double theta1 = 2.0 * M_PI * lon / num_longitude;       // Current longitude
+        double theta2 = 2.0 * M_PI * (lon + 1) / num_longitude; // Next longitude
 
-          // Four vertices of the quad
-          Eigen::Vector3d v1(radius * sin(phi1) * cos(theta1),
-                             radius * sin(phi1) * sin(theta1),
-                             radius * cos(phi1));
-          Eigen::Vector3d v2(radius * sin(phi1) * cos(theta2),
-                             radius * sin(phi1) * sin(theta2),
-                             radius * cos(phi1));
-          Eigen::Vector3d v3(radius * sin(phi2) * cos(theta2),
-                             radius * sin(phi2) * sin(theta2),
-                             radius * cos(phi2));
-          Eigen::Vector3d v4(radius * sin(phi2) * cos(theta1),
-                             radius * sin(phi2) * sin(theta1),
-                             radius * cos(phi2));
+        // Four corners of the current quad on sphere surface
+        // Formula: (r*sin(φ)*cos(θ), r*sin(φ)*sin(θ), r*cos(φ))
+        auto spherePoint = [&](double phi, double theta) -> Eigen::Vector3d {
+          return Eigen::Vector3d(
+            sphere_radius * sin(phi) * cos(theta),
+            sphere_radius * sin(phi) * sin(theta),
+            sphere_radius * cos(phi)
+          );
+        };
 
-          // Calculate threat and color for each vertex
-          auto getVertexColor = [&](const Eigen::Vector3d& local_pos) {
-            Eigen::Vector3d world_pos = zone.center + local_pos;
-            double threat = calculateThreat(world_pos);
+        Eigen::Vector3d v1 = spherePoint(phi1, theta1);
+        Eigen::Vector3d v2 = spherePoint(phi1, theta2);
+        Eigen::Vector3d v3 = spherePoint(phi2, theta2);
+        Eigen::Vector3d v4 = spherePoint(phi2, theta1);
 
-            auto [r, g, b] = threatToColor(threat, max_threat_value);
-            std_msgs::msg::ColorRGBA color;
-            color.r = r;
-            color.g = g;
-            color.b = b;
-            double normalized_threat = std::min(threat / max_threat_value, 1.0);
-            color.a = 0.01 + normalized_threat * 0.35;  // 0.15~0.5
-            return color;
-          };
+        // Calculate vertex colors based on actual threat level
+        auto getVertexColor = [&](const Eigen::Vector3d& local_pos) -> std_msgs::msg::ColorRGBA {
+          // Calculate threat from THIS ZONE ONLY (not all zones)
+          // This prevents color mixing when zones overlap
+          double dist = local_pos.norm();
+          double threat = 0.0;
 
-          // Skip if all vertices have very low threat
-          double avg_threat = (calculateThreat(zone.center + v1) +
-                              calculateThreat(zone.center + v2) +
-                              calculateThreat(zone.center + v3) +
-                              calculateThreat(zone.center + v4)) / 4.0;
-          if (avg_threat < 1.0) continue;
+          // Gaussian decay within engagement range
+          if (dist < zone.engagement_range) {
+            double sigma = zone.engagement_range / 3.0;
+            double normalized_dist = dist / sigma;
+            threat = zone.max_threat_level * exp(-0.5 * normalized_dist * normalized_dist);
+          }
+          // Linear decay in detection range
+          else if (dist < zone.detection_range) {
+            double ratio = (dist - zone.engagement_range) /
+                          (zone.detection_range - zone.engagement_range);
+            threat = zone.max_threat_level * 0.3 * (1.0 - ratio);
+          }
 
-          // Create two triangles for this quad
-          geometry_msgs::msg::Point p1, p2, p3, p4;
-          p1.x = zone.center.x() + v1.x(); p1.y = zone.center.y() + v1.y(); p1.z = zone.center.z() + v1.z();
-          p2.x = zone.center.x() + v2.x(); p2.y = zone.center.y() + v2.y(); p2.z = zone.center.z() + v2.z();
-          p3.x = zone.center.x() + v3.x(); p3.y = zone.center.y() + v3.y(); p3.z = zone.center.z() + v3.z();
-          p4.x = zone.center.x() + v4.x(); p4.y = zone.center.y() + v4.y(); p4.z = zone.center.z() + v4.z();
+          // Get color from threat level
+          auto [r, g, b] = threatToColor(threat, max_threat_value);
 
-          // Triangle 1: v1, v2, v3
-          marker.points.push_back(p1);
-          marker.points.push_back(p2);
-          marker.points.push_back(p3);
-          marker.colors.push_back(getVertexColor(v1));
-          marker.colors.push_back(getVertexColor(v2));
-          marker.colors.push_back(getVertexColor(v3));
+          std_msgs::msg::ColorRGBA color;
+          color.r = r;
+          color.g = g;
+          color.b = b;
 
-          // Triangle 2: v1, v3, v4
-          marker.points.push_back(p1);
-          marker.points.push_back(p3);
-          marker.points.push_back(p4);
-          marker.colors.push_back(getVertexColor(v1));
-          marker.colors.push_back(getVertexColor(v3));
-          marker.colors.push_back(getVertexColor(v4));
-        }
+          // Calculate alpha based on layer position and threat level
+          // Lower alpha per layer so they blend smoothly when stacked
+          double normalized_threat = std::min(threat / max_threat_value, 1.0);
+
+          // Apply power function for stronger color visibility
+          normalized_threat = std::pow(normalized_threat, 0.6);
+
+          // Layer-based alpha: each layer is semi-transparent
+          // Inner layers (smaller ratio) should be slightly more visible
+          double layer_alpha = 0.15 + (1.0 - ratio) * 0.15;  // 0.15 (outer) to 0.30 (inner)
+
+          // Combine layer alpha with threat level
+          color.a = layer_alpha * (0.3 + normalized_threat * 0.7);
+
+          return color;
+        };
+
+        // Convert to ROS geometry_msgs::Point (world coordinates)
+        auto toPoint = [&](const Eigen::Vector3d& local_pos) -> geometry_msgs::msg::Point {
+          Eigen::Vector3d world_pos = zone.center + local_pos;
+          geometry_msgs::msg::Point p;
+          p.x = world_pos.x();
+          p.y = world_pos.y();
+          p.z = world_pos.z();
+          return p;
+        };
+
+        // Create two triangles for this quad
+        // Triangle 1: v1 -> v2 -> v3
+        gradient_sphere.points.push_back(toPoint(v1));
+        gradient_sphere.points.push_back(toPoint(v2));
+        gradient_sphere.points.push_back(toPoint(v3));
+
+        gradient_sphere.colors.push_back(getVertexColor(v1));
+        gradient_sphere.colors.push_back(getVertexColor(v2));
+        gradient_sphere.colors.push_back(getVertexColor(v3));
+
+        // Triangle 2: v1 -> v3 -> v4
+        gradient_sphere.points.push_back(toPoint(v1));
+        gradient_sphere.points.push_back(toPoint(v3));
+        gradient_sphere.points.push_back(toPoint(v4));
+
+        gradient_sphere.colors.push_back(getVertexColor(v1));
+        gradient_sphere.colors.push_back(getVertexColor(v3));
+        gradient_sphere.colors.push_back(getVertexColor(v4));
       }
     }
-  }
 
-  threat_field_pub_->publish(marker);
+      // Publish this layer
+      threat_field_pub_->publish(gradient_sphere);
 
-  RCLCPP_DEBUG(this->get_logger(), "Published threat field with %zu triangles", marker.points.size() / 3);
+      RCLCPP_DEBUG(this->get_logger(),
+                   "Published gradient sphere layer (ratio=%.2f) for zone %s with %zu triangles",
+                   ratio, zone.name.c_str(), gradient_sphere.points.size() / 3);
+    }  // end of layer loop
+  }  // end of zone loop
+
+  RCLCPP_INFO(this->get_logger(),
+              "Published %zu threat zones with %zu layers per zone (%d triangles per layer)",
+              threat_zones_.size(), layer_ratios.size(), num_latitude * num_longitude * 2);
 }
