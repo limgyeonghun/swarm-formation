@@ -10,7 +10,7 @@
     mission:
       commands:
         # Direct penetration through threat zones
-        - formation_type: "line_first"
+        - formation_type: "none"
           formation_scale: 1.0
           distance_threshold: 3.0
           waypoints:

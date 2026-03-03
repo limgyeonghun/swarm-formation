@@ -32,7 +32,6 @@ namespace ego_planner
     auto t0 = node_->get_clock()->now();
     auto t1 = node_->get_clock()->now();
     auto t2 = node_->get_clock()->now();
-    bool use_formation_temp = use_formation_;
 
     std::vector<double> q(variable_num_);
     memcpy(q.data(), initInnerPts.data(), initInnerPts.size() * sizeof(double));
@@ -50,6 +49,8 @@ namespace ego_planner
     if (use_formation)
     {
       lbfgs_params.max_iterations = 20;
+      // Note: use_formation_ is already set by setFormation()
+      // For NONE mode, it's already false, so no need to change it here
     }
     else
     {
@@ -88,15 +89,14 @@ namespace ego_planner
     // Collision check (only if obstacles are enabled)
     bool occ = enable_obstacles_ ? checkCollision() : false;
 
-    use_formation_ = use_formation_temp;
-
     t2 = node_->get_clock()->now();
     double time_ms = (t2 - t1).seconds() * 1000;
     double total_time_ms = (t2 - t0).seconds() * 1000;
 
     // Final result logging
     if (log_manager_) {
-        log_manager_->infof("Optimization completed: iter=%d, use_formation=%d, time(ms)=%f", iter_num_, use_formation, time_ms);
+        log_manager_->infof("Optimization completed: iter=%d, use_formation_param=%d, use_formation_internal=%d, time(ms)=%f",
+                            iter_num_, use_formation, use_formation_, time_ms);
 
         // Calculate and log jerk metrics
         poly_traj::Trajectory final_traj = jerkOpt_.getTraj();
@@ -1256,35 +1256,53 @@ namespace ego_planner
       LOG_ERROR("PolyTrajOptimizer node_ is null in setFormation!");
       return;
     }
-    
+
     if (swarm_graph_ && !formation_positions.empty()) {
       formation_size_ = formation_size;
-      
+
       // Ensure formation positions match expected formation size
       std::vector<Eigen::Vector3d> adjusted_formation = formation_positions;
       if (static_cast<int>(adjusted_formation.size()) != formation_size_) {
-        RCLCPP_WARN(node_->get_logger(), 
-                    "Formation positions size (%zu) doesn't match formation_size (%d), adjusting...", 
+        RCLCPP_WARN(node_->get_logger(),
+                    "Formation positions size (%zu) doesn't match formation_size (%d), adjusting...",
                     adjusted_formation.size(), formation_size_);
         adjusted_formation.resize(formation_size_, Eigen::Vector3d::Zero());
       }
-      
-      swarm_graph_->setDesiredForm(adjusted_formation);
-      use_formation_ = true;
-      
-      LOG_INFO("Formation set with %d positions for optimizer (drone %d)", 
-               static_cast<int>(adjusted_formation.size()), drone_id_);
-      
-      // Print current formation details
-      LOG_INFO("=== CURRENT FORMATION CONFIGURATION ===");
-      LOG_INFO("Formation Size: %d", formation_size_);
-      LOG_INFO("Drone ID: %d", drone_id_);
-      LOG_INFO("Formation Positions:");
-      for (size_t i = 0; i < adjusted_formation.size(); ++i) {
-        LOG_INFO("  Drone %zu: [%.3f, %.3f, %.3f]", 
-                 i, adjusted_formation[i].x(), adjusted_formation[i].y(), adjusted_formation[i].z());
+
+      // Check if this is NONE mode (all positions are zero)
+      bool is_none_mode = true;
+      for (const auto& pos : adjusted_formation) {
+        if (pos.norm() > 1e-6) {  // Non-zero position found
+          is_none_mode = false;
+          break;
+        }
       }
-      LOG_INFO("=====================================");
+
+      if (is_none_mode) {
+        // NONE mode: disable formation cost
+        use_formation_ = false;
+        wei_formation_ = 0.0;
+        LOG_INFO("NONE mode detected - formation cost DISABLED (weight=0)");
+      } else {
+        // Normal formation mode
+        swarm_graph_->setDesiredForm(adjusted_formation);
+        use_formation_ = true;
+        wei_formation_ = wei_formation_base_;  // Restore base weight
+
+        LOG_INFO("Formation set with %d positions for optimizer (drone %d)",
+                 static_cast<int>(adjusted_formation.size()), drone_id_);
+
+        // Print current formation details
+        LOG_INFO("=== CURRENT FORMATION CONFIGURATION ===");
+        LOG_INFO("Formation Size: %d", formation_size_);
+        LOG_INFO("Drone ID: %d", drone_id_);
+        LOG_INFO("Formation Positions:");
+        for (size_t i = 0; i < adjusted_formation.size(); ++i) {
+          LOG_INFO("  Drone %zu: [%.3f, %.3f, %.3f]",
+                   i, adjusted_formation[i].x(), adjusted_formation[i].y(), adjusted_formation[i].z());
+        }
+        LOG_INFO("=====================================");
+      }
     } else {
       use_formation_ = false;
       formation_size_ = 0;

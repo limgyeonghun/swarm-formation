@@ -113,6 +113,13 @@ std::vector<Eigen::Vector3d> FormationUtils::generateFormationPattern(
             ));
         }
     }
+    else if (formation_type == "none" || formation_type == "NONE") {
+        // No formation mode - all drones go to same target point
+        // Zero offset for all drones (formation disabled)
+        for (int i = 0; i < num_drones; ++i) {
+            pattern.push_back(Eigen::Vector3d(0.0, 0.0, 0.0));
+        }
+    }
     else {
         // Unknown formation type - fallback to square/circle
         if (num_drones <= 4) {

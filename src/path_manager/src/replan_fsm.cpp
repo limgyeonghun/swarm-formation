@@ -1142,12 +1142,20 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
                    msg->formation_type.c_str());
     }
 
-    // ⭐ Set nonholonomic weight based on formation type:
+    // Set nonholonomic weight based on formation type:
+    //    - NONE mode: weight = 0, formation disabled
     //    - Line formations (line_first, line_first_reverse, etc.): weight = 0 (disabled)
     //    - Other formations (square, triangle, etc.): weight = config value
+    bool is_none_mode = (msg->formation_type == "none" || msg->formation_type == "NONE");
     bool is_line_formation = (msg->formation_type.find("line") != std::string::npos);
 
-    if (is_line_formation) {
+    if (is_none_mode) {
+        pending_weight_nonholonomic_ = 0.0;
+        FSM_LOG_INFO("NONE mode - formation and nonholonomic constraints DISABLED (weight=0)");
+        if (path_manager_ && path_manager_->isOptimizerInitialized()) {
+            path_manager_->setNonholonomicWeight(0.0);
+        }
+    } else if (is_line_formation) {
         pending_weight_nonholonomic_ = 0.0;
         FSM_LOG_INFO("Line formation (%s) - nonholonomic constraints DISABLED (weight=0)",
                      msg->formation_type.c_str());
@@ -1220,7 +1228,8 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
                drone_id_, my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
 
     // For line formations, apply offset in the normal direction of the path
-    bool use_path_normal = (current_formation_type_ == "line_first" ||
+    // Note: is_none_mode already declared earlier in this function (line 1149)
+    bool use_path_normal = !is_none_mode && (current_formation_type_ == "line_first" ||
                             current_formation_type_ == "line_second" ||
                             current_formation_type_ == "line_first_no_offset" ||
                             current_formation_type_ == "line_second_no_offset");
@@ -1250,7 +1259,7 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
 
     // Add all waypoints with appropriate offset
     for (size_t i = 0; i < waypoints.size(); ++i) {
-        Eigen::Vector3d applied_offset = my_formation_offset;  // Default: fixed offset
+        Eigen::Vector3d applied_offset = is_none_mode ? Eigen::Vector3d::Zero() : my_formation_offset;  // NONE mode: no offset
 
         if (use_path_normal && std::abs(offset_distance) > 1e-6) {
             // Calculate path tangent (direction) at this waypoint

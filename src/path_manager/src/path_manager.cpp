@@ -732,6 +732,14 @@ std::vector<Eigen::Vector3d> PathManager::adjustWaypointsForFormation(
         return waypoints;
     }
 
+    // Check for NONE mode - skip all formation adjustments
+    bool is_none_mode = (current_formation_type_ == "none" || current_formation_type_ == "NONE");
+    if (is_none_mode) {
+        RCLCPP_INFO(node_->get_logger(),
+                   "NONE mode detected: returning original waypoints without any formation adjustments");
+        return waypoints;
+    }
+
     // Check if this is a line formation
     bool is_line_formation = (current_formation_type_.find("line") != std::string::npos);
 
