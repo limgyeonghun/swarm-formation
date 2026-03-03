@@ -6,29 +6,51 @@ namespace path_manager {
 std::vector<Eigen::Vector3d> FormationUtils::generateFormationPattern(
     const std::string& formation_type,
     int num_drones,
-    double scale)
+    double scale,
+    bool enable_z_axis,
+    double z_spacing)
 {
     std::vector<Eigen::Vector3d> pattern;
     pattern.reserve(num_drones);
 
     if (formation_type == "square" && num_drones == 4) {
         // Standard square formation
-        pattern.push_back(Eigen::Vector3d(-scale/2, -scale/2, 0.0));
-        pattern.push_back(Eigen::Vector3d(-scale/2,  scale/2, 0.0));
-        pattern.push_back(Eigen::Vector3d( scale/2,  scale/2, 0.0));
-        pattern.push_back(Eigen::Vector3d( scale/2, -scale/2, 0.0));
+        if (enable_z_axis) {
+            // 3D square pyramid (drone mode) - two at base, two elevated
+            pattern.push_back(Eigen::Vector3d(-scale/2, -scale/2, 0.0));
+            pattern.push_back(Eigen::Vector3d(-scale/2,  scale/2, 0.0));
+            pattern.push_back(Eigen::Vector3d( scale/2,  scale/2, z_spacing));
+            pattern.push_back(Eigen::Vector3d( scale/2, -scale/2, z_spacing));
+        } else {
+            // 2D square (rover mode) - all at ground level
+            pattern.push_back(Eigen::Vector3d(-scale/2, -scale/2, 0.0));
+            pattern.push_back(Eigen::Vector3d(-scale/2,  scale/2, 0.0));
+            pattern.push_back(Eigen::Vector3d( scale/2,  scale/2, 0.0));
+            pattern.push_back(Eigen::Vector3d( scale/2, -scale/2, 0.0));
+        }
     }
     else if (formation_type == "triangle" && num_drones >= 3) {
         double h = scale * std::sqrt(3) / 2.0;
 
         pattern.clear();
-        // Triangle vertices: each drone at a corner
-        pattern.push_back(Eigen::Vector3d(0.0, 2.0*h/3.0, 0.0));          // Top (apex)
-        pattern.push_back(Eigen::Vector3d(-scale/2.0, -h/3.0, 0.0));      // Bottom left
-        pattern.push_back(Eigen::Vector3d(+scale/2.0, -h/3.0, 0.0));      // Bottom right
+        if (enable_z_axis) {
+            // 3D triangle (drone mode) - apex elevated
+            pattern.push_back(Eigen::Vector3d(0.0, 2.0*h/3.0, z_spacing));   // Top (apex) elevated
+            pattern.push_back(Eigen::Vector3d(-scale/2.0, -h/3.0, 0.0));      // Bottom left
+            pattern.push_back(Eigen::Vector3d(+scale/2.0, -h/3.0, 0.0));      // Bottom right
 
-        if (num_drones > 3) {
-            pattern.push_back(Eigen::Vector3d(0.0, 0.0, 0.0));            // Center
+            if (num_drones > 3) {
+                pattern.push_back(Eigen::Vector3d(0.0, 0.0, z_spacing/2));    // Center mid-level
+            }
+        } else {
+            // 2D triangle (rover mode) - all at ground level
+            pattern.push_back(Eigen::Vector3d(0.0, 2.0*h/3.0, 0.0));          // Top (apex)
+            pattern.push_back(Eigen::Vector3d(-scale/2.0, -h/3.0, 0.0));      // Bottom left
+            pattern.push_back(Eigen::Vector3d(+scale/2.0, -h/3.0, 0.0));      // Bottom right
+
+            if (num_drones > 3) {
+                pattern.push_back(Eigen::Vector3d(0.0, 0.0, 0.0));            // Center
+            }
         }
     }
     else if (formation_type == "triangle_rotated" && num_drones >= 3) {
@@ -106,10 +128,11 @@ std::vector<Eigen::Vector3d> FormationUtils::generateFormationPattern(
         double angle_step = 2.0 * M_PI / num_drones;
         for (int i = 0; i < num_drones; ++i) {
             double angle = i * angle_step;
+            double z = enable_z_axis ? (i % 2) * z_spacing : 0.0;  // Alternating heights for drones
             pattern.push_back(Eigen::Vector3d(
                 scale * cos(angle),
                 scale * sin(angle),
-                0.0
+                z
             ));
         }
     }
@@ -123,18 +146,21 @@ std::vector<Eigen::Vector3d> FormationUtils::generateFormationPattern(
     else {
         // Unknown formation type - fallback to square/circle
         if (num_drones <= 4) {
-            pattern.push_back(Eigen::Vector3d(-scale/2, -scale/2, 0.0));
-            if (num_drones > 1) pattern.push_back(Eigen::Vector3d( scale/2, -scale/2, 0.0));
-            if (num_drones > 2) pattern.push_back(Eigen::Vector3d( scale/2,  scale/2, 0.0));
-            if (num_drones > 3) pattern.push_back(Eigen::Vector3d(-scale/2,  scale/2, 0.0));
+            double z0 = 0.0;
+            double z1 = enable_z_axis ? z_spacing : 0.0;
+            pattern.push_back(Eigen::Vector3d(-scale/2, -scale/2, z0));
+            if (num_drones > 1) pattern.push_back(Eigen::Vector3d( scale/2, -scale/2, z0));
+            if (num_drones > 2) pattern.push_back(Eigen::Vector3d( scale/2,  scale/2, z1));
+            if (num_drones > 3) pattern.push_back(Eigen::Vector3d(-scale/2,  scale/2, z1));
         } else {
             double angle_step = 2.0 * M_PI / num_drones;
             for (int i = 0; i < num_drones; ++i) {
                 double angle = i * angle_step;
+                double z = enable_z_axis ? (i % 2) * z_spacing : 0.0;
                 pattern.push_back(Eigen::Vector3d(
                     scale * cos(angle),
                     scale * sin(angle),
-                    0.0
+                    z
                 ));
             }
         }

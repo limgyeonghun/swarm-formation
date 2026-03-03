@@ -44,11 +44,15 @@ public:
         this->declare_parameter("num_drones", 4);
         this->declare_parameter("distance_threshold", 3.0);
         this->declare_parameter("formation_similarity_threshold", 2.0);
+        this->declare_parameter("enable_z_axis", false);
+        this->declare_parameter("formation_z_spacing", 2.0);
 
         // Get parameters
         num_drones_ = this->get_parameter("num_drones").as_int();
         distance_threshold_ = this->get_parameter("distance_threshold").as_double();
         formation_similarity_threshold_ = this->get_parameter("formation_similarity_threshold").as_double();
+        enable_z_axis_ = this->get_parameter("enable_z_axis").as_bool();
+        formation_z_spacing_ = this->get_parameter("formation_z_spacing").as_double();
 
         // Load mission from YAML (mission.commands)
         loadMissionFromYAML();
@@ -286,7 +290,7 @@ private:
 
         // Generate formation pattern (relative positions)
         std::vector<Eigen::Vector3d> pattern = path_manager::FormationUtils::generateFormationPattern(
-            formation_type, num_drones_, formation_scale);
+            formation_type, num_drones_, formation_scale, enable_z_axis_, formation_z_spacing_);
 
         // Translate pattern to current formation center
         std::vector<Eigen::Vector3d> target_positions(num_drones_);
@@ -314,7 +318,7 @@ private:
 
         // Generate target formation pattern (relative positions from origin)
         std::vector<Eigen::Vector3d> target_pattern = path_manager::FormationUtils::generateFormationPattern(
-            formation_type, num_drones_, formation_scale);
+            formation_type, num_drones_, formation_scale, enable_z_axis_, formation_z_spacing_);
 
         if (current_positions.size() != target_pattern.size()) {
             RCLCPP_ERROR(this->get_logger(), "Size mismatch in calculateFormationSimilarity");
@@ -608,7 +612,7 @@ private:
 
         // Generate formation pattern using shared utility
         auto formation_pattern = path_manager::FormationUtils::generateFormationPattern(
-            msg.formation_type, num_drones_, msg.formation_scale);
+            msg.formation_type, num_drones_, msg.formation_scale, enable_z_axis_, formation_z_spacing_);
 
         // Calculate target positions (formation center + pattern)
         std::vector<Eigen::Vector3d> target_positions(num_drones_);
@@ -685,6 +689,8 @@ private:
     int num_drones_;
     double distance_threshold_;
     double formation_similarity_threshold_;
+    bool enable_z_axis_;
+    double formation_z_spacing_;
     Eigen::Vector3d current_formation_center_;
     bool have_initial_command_;
     std::vector<TrajectoryData> drone_trajectories_;

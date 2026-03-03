@@ -1183,15 +1183,15 @@ namespace ego_planner
     node_->declare_parameter("optimization/max_acc", 1.0);
     node_->get_parameter("optimization/max_acc", max_acc_);
 
-    // Nonholonomic constraint parameters
-    node_->declare_parameter("optimization/min_forward_vel", 0.2);
-    node_->get_parameter("optimization/min_forward_vel", min_forward_vel_);
-    node_->declare_parameter("optimization/max_brake_decel", 2.0);
-    node_->get_parameter("optimization/max_brake_decel", max_brake_decel_);
-    node_->declare_parameter("optimization/max_curvature", 0.8);
-    node_->get_parameter("optimization/max_curvature", max_curvature_);
-    node_->declare_parameter("optimization/max_lateral_accel", 1.5);
-    node_->get_parameter("optimization/max_lateral_accel", max_lateral_accel_);
+    // Check vehicle type to determine if nonholonomic constraints should be applied
+    // 3D holonomic motion - no nonholonomic constraints
+    min_forward_vel_ = 0.0;
+    max_brake_decel_ = 999.0;
+    max_curvature_ = 999.0;
+    max_lateral_accel_ = 999.0;
+    wei_nonholo_ = 0.0;
+
+    LOG_INFO("3D holonomic motion enabled");
 
     // Log initialization based on enable_debug_logs setting
     if (enable_debug_logs_) {
@@ -1218,16 +1218,16 @@ namespace ego_planner
   {
     grid_map_ = map;
     a_star_.reset(new AStar);
-    
+
     // Set log manager for A* if available
     if (log_manager_) {
       a_star_->setLogManager(log_manager_);
     }
-    
+
     // Calculate pool size based on map size and resolution
     Eigen::Vector3d map_size = grid_map_->getMapSize();
     double resolution = grid_map_->getResolution();
-    
+
     Eigen::Vector3i pool_size(800, 800, 20);
 
     a_star_->initGridMap(grid_map_, pool_size);

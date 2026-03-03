@@ -39,6 +39,13 @@ namespace path_manager
         node_->get_parameter("manager/planning_horizon", planning_horizen_);
         node_->get_parameter("manager/intermediate_waypoint_ratio", intermediate_waypoint_ratio_);
 
+        // Get 3D mode parameter
+        enable_z_axis_ = false;
+        if (node_->has_parameter("enable_z_axis")) {
+            node_->get_parameter("enable_z_axis", enable_z_axis_);
+        }
+        RCLCPP_INFO(node_->get_logger(), "PathManager 3D mode: %s", enable_z_axis_ ? "enabled" : "disabled");
+
         // Clamp intermediate_waypoint_ratio to valid range (0.0, 1.0)
         if (intermediate_waypoint_ratio_ <= 0.0 || intermediate_waypoint_ratio_ >= 1.0) {
             RCLCPP_WARN(node_->get_logger(),
@@ -711,9 +718,16 @@ Eigen::Vector3d PathManager::computeLateralOffset(const Eigen::Vector3d& prev_po
     // Compute the average tangent direction
     Eigen::Vector3d tangent = (v1 + v2).normalized();
 
-    // Compute the normal vector (perpendicular to tangent in XY plane)
-    // For 2D path in XY plane, normal is simply rotating tangent by 90 degrees
-    Eigen::Vector3d normal(-tangent.y(), tangent.x(), 0.0);
+    // 3D mode: Use cross product with world up vector
+    Eigen::Vector3d up(0.0, 0.0, 1.0);
+    Eigen::Vector3d normal = tangent.cross(up);
+
+    // Handle case where tangent is parallel to up vector
+    if (normal.norm() < 1e-6) {
+        // Use alternative perpendicular vector
+        Eigen::Vector3d alt_up(0.0, 1.0, 0.0);
+        normal = tangent.cross(alt_up);
+    }
     normal.normalize();
 
     // Apply offset: positive offset_distance means move to the right (outer line for CCW turn)
@@ -808,17 +822,20 @@ std::vector<Eigen::Vector3d> PathManager::adjustWaypointsWithCurvature(
         if (i == 0) {
             // First point: use next point for direction
             if (all_points.size() > 1) {
+                // Use computeLateralOffset for proper 3D handling
+                // Create a virtual previous point by extrapolating backwards
                 Eigen::Vector3d dir = (all_points[1] - all_points[0]).normalized();
-                Eigen::Vector3d normal(-dir.y(), dir.x(), 0.0);
-                adjusted_point = all_points[0] + normal * lateral_offset;
+                Eigen::Vector3d virtual_prev = all_points[0] - dir;
+                adjusted_point = computeLateralOffset(virtual_prev, all_points[0], all_points[1], lateral_offset);
             } else {
                 adjusted_point = all_points[0];
             }
         } else if (i == all_points.size() - 1) {
             // Last point: use previous point for direction
+            // Create a virtual next point by extrapolating forwards
             Eigen::Vector3d dir = (all_points[i] - all_points[i-1]).normalized();
-            Eigen::Vector3d normal(-dir.y(), dir.x(), 0.0);
-            adjusted_point = all_points[i] + normal * lateral_offset;
+            Eigen::Vector3d virtual_next = all_points[i] + dir;
+            adjusted_point = computeLateralOffset(all_points[i-1], all_points[i], virtual_next, lateral_offset);
         } else {
             // Middle points: compute curvature and adjust offset
             double curvature = computePathCurvature(all_points[i-1], all_points[i], all_points[i+1]);

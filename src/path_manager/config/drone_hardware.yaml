@@ -2,6 +2,9 @@
   ros__parameters:
     num_drones: 1
 
+    # 3D formation parameters
+    formation_z_spacing: 3.0      # Vertical spacing between drones in 3D formations (meters)
+
     formation_center_x: 0.0
     formation_center_y: 0.0
     formation_center_z: 0.0

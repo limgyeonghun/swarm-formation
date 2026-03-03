@@ -569,55 +569,49 @@ vector<Vector3d> AStar::getPath()
 vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vector3d start_pt, Vector3d end_pt, int drone_id){
 
     if (log_manager_) {
-        log_manager_->infof("드론 %d: 경로 검색 및 단순화 시작", drone_id);
-        log_manager_->debugf("원본 시작점: (%.2f,%.2f,%.2f), 도착점: (%.2f,%.2f,%.2f)", 
+        log_manager_->infof("드론 %d: 3D 경로 검색 및 단순화 시작", drone_id);
+        log_manager_->debugf("시작점: (%.2f,%.2f,%.2f), 도착점: (%.2f,%.2f,%.2f)",
                            start_pt(0), start_pt(1), start_pt(2), end_pt(0), end_pt(1), end_pt(2));
     }
 
-    Vector3d adjusted_end_pt = end_pt;
-    if (abs(start_pt(2) - end_pt(2)) > 1.0) {
-        adjusted_end_pt(2) = start_pt(2);
-        if (log_manager_) {
-            log_manager_->infof("Z 좌표 차이가 큰 경우 감지 - %.2f에서 %.2f로 조정", end_pt(2), adjusted_end_pt(2));
-        }
-        RCLCPP_INFO(rclcpp::get_logger("astar"), "Large z difference detected, adjusting end point z from %.2f to %.2f", 
-                   end_pt(2), adjusted_end_pt(2));
-    }
-
-    if (AstarSearch2D(step_size, start_pt, adjusted_end_pt, true)) {
+    // 3D A* search with ESDF
+    if (AstarSearch(step_size, start_pt, end_pt, true)) {
         vector<Vector3d> path = getPath();
         if (path.size() > 1 && (path[0]-start_pt).norm() < 0.5) {
             if (log_manager_) {
-                log_manager_->infof("드론 %d: 2D A* 검색 성공 (ESDF 사용) - 경로 점 개수: %zu", drone_id, path.size());
+                log_manager_->infof("드론 %d: 3D A* 검색 성공 (ESDF 사용) - 경로 점 개수: %zu", drone_id, path.size());
             }
-            RCLCPP_INFO(rclcpp::get_logger("astar"), "2D A* search successful");
-            return astarSearch2DAndGetSimplePath(step_size, start_pt, adjusted_end_pt, drone_id, true);
+            RCLCPP_INFO(rclcpp::get_logger("astar"), "3D A* search successful with ESDF");
+            return astarSearch2DAndGetSimplePath(step_size, start_pt, end_pt, drone_id, true);
         }
     }
 
     if (log_manager_) {
-        log_manager_->warnf("드론 %d: 2D A* 검색 실패 (ESDF 사용), ESDF 없이 재시도", drone_id);
+        log_manager_->warnf("드론 %d: 3D A* 검색 실패 (ESDF 사용), ESDF 없이 재시도", drone_id);
     }
-    RCLCPP_WARN(rclcpp::get_logger("astar"), "2D A* search failed, retrying without ESDF");
-    if (AstarSearch2D(step_size, start_pt, adjusted_end_pt, false)) {
+    RCLCPP_WARN(rclcpp::get_logger("astar"), "3D A* search failed with ESDF, retrying without ESDF");
+
+    // 3D A* search without ESDF
+    if (AstarSearch(step_size, start_pt, end_pt, false)) {
         vector<Vector3d> path = getPath();
         if (path.size() > 1 && (path[0]-start_pt).norm() < 0.5) {
             if (log_manager_) {
-                log_manager_->infof("드론 %d: 2D A* 검색 성공 (ESDF 비사용) - 경로 점 개수: %zu", drone_id, path.size());
+                log_manager_->infof("드론 %d: 3D A* 검색 성공 (ESDF 비사용) - 경로 점 개수: %zu", drone_id, path.size());
             }
-            RCLCPP_INFO(rclcpp::get_logger("astar"), "2D A* search successful without ESDF");
-            return astarSearch2DAndGetSimplePath(step_size, start_pt, adjusted_end_pt, drone_id, false);
+            RCLCPP_INFO(rclcpp::get_logger("astar"), "3D A* search successful without ESDF");
+            return astarSearch2DAndGetSimplePath(step_size, start_pt, end_pt, drone_id, false);
         }
     }
 
     if (log_manager_) {
-        log_manager_->errorf("드론 %d: 2D A* 검색 완전 실패 - 직선 경로 반환", drone_id);
+        log_manager_->errorf("드론 %d: 3D A* 검색 완전 실패 - 직선 경로 반환", drone_id);
     }
-    RCLCPP_ERROR(rclcpp::get_logger("astar"), "2D A* search completely failed, returning direct path");
+    RCLCPP_ERROR(rclcpp::get_logger("astar"), "3D A* search completely failed, returning direct path");
+
     vector<Vector3d> fallback_path;
     fallback_path.push_back(start_pt);
-    fallback_path.push_back(adjusted_end_pt);
-    return fallback_path;    
+    fallback_path.push_back(end_pt);
+    return fallback_path;
 }
 
 vector<Vector3d> AStar::astarSearch2DAndGetSimplePath(const double step_size, Vector3d start_pt, Vector3d end_pt, int drone_id, bool use_esdf_check){

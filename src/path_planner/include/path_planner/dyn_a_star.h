@@ -124,7 +124,7 @@ public:
 
     AStar(){};
     ~AStar();
-    
+
     void setLogManager(swarm_formation::LogManager::Ptr log_manager);
 
     void initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size);

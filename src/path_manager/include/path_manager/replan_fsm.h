@@ -153,6 +153,8 @@ private:
     bool enable_debug_logs_;
     bool enable_waypoint_markers_;
     bool enable_global_trajectory_pub_;
+    bool enable_z_axis_;          // Enable 3D mode (drone) vs 2D mode (rover)
+    double formation_z_spacing_;  // Vertical spacing for 3D formations
     double hungarian_distance_weight_;   // Weight for distance cost in Hungarian assignment
     double hungarian_crossing_penalty_;  // Penalty weight for path crossings in Hungarian assignment
     double weight_nonholonomic_;         // Nonholonomic constraint weight from config (used for formation changes)

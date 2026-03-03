@@ -147,6 +147,9 @@ namespace path_manager
     // Intermediate waypoint parameter
     double intermediate_waypoint_ratio_;
 
+    // 3D mode parameter (drone vs rover)
+    bool enable_z_axis_;
+
   };
 
 } // namespace path_manager
