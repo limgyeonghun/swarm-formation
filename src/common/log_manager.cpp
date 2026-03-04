@@ -4,10 +4,17 @@
 
 namespace swarm_formation {
 
-LogManager::LogManager(const std::string& node_name, 
+LogManager::LogManager(const std::string& node_name,
                        const std::string& log_dir,
                        LogLevel min_level)
     : node_name_(node_name), log_dir_(log_dir), min_level_(min_level) {
+    // Check environment variable to disable logging
+    const char* disable_logging = std::getenv("SWARM_DISABLE_FILE_LOGGING");
+    if (disable_logging != nullptr && std::string(disable_logging) == "1") {
+        // Logging disabled - do not create log file
+        return;
+    }
+
     createLogDirectory();
     openLogFile();
 }

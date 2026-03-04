@@ -14,7 +14,7 @@
     optimization/weight_obstacle: 50000.0
     optimization/weight_swarm: 0.0
     optimization/weight_feasibility: 10000.0
-    optimization/weight_sqrvariance: 5000.0
+    optimization/weight_sqrvariance: 10000.0
     optimization/weight_time: 10.0               # Reduced to allow more time for smooth paths
     optimization/weight_formation: 0.0
     optimization/weight_nonholonomic: 0.0   # Default (dynamically set: 0 for first formation, 5000 for others)
@@ -42,7 +42,7 @@
     manager/planning_horizon: 7.0
     
     # FSM Parameters
-    fsm/thresh_replan_time: 0.5
+    fsm/thresh_replan_time: 0.25
     fsm/thresh_no_replan_meter: 1.0
     fsm/replan_trajectory_time: 0.1
 

@@ -809,10 +809,6 @@ void PathVisualization::publishThreatField()
     max_threat_value += zone.max_threat_level;  // Sum all zones (not just max)
   }
 
-  RCLCPP_INFO(this->get_logger(),
-              "Max threat value for color normalization: %.1f (sum of all zones)",
-              max_threat_value);
-
   // 1. Draw radar bases (small and subtle)
   for (const auto& zone : threat_zones_) {
     auto base_marker = createMarker("threat_field", marker_id++,
@@ -957,7 +953,4 @@ void PathVisualization::publishThreatField()
     }  // end of layer loop
   }  // end of zone loop
 
-  RCLCPP_INFO(this->get_logger(),
-              "Published %zu threat zones with %zu layers per zone (%d triangles per layer)",
-              threat_zones_.size(), layer_ratios.size(), num_latitude * num_longitude * 2);
 }

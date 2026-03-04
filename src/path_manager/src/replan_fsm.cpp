@@ -289,21 +289,6 @@ void ReplanFSM::computeAndPublishPaths() {
         fsm_num = 0;
     }
 
-    // DEBUG: Track FSM timer execution timing
-    static auto last_call_time = std::chrono::high_resolution_clock::now();
-    auto current_call_time = std::chrono::high_resolution_clock::now();
-    auto time_since_last_call = std::chrono::duration_cast<std::chrono::milliseconds>(
-        current_call_time - last_call_time).count();
-
-    // Log if timer was delayed significantly (> 50ms, should be ~10ms)
-    if (time_since_last_call > 50) {
-        FSM_LOG_WARN("[TIMER DELAY] FSM timer delayed by %ld ms (expected ~10ms) - state: %d",
-                     time_since_last_call, static_cast<int>(exec_state_));
-    }
-    last_call_time = current_call_time;
-
-    // Check if we need to re-enable formation command subscription (safety fallback)
-
     switch (exec_state_) {
         case INIT: {
             if (!have_position_) {
@@ -372,8 +357,8 @@ void ReplanFSM::computeAndPublishPaths() {
 
         case REPLAN_TRAJ:
         {
-            FSM_LOG_INFO("[DEBUG REPLAN] Starting REPLAN_TRAJ at time %.3f",
-                         rclcpp::Clock(RCL_ROS_TIME).now().seconds());
+            // FSM_LOG_INFO("[DEBUG REPLAN] Starting REPLAN_TRAJ at time %.3f",
+            //              rclcpp::Clock(RCL_ROS_TIME).now().seconds());
             auto replan_start = std::chrono::high_resolution_clock::now();
 
             bool success;
@@ -384,8 +369,8 @@ void ReplanFSM::computeAndPublishPaths() {
 
             auto replan_end = std::chrono::high_resolution_clock::now();
             auto replan_duration = std::chrono::duration_cast<std::chrono::milliseconds>(replan_end - replan_start).count();
-            FSM_LOG_INFO("[DEBUG REPLAN] planFromLocalTraj took %ld ms, success=%d",
-                         replan_duration, success);
+            // FSM_LOG_INFO("[DEBUG REPLAN] planFromLocalTraj took %ld ms, success=%d",
+            //              replan_duration, success);
 
             if (success)
             {

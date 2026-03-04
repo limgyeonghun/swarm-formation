@@ -4,6 +4,7 @@ from launch.actions import (
     ExecuteProcess,
     IncludeLaunchDescription,
     OpaqueFunction,
+    SetEnvironmentVariable,
     TimerAction,
 )
 from launch.conditions import IfCondition
@@ -41,6 +42,17 @@ def create_drone_nodes(context, *args, **kwargs):
 
     record_bag_str = context.perform_substitution(LaunchConfiguration('record_bag'))
     record_bag = (record_bag_str.lower() == 'true')
+
+    disable_file_logging_str = context.perform_substitution(LaunchConfiguration('disable_file_logging'))
+    disable_file_logging = (disable_file_logging_str.lower() == 'true')
+
+    # Set environment variable for C++ code (needs "1" not "true")
+    if disable_file_logging:
+        os.environ['SWARM_DISABLE_FILE_LOGGING'] = '1'
+        print("File logging disabled (logs will only appear in console)")
+    else:
+        os.environ['SWARM_DISABLE_FILE_LOGGING'] = '0'
+        print("File logging enabled (logs will be saved to ./logs/runtime)")
 
     # NOTE: real_mode and rviz_sim are independent:
     # - real_mode=true: Use JFI serial communication
@@ -401,6 +413,11 @@ def generate_launch_description():
             'enable_visualization',
             default_value='false',
             description='Enable path visualization node'
+        ),
+        DeclareLaunchArgument(
+            'disable_file_logging',
+            default_value='true',
+            description='Disable file logging (logs will only appear in console)'
         ),
         OpaqueFunction(function=create_drone_nodes),
     ])
