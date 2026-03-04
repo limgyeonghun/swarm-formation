@@ -204,24 +204,27 @@ def create_drone_nodes(context, *args, **kwargs):
             )
         )
 
-        rover_nodes.append(
-            Node(
-                package='rover_control',
-                executable='rover_control_node',
-                name=f'RoverControl_drone_{i}',
-                output='screen',
-                parameters=[
-                    {'index': idx},
-                    {'mavlink_id': mavlink_id},
-                    {'rviz_simulation': rviz_sim},
-                    {'start_point_x': cfg['start_point_x']},
-                    {'start_point_y': cfg['start_point_y']},
-                    {'start_point_z': cfg['start_point_z']},
-                    {'target_idle_timeout_sec': target_idle_timeout_sec},
-                    {'arrival_distance_threshold': arrival_distance_threshold},
-                ],
+        # rover_control only runs when NOT in RViz simulation mode
+        # (requires real PX4 hardware with px4_msgs)
+        if not rviz_sim:
+            rover_nodes.append(
+                Node(
+                    package='rover_control',
+                    executable='rover_control_node',
+                    name=f'RoverControl_drone_{i}',
+                    output='screen',
+                    parameters=[
+                        {'index': idx},
+                        {'mavlink_id': mavlink_id},
+                        {'rviz_simulation': rviz_sim},
+                        {'start_point_x': cfg['start_point_x']},
+                        {'start_point_y': cfg['start_point_y']},
+                        {'start_point_z': cfg['start_point_z']},
+                        {'target_idle_timeout_sec': target_idle_timeout_sec},
+                        {'arrival_distance_threshold': arrival_distance_threshold},
+                    ],
+                )
             )
-        )
 
         if real_mode:
             # Use namespace to isolate jfi_comm topics per drone

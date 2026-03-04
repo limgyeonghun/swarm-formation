@@ -12,10 +12,13 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
-  <depend>px4_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>path_manager</depend>
   <depend>geometry_msgs</depend>
+
+  <!-- Required for real PX4 hardware -->
+  <!-- This package only builds if px4_msgs is available -->
+  <depend>px4_msgs</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

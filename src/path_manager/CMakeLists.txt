@@ -22,7 +22,6 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(px4_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(path_optimizer REQUIRED)
@@ -33,6 +32,17 @@ find_package(formation_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+
+# Optional PX4 support
+find_package(px4_msgs QUIET)
+if(px4_msgs_FOUND)
+  message(STATUS "px4_msgs found - PX4 support enabled")
+  add_definitions(-DHAVE_PX4_MSGS)
+  set(HAVE_PX4_MSGS TRUE)
+else()
+  message(STATUS "px4_msgs not found - PX4 support disabled (simulation only)")
+  set(HAVE_PX4_MSGS FALSE)
+endif()
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PolyTraj.msg"
@@ -50,10 +60,9 @@ add_library(${PROJECT_NAME}_lib
   ../common/log_manager.cpp
 )
 
-ament_target_dependencies(${PROJECT_NAME}_lib
+set(PATH_MANAGER_DEPENDENCIES
   rclcpp
   std_msgs
-  px4_msgs
   nav_msgs
   Eigen3
   path_optimizer
@@ -62,6 +71,14 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   formation_msgs
   rosidl_default_runtime
   visualization_msgs
+)
+
+if(HAVE_PX4_MSGS)
+  list(APPEND PATH_MANAGER_DEPENDENCIES px4_msgs)
+endif()
+
+ament_target_dependencies(${PROJECT_NAME}_lib
+  ${PATH_MANAGER_DEPENDENCIES}
 )
 
 target_include_directories(${PROJECT_NAME}_lib PUBLIC
@@ -78,15 +95,7 @@ target_link_libraries(${PROJECT_NAME}_node
   ${PROJECT_NAME}_lib
 )
 ament_target_dependencies(${PROJECT_NAME}_node
-  rclcpp
-  std_msgs
-  px4_msgs
-  nav_msgs
-  path_optimizer
-  path_planner
-  geometry_msgs
-  rosidl_default_runtime
-  visualization_msgs
+  ${PATH_MANAGER_DEPENDENCIES}
 )
 
 add_executable(traj_server
@@ -96,14 +105,7 @@ target_link_libraries(traj_server
   ${PROJECT_NAME}_lib
 )
 ament_target_dependencies(traj_server
-  rclcpp
-  std_msgs
-  px4_msgs
-  nav_msgs
-  path_optimizer
-  path_planner
-  geometry_msgs
-  rosidl_default_runtime
+  ${PATH_MANAGER_DEPENDENCIES}
 )
 
 
@@ -149,6 +151,11 @@ install(DIRECTORY config launch
 )
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp std_msgs px4_msgs nav_msgs Eigen3 path_optimizer geometry_msgs path_planner formation_msgs rosidl_default_generators visualization_msgs)
+
+set(EXPORT_DEPS rclcpp std_msgs nav_msgs Eigen3 path_optimizer geometry_msgs path_planner formation_msgs rosidl_default_generators visualization_msgs)
+if(HAVE_PX4_MSGS)
+  list(APPEND EXPORT_DEPS px4_msgs)
+endif()
+ament_export_dependencies(${EXPORT_DEPS})
 
 ament_package()

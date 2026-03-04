@@ -191,12 +191,16 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     }
     else
     {
+#ifdef HAVE_PX4_MSGS
         // External MAVLink topic for real PX4
         std::string px4_position_topic = "/vehicle" + std::to_string(mavlink_id_) + "/fmu/out/vehicle_local_position";
         px4_position_sub_ = node_->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
             px4_position_topic, sensor_qos,
             std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1),
             position_options);
+#else
+        FSM_LOG_WARN("PX4 support disabled - cannot subscribe to vehicle_local_position. Use rviz_simulation mode.");
+#endif
     }
 
     rclcpp::SubscriptionOptions broadcast_options;
@@ -461,6 +465,7 @@ void ReplanFSM::targetPositionCallback(const path_manager::msg::PositionCommand:
     swarm_positions_[drone_id_] = new_pos;
 }
 
+#ifdef HAVE_PX4_MSGS
 void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
     Eigen::Vector3d new_pos;
     new_pos(0) = msg->x + offset_pt_(0);
@@ -486,6 +491,7 @@ void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::S
     swarm_positions_[drone_id_] = new_pos;
     have_position_ = true;
 }
+#endif
 
 void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg) {
     auto callback_start = std::chrono::high_resolution_clock::now();

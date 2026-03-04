@@ -2,7 +2,6 @@
 #define REPLAN_FSM_H
 
 #include <rclcpp/rclcpp.hpp>
-#include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <Eigen/Dense>
@@ -15,6 +14,11 @@
 #include "path_manager/path_manager.h"
 #include "path_optimizer/plan_container.hpp"
 #include "../../common/log_manager.hpp"
+
+// Optional PX4 support
+#ifdef HAVE_PX4_MSGS
+#include <px4_msgs/msg/vehicle_local_position.hpp>
+#endif
 
 // Conditional logging macros to avoid code duplication
 #define FSM_LOG_INFO(msg, ...) do { \
@@ -67,7 +71,9 @@ public:
     void init();
     void computeAndPublishPaths();
     void targetPositionCallback(const path_manager::msg::PositionCommand::SharedPtr msg);
+#ifdef HAVE_PX4_MSGS
     void PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
+#endif
     void recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg);
     void formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg);
     void trajectoryCommandCallback(const formation_msgs::msg::TrajectoryCommand::SharedPtr msg);
@@ -102,7 +108,9 @@ private:
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr verified_traj_pub_;  // For formation_commander
     rclcpp::Subscription<path_manager::msg::PositionCommand>::SharedPtr target_position_sub_;
     rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr broadcast_traj_sub_;
+#ifdef HAVE_PX4_MSGS
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr px4_position_sub_;
+#endif
     rclcpp::Subscription<path_manager::msg::FormationTarget>::SharedPtr formation_target_sub_;
     rclcpp::Subscription<formation_msgs::msg::TrajectoryCommand>::SharedPtr trajectory_cmd_sub_;
     rclcpp::Publisher<path_manager::msg::FormationTarget>::SharedPtr formation_target_pub_;
