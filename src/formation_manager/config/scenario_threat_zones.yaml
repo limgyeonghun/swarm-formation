@@ -4,7 +4,7 @@
     drone_0:
       start_point_x: 0.0
       start_point_y: 0.0
-      start_point_z: 1.5
+      start_point_z: 0.0
 
 
 # Mission scenario - Air defense penetration (single drone)
@@ -13,7 +13,7 @@ scenario:
     commands:
         # Direct penetration through threat zones
         - formation_type: "none"
-          formation_scale: 1.0
+          formation_scale: 0.0
           distance_threshold: 3.0
           waypoints:
-            - [60.0, 0.0, 1.5]
+            - [60.0, 0.0, 0.0]

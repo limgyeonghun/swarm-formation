@@ -3,7 +3,7 @@
     num_drones: 1
 
     # 3D formation parameters
-    formation_z_spacing: 3.0      # Vertical spacing between drones in 3D formations (meters)
+    formation_z_spacing: 0.0      # Vertical spacing between drones in 3D formations (meters)
 
     formation_center_x: 0.0
     formation_center_y: 0.0
@@ -23,4 +23,4 @@
       mavlink_id: 1     # External MAVLink ID (can be non-consecutive) -> /vehicle1/fmu/...
       start_point_x: 0.0
       start_point_y: 0.0
-      start_point_z: 1.5
+      start_point_z: 0.0

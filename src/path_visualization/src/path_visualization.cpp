@@ -305,7 +305,7 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
   }
 
   // Use dark blue color for optimized path (local trajectory)
-  publishPath(optimized_path, drone_id, 0.12f, 0.39f, 1.0f, 0.8, optimized_traj_pub_);
+  publishPath(optimized_path, drone_id, 0.0f, 0.0f, 1.0f, 1.0, optimized_traj_pub_);
   
   // Only publish obstacles if obstacle avoidance is enabled
   if (enable_obstacles_)

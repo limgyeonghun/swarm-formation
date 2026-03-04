@@ -42,19 +42,19 @@ namespace ego_planner
     auto t3 = node_->get_clock()->now();
     lbfgs::lbfgs_parameter_t lbfgs_params;
     lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
-    lbfgs_params.mem_size = 16;
-    lbfgs_params.g_epsilon = 0.1;
+    lbfgs_params.mem_size = 32;
+    lbfgs_params.g_epsilon = 0.01;
     lbfgs_params.min_step = 1e-32;
 
     if (use_formation)
     {
-      lbfgs_params.max_iterations = 20;
+      lbfgs_params.max_iterations = 200;
       // Note: use_formation_ is already set by setFormation()
       // For NONE mode, it's already false, so no need to change it here
     }
     else
     {
-      lbfgs_params.max_iterations = 60;
+      lbfgs_params.max_iterations = 600;
       use_formation_ = false;
     }
 
