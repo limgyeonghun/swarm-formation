@@ -7,10 +7,24 @@ endif()
 
 # Find dependencies
 find_package(ament_cmake REQUIRED)
+
+# Optional JFI communication support
+# jfi_comm is a submodule - only build if available
+find_package(jfi_comm QUIET)
+
+if(NOT jfi_comm_FOUND)
+  message(STATUS "jfi_comm not found - skipping jfi_bridge build")
+  message(STATUS "This is normal if J-Fi submodule is not initialized")
+  message(STATUS "To enable: git submodule update --init --recursive")
+  ament_package()
+  return()
+endif()
+
+message(STATUS "jfi_comm found - building jfi_bridge")
+
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(path_manager REQUIRED)
-find_package(jfi_comm REQUIRED)
 find_package(rclcpp_components REQUIRED)
 
 # Include directories

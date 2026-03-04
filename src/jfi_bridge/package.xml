@@ -12,8 +12,11 @@
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>path_manager</depend>
-  <depend>jfi_comm</depend>
   <depend>rclcpp_components</depend>
+
+  <!-- Optional: JFI communication support (J-Fi submodule) -->
+  <!-- This package only builds if jfi_comm is available -->
+  <depend>jfi_comm</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
