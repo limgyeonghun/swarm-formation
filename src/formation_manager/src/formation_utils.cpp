@@ -1,7 +1,7 @@
 #include "path_manager/formation_utils.h"
 #include <cmath>
 
-namespace path_manager {
+namespace formation_manager {
 
 std::vector<Eigen::Vector3d> FormationUtils::generateFormationPattern(
     const std::string& formation_type,
@@ -146,4 +146,4 @@ std::vector<Eigen::Vector3d> FormationUtils::generateFormationPattern(
     return pattern;
 }
 
-} // namespace path_manager
+} // namespace formation_manager

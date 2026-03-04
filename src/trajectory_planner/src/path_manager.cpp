@@ -1,6 +1,6 @@
-#include "path_manager/path_manager.h"
-#include "path_manager/uniform_bspline.h"
-#include "path_manager/polynomial_traj.h"
+#include "trajectory_planner/path_manager.h"
+#include "trajectory_planner/uniform_bspline.h"
+#include "trajectory_planner/polynomial_traj.h"
 
 namespace path_manager
 {

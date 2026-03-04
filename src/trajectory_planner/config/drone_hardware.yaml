@@ -1,0 +1,23 @@
+/**:
+  ros__parameters:
+    num_drones: 1
+
+    # 3D formation parameters
+    formation_z_spacing: 3.0      # Vertical spacing between drones in 3D formations (meters)
+
+    formation_center_x: 0.0
+    formation_center_y: 0.0
+    formation_center_z: 0.0
+
+    # Global fallback for formation_similarity_threshold (if not specified in scenario)
+    # Using Laplacian-based Frobenius norm squared: ||L_current - L_desired||²_F
+    # Typical values: 0.0 (perfect match), 0.001-0.01 (good match), >0.1 (poor match)
+    formation_similarity_threshold: 0.01
+
+    enable_waypoint_markers: true
+    enable_global_trajectory_pub: true
+
+    # Drone hardware mapping (start_point defined in scenario files)
+    drone_0:
+      index: 0          # Internal agent index (0,1,2,3...) -> /agent0/target_position
+      mavlink_id: 1     # External MAVLink ID (can be non-consecutive) -> /vehicle1/fmu/...

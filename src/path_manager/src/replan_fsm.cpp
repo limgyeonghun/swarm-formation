@@ -81,12 +81,10 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     node_->get_parameter("enable_global_trajectory_pub", enable_global_trajectory_pub_);
     FSM_LOG_INFO("enable_global_trajectory_pub: %s", enable_global_trajectory_pub_ ? "true" : "false");
 
-    // 3D mode parameters (drone vs rover)
-    node_->declare_parameter("enable_z_axis", false);
-    node_->get_parameter("enable_z_axis", enable_z_axis_);
+    // 3D formation parameters
     node_->declare_parameter("formation_z_spacing", 2.0);
     node_->get_parameter("formation_z_spacing", formation_z_spacing_);
-    FSM_LOG_INFO("3D mode: %s (z_spacing=%.2f)", enable_z_axis_ ? "enabled (drone)" : "disabled (rover)", formation_z_spacing_);
+    FSM_LOG_INFO("3D formation z_spacing: %.2f", formation_z_spacing_);
 
     node_->declare_parameter("fsm/thresh_replan_time", -1.0);
     node_->declare_parameter("fsm/thresh_no_replan_meter", -1.0);
@@ -1356,9 +1354,8 @@ std::vector<Eigen::Vector3d> ReplanFSM::generateFormationPattern(
     const std::string& formation_type, int num_drones, double scale)
 {
     // Use shared utility function to avoid code duplication
-    // Pass enable_z_axis and formation_z_spacing parameters
     return path_manager::FormationUtils::generateFormationPattern(
-        formation_type, num_drones, scale, enable_z_axis_, formation_z_spacing_);
+        formation_type, num_drones, scale, formation_z_spacing_);
 }
 
 void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints, bool formation_changed, const Eigen::Vector3d& formation_offset) {

@@ -5,7 +5,7 @@
 #include <string>
 #include <Eigen/Dense>
 
-namespace path_manager {
+namespace formation_manager {
 
 /**
  * @brief Utility functions for formation pattern generation
@@ -28,6 +28,6 @@ public:
         double z_spacing = 2.0);
 };
 
-} // namespace path_manager
+} // namespace formation_manager
 
 #endif // FORMATION_UTILS_H
