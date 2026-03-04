@@ -1,5 +1,4 @@
 #include "path_manager/replan_fsm.h"
-#include "path_manager/formation_utils.h"
 #include <cmath>
 #include <sys/resource.h>
 #include <numeric>
@@ -110,33 +109,24 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     FSM_LOG_INFO("Nonholonomic weight from config: %.1f (will be 0 for line formations, this value for others)",
                  weight_nonholonomic_);
 
-    node_->declare_parameter("start_point_x", 0.0);
-    node_->declare_parameter("start_point_y", 0.0);
-    node_->declare_parameter("start_point_z", 0.0);
-    double start_x, start_y, start_z;
-    node_->get_parameter("start_point_x", start_x);
-    node_->get_parameter("start_point_y", start_y);
-    node_->get_parameter("start_point_z", start_z);
-
+    // Start position will be received from TrajectoryCommand message
+    // Initialize with zero until we receive the command
     RCLCPP_INFO(node_->get_logger(), "ReplanFSM parameters:");
     log_manager_->infof("ReplanFSM parameters:");
-    RCLCPP_INFO(node_->get_logger(), "  start_point_x: %f", start_x);
-    log_manager_->infof("  start_point_x: %f", start_x);
-    RCLCPP_INFO(node_->get_logger(), "  start_point_y: %f", start_y);
-    log_manager_->infof("  start_point_y: %f", start_y);
-    RCLCPP_INFO(node_->get_logger(), "  start_point_z: %f", start_z);
-    log_manager_->infof("  start_point_z: %f", start_z);
-    RCLCPP_INFO(node_->get_logger(), "  Waiting for formation target...");
-    log_manager_->infof("  Waiting for formation target...");
+    RCLCPP_INFO(node_->get_logger(), "  Start position will be set from TrajectoryCommand");
+    log_manager_->infof("  Start position will be set from TrajectoryCommand");
+    RCLCPP_INFO(node_->get_logger(), "  Waiting for trajectory command...");
+    log_manager_->infof("  Waiting for trajectory command...");
 
-    offset_pt_ = Eigen::Vector3d(start_x, start_y, start_z);
+    offset_pt_ = Eigen::Vector3d::Zero();
     start_pt_ = offset_pt_;
-    current_pos_ = offset_pt_;  // Initialize current_pos_ with start position to break circular dependency
+    current_pos_ = offset_pt_;  // Initialize current_pos_ to zero, will be updated from TrajectoryCommand
     current_vel_ = Eigen::Vector3d::Zero();  // Initialize velocity to zero
     end_pt_ = Eigen::Vector3d::Zero();  // Initialize end_pt_ to avoid uninitialized access
     prev_end_pt_ = Eigen::Vector3d::Zero();  // Initialize previous endpoint
     prev_formation_offset_ = Eigen::Vector3d::Zero();  // Initialize previous formation offset
-    have_target_ = false;  // Wait for formation target
+    have_target_ = false;  // Wait for trajectory command
+    start_position_received_ = false;  // Flag to track if we received start position
     
     RCLCPP_INFO(node_->get_logger(), "Initial position set to: (%.2f, %.2f, %.2f)", 
                 current_pos_(0), current_pos_(1), current_pos_(2));
@@ -145,9 +135,8 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
     // Initialize PathManager in constructor to avoid nullptr access
     path_manager_ = std::make_shared<PathManager>(node_);
-    
-    // Initialize SwarmGraph for formation management
-    swarm_graph_ = std::make_unique<SwarmGraph>();
+
+    // SwarmGraph removed - formation management now handled by formation_manager package
 
     // Initialize swarm_positions_ map for all drones
     for (int i = 0; i < num_drones_; ++i) {
@@ -224,12 +213,12 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1),
         formation_target_options);
 
-    rclcpp::SubscriptionOptions formation_cmd_options;
-    formation_cmd_options.callback_group = subscription_callback_group_;
-    formation_cmd_sub_ = node_->create_subscription<path_manager::msg::FormationCommand>(
-        topic_prefix + "/formation_command", sensor_qos,
-        std::bind(&ReplanFSM::formationCommandCallback, this, std::placeholders::_1),
-        formation_cmd_options);
+    rclcpp::SubscriptionOptions trajectory_cmd_options;
+    trajectory_cmd_options.callback_group = subscription_callback_group_;
+    trajectory_cmd_sub_ = node_->create_subscription<formation_msgs::msg::TrajectoryCommand>(
+        topic_prefix + "/trajectory_command", sensor_qos,
+        std::bind(&ReplanFSM::trajectoryCommandCallback, this, std::placeholders::_1),
+        trajectory_cmd_options);
 
     formation_target_pub_ = node_->create_publisher<path_manager::msg::FormationTarget>(
         topic_prefix + "/formation_target", sensor_qos);
@@ -983,11 +972,9 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
                     drone_id_, waypoints.size(), marker.header.frame_id.c_str(), marker.ns.c_str());
     }
 
-    // Set formation info to PathManager for outer/inner line calculation
+    // Use formation pattern received from formation_manager via TrajectoryCommand
     auto formation_setup_start = std::chrono::high_resolution_clock::now();
-    std::vector<Eigen::Vector3d> formation_pattern =
-        generateFormationPattern(current_formation_type_, num_drones_, current_formation_scale_);
-    path_manager_->setFormationInfo(drone_id_, current_formation_type_, formation_pattern);
+    path_manager_->setFormationInfo(drone_id_, current_formation_type_, current_formation_pattern_);
 
     auto global_traj_start = std::chrono::high_resolution_clock::now();
     FSM_LOG_INFO("[TIMING] Starting global trajectory planning");
@@ -1000,17 +987,22 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
     FSM_LOG_INFO("[TIMING] Global trajectory planning took %ld ms", global_traj_duration);
 
     if (success) {
-        // Set current formation pattern to optimizer (immediate change)
-        FSM_LOG_INFO("Setting formation to optimizer: %s", current_formation_type_.c_str());
+        // Pass formation pattern to optimizer for formation cost calculation
+        FSM_LOG_INFO("Trajectory planning successful for formation type: %s", current_formation_type_.c_str());
 
-        log_manager_->infof("Formation pattern for optimizer (relative coordinates):");
-        for (size_t i = 0; i < formation_pattern.size(); ++i) {
-            log_manager_->infof("  Drone %zu: [%.3f, %.3f, %.3f]",
-                               i, formation_pattern[i].x(), formation_pattern[i].y(), formation_pattern[i].z());
+        if (!current_formation_pattern_.empty()) {
+            log_manager_->infof("Formation pattern for optimizer (relative coordinates):");
+            for (size_t i = 0; i < current_formation_pattern_.size(); ++i) {
+                log_manager_->infof("  Drone %zu: [%.3f, %.3f, %.3f]",
+                                   i, current_formation_pattern_[i].x(),
+                                   current_formation_pattern_[i].y(),
+                                   current_formation_pattern_[i].z());
+            }
+            path_manager_->setFormationToOptimizer(current_formation_pattern_, num_drones_);
+        } else {
+            FSM_LOG_WARN("Formation pattern is empty, optimizer may not apply formation constraints");
+            path_manager_->setFormationToOptimizer(current_formation_pattern_, num_drones_);
         }
-
-        // Pass formation pattern to optimizer
-        path_manager_->setFormationToOptimizer(formation_pattern, formation_pattern.size());
 
         // Save current endpoint and offset for next formation transition
         prev_end_pt_ = end_pt_;
@@ -1089,14 +1081,23 @@ bool ReplanFSM::callEmergencyStop(const Eigen::Vector3d& stop_pos) {
     return true;
 }
 
-void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationCommand::SharedPtr msg) {
+// trajectoryCommandCallback: receives individual trajectory command from formation_manager
+// The target position and waypoints are already calculated by formation_manager
+void ReplanFSM::trajectoryCommandCallback(const formation_msgs::msg::TrajectoryCommand::SharedPtr msg) {
     auto callback_start = std::chrono::high_resolution_clock::now();
-    FSM_LOG_INFO("[DEBUG FORMATION] formationCommandCallback STARTED (seq: %d) at time %.3f",
-                 msg->sequence, rclcpp::Clock(RCL_ROS_TIME).now().seconds());
+    FSM_LOG_INFO("[TRAJECTORY CMD] Received trajectory command (seq: %d, drone: %d) at time %.3f",
+                 msg->sequence, msg->drone_id, rclcpp::Clock(RCL_ROS_TIME).now().seconds());
+
+    // Check if this command is for this drone
+    if (msg->drone_id != drone_id_) {
+        FSM_LOG_DEBUG("Ignoring trajectory command for drone %d (I am drone %d)",
+                     msg->drone_id, drone_id_);
+        return;
+    }
 
     // Check for duplicate messages using sequence number
     if (msg->sequence <= last_received_sequence_) {
-        FSM_LOG_DEBUG("Ignoring duplicate/old formation command (seq: %d, last: %d)",
+        FSM_LOG_DEBUG("Ignoring duplicate/old trajectory command (seq: %d, last: %d)",
                      msg->sequence, last_received_sequence_);
         return;
     }
@@ -1105,258 +1106,104 @@ void ReplanFSM::formationCommandCallback(const path_manager::msg::FormationComma
     last_received_sequence_ = msg->sequence;
 
     // Update mission tracking
-    current_mission_id_ = msg->current_mission_id;
-    next_mission_id_ = msg->next_mission_id;
-    is_final_mission_ = msg->is_final;
+    current_mission_id_ = msg->mission_id;
 
-    FSM_LOG_INFO("Received formation command (seq: %d): current=%s, next=%s, final=%s",
+    // Update start position if this is the first command or if position changed significantly
+    if (!start_position_received_) {
+        Eigen::Vector3d new_start_pos(
+            msg->start_position.x,
+            msg->start_position.y,
+            msg->start_position.z
+        );
+
+        offset_pt_ = new_start_pos;
+        start_pt_ = new_start_pos;
+        current_pos_ = new_start_pos;
+        start_position_received_ = true;
+
+        FSM_LOG_INFO("Received start position from TrajectoryCommand: (%.2f, %.2f, %.2f)",
+                    new_start_pos.x(), new_start_pos.y(), new_start_pos.z());
+    }
+
+    FSM_LOG_INFO("Trajectory command (seq: %d): mission=%s, start=(%.2f, %.2f, %.2f), target=(%.2f, %.2f, %.2f)",
                 msg->sequence,
-                msg->current_mission_id.c_str(),
-                msg->next_mission_id.c_str(),
-                msg->is_final ? "true" : "false");
+                msg->mission_id.c_str(),
+                msg->start_position.x, msg->start_position.y, msg->start_position.z,
+                msg->target_position.x, msg->target_position.y, msg->target_position.z);
 
-    // Extract waypoints first
+    // Extract waypoints
     std::vector<Eigen::Vector3d> waypoints;
     for (const auto& wp : msg->waypoints) {
         waypoints.emplace_back(wp.x, wp.y, wp.z);
     }
 
-    // Calculate formation center from last waypoint
-    Eigen::Vector3d formation_center;
-    if (!waypoints.empty()) {
-        formation_center = waypoints.back();
-    } else {
-        formation_center = Eigen::Vector3d(0, 0, 0);
-        RCLCPP_WARN(node_->get_logger(), "No waypoints in FormationCommand, using origin");
+    // Extract target position (already calculated by formation_manager)
+    Eigen::Vector3d target_position(
+        msg->target_position.x,
+        msg->target_position.y,
+        msg->target_position.z
+    );
+
+    // Extract formation offset (for reference/logging)
+    Eigen::Vector3d formation_offset(
+        msg->formation_offset.x,
+        msg->formation_offset.y,
+        msg->formation_offset.z
+    );
+
+    // Extract full formation pattern from message
+    std::vector<Eigen::Vector3d> formation_pattern;
+    formation_pattern.reserve(msg->formation_pattern.size());
+    for (const auto& pt : msg->formation_pattern) {
+        formation_pattern.emplace_back(pt.x, pt.y, pt.z);
     }
 
-    FSM_LOG_INFO("Formation command: %s, scale: %.2f, center: (%.2f, %.2f, %.2f)",
-                msg->formation_type.c_str(),
-                msg->formation_scale,
-                formation_center.x(),
-                formation_center.y(),
-                formation_center.z());
+    // Store formation pattern for use in formationTargetCallback
+    current_formation_pattern_ = formation_pattern;
 
-    // Detect formation change (compare with current, not prev)
-    bool formation_changed = (!current_formation_type_.empty() &&
-                             current_formation_type_ != msg->formation_type);
+    // Update formation parameters (for compatibility with existing code)
+    current_formation_type_ = msg->formation_type;
+    current_formation_scale_ = msg->formation_scale;
 
-    if (formation_changed) {
-        FSM_LOG_INFO("Formation change detected: %s -> %s (immediate transition)",
-                   current_formation_type_.c_str(),
-                   msg->formation_type.c_str());
-    }
-
-    // Set nonholonomic weight based on formation type:
-    //    - NONE mode: weight = 0, formation disabled
-    //    - Line formations (line_first, line_first_reverse, etc.): weight = 0 (disabled)
-    //    - Other formations (square, triangle, etc.): weight = config value
+    // Set nonholonomic weight based on formation type
     bool is_none_mode = (msg->formation_type == "none" || msg->formation_type == "NONE");
     bool is_line_formation = (msg->formation_type.find("line") != std::string::npos);
 
-    if (is_none_mode) {
+    if (is_none_mode || is_line_formation) {
         pending_weight_nonholonomic_ = 0.0;
-        FSM_LOG_INFO("NONE mode - formation and nonholonomic constraints DISABLED (weight=0)");
-        if (path_manager_ && path_manager_->isOptimizerInitialized()) {
-            path_manager_->setNonholonomicWeight(0.0);
-        }
-    } else if (is_line_formation) {
-        pending_weight_nonholonomic_ = 0.0;
-        FSM_LOG_INFO("Line formation (%s) - nonholonomic constraints DISABLED (weight=0)",
+        FSM_LOG_INFO("Formation mode %s - nonholonomic constraints DISABLED (weight=0)",
                      msg->formation_type.c_str());
         if (path_manager_ && path_manager_->isOptimizerInitialized()) {
             path_manager_->setNonholonomicWeight(0.0);
         }
     } else {
         pending_weight_nonholonomic_ = weight_nonholonomic_;
-        FSM_LOG_INFO("Non-line formation (%s) - nonholonomic constraints ENABLED (weight=%.1f)",
+        FSM_LOG_INFO("Formation mode %s - nonholonomic constraints ENABLED (weight=%.1f)",
                      msg->formation_type.c_str(), weight_nonholonomic_);
         if (path_manager_ && path_manager_->isOptimizerInitialized()) {
             path_manager_->setNonholonomicWeight(weight_nonholonomic_);
         }
     }
 
-    // Update formation parameters
-    current_formation_type_ = msg->formation_type;
-    current_formation_scale_ = msg->formation_scale;
-    current_formation_center_ = formation_center;
-
     has_formation_command_ = true;
 
-    // === USE CENTRALIZED HUNGARIAN ASSIGNMENT FROM COMMANDER ===
+    FSM_LOG_INFO("Drone %d: target=(%.2f, %.2f, %.2f), offset=(%.2f, %.2f, %.2f), %zu waypoints",
+                drone_id_,
+                target_position.x(), target_position.y(), target_position.z(),
+                formation_offset.x(), formation_offset.y(), formation_offset.z(),
+                waypoints.size());
 
-    // Check if target_assignments is provided and valid
-    if (msg->target_assignments.empty() ||
-        static_cast<int>(msg->target_assignments.size()) != num_drones_) {
-        RCLCPP_ERROR(node_->get_logger(),
-                    "Invalid target_assignments: size=%zu, expected=%d. Using fallback ID-based assignment.",
-                    msg->target_assignments.size(), num_drones_);
-
-        // Fallback: use ID-based assignment
-        std::vector<Eigen::Vector3d> formation_pattern =
-            generateFormationPattern(current_formation_type_, num_drones_, current_formation_scale_);
-        std::vector<Eigen::Vector3d> target_positions;
-        target_positions.reserve(num_drones_);
-        for (const auto& pattern_point : formation_pattern) {
-            target_positions.push_back(current_formation_center_ + pattern_point);
-        }
-        Eigen::Vector3d my_target = target_positions[drone_id_];
-        publishFormationTarget(my_target, waypoints, formation_changed);
-        return;
-    }
-
-    // Use Commander's centralized assignment result
-    int my_target_index = msg->target_assignments[drone_id_];
-
-    log_manager_->infof("[CENTRALIZED] Drone %d assigned to target %d by Commander",
-               drone_id_, my_target_index);
-
-    // Generate formation pattern
-    std::vector<Eigen::Vector3d> formation_pattern =
-        generateFormationPattern(current_formation_type_, num_drones_, current_formation_scale_);
-
-    // Formation center is the last waypoint (already set as current_formation_center_)
-    // Extract my formation offset from the assigned target
-    Eigen::Vector3d my_formation_offset = formation_pattern[my_target_index];
-    Eigen::Vector3d my_target_position = current_formation_center_ + my_formation_offset;
-
-    log_manager_->infof("Drone %d assigned to target position %d: (%.2f, %.2f, %.2f)",
-               drone_id_, my_target_index,
-               my_target_position.x(), my_target_position.y(), my_target_position.z());
-    log_manager_->infof("Drone %d formation offset: (%.2f, %.2f, %.2f)",
-               drone_id_, my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
-
-    // Build waypoints: Apply path-normal offset for line formations
-    std::vector<Eigen::Vector3d> my_waypoints;
-
-    log_manager_->infof("Drone %d: Base formation offset: (%.2f, %.2f, %.2f)",
-               drone_id_, my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
-
-    // For line formations, apply offset in the normal direction of the path
-    // Note: is_none_mode already declared earlier in this function (line 1149)
-    bool use_path_normal = !is_none_mode && (current_formation_type_ == "line_first" ||
-                            current_formation_type_ == "line_second" ||
-                            current_formation_type_ == "line_first_no_offset" ||
-                            current_formation_type_ == "line_second_no_offset");
-
-    // Calculate the signed offset distance (perpendicular distance from centerline)
-    // Determine which side of the line this drone should be on
-    double offset_distance = my_formation_offset.norm();
-
-    // Calculate reference normal direction at first waypoint
-    Eigen::Vector3d ref_tangent(1.0, 0.0, 0.0);
-    if (waypoints.size() >= 2) {
-        ref_tangent = (waypoints[1] - waypoints[0]).normalized();
-    }
-    // Normal is perpendicular to tangent (rotate 90° right in 2D: (x,y) -> (y,-x))
-    Eigen::Vector3d ref_normal(ref_tangent.y(), -ref_tangent.x(), 0.0);
-
-    // Determine sign: which side of the line?
-    // If offset has positive component in ref_normal direction, keep positive
-    double offset_sign = (my_formation_offset.dot(ref_normal) >= 0) ? 1.0 : -1.0;
-    offset_distance *= offset_sign;
-
-    if (use_path_normal) {
-        RCLCPP_INFO(node_->get_logger(),
-                   "Drone %d: Using path-normal offset (distance=%.2fm, sign=%.0f)",
-                   drone_id_, std::abs(offset_distance), offset_sign);
-    }
-
-    // Add all waypoints with appropriate offset
-    for (size_t i = 0; i < waypoints.size(); ++i) {
-        Eigen::Vector3d applied_offset = is_none_mode ? Eigen::Vector3d::Zero() : my_formation_offset;  // NONE mode: no offset
-
-        if (use_path_normal && std::abs(offset_distance) > 1e-6) {
-            // Calculate path tangent (direction) at this waypoint
-            Eigen::Vector3d path_tangent(1.0, 0.0, 0.0);
-
-            if (i == 0 && waypoints.size() >= 2) {
-                // First waypoint: use direction to next waypoint
-                path_tangent = (waypoints[1] - waypoints[0]).normalized();
-            } else if (i == waypoints.size() - 1 && i > 0) {
-                // Last waypoint: use direction from previous waypoint
-                path_tangent = (waypoints[i] - waypoints[i-1]).normalized();
-            } else if (i > 0 && i < waypoints.size() - 1) {
-                // Middle waypoints: use average of incoming and outgoing directions
-                Eigen::Vector3d incoming = (waypoints[i] - waypoints[i-1]).normalized();
-                Eigen::Vector3d outgoing = (waypoints[i+1] - waypoints[i]).normalized();
-                path_tangent = ((incoming + outgoing) / 2.0).normalized();
-            }
-
-            // Calculate path normal (perpendicular to tangent, pointing right in 2D)
-            // For 2D: if tangent = (tx, ty), normal = (ty, -tx)
-            Eigen::Vector3d path_normal(path_tangent.y(), -path_tangent.x(), 0.0);
-
-            // Apply offset in the normal direction
-            applied_offset = path_normal * offset_distance;
-
-            log_manager_->infof("Drone %d WP%zu: tangent=(%.3f,%.3f) normal=(%.3f,%.3f) offset=(%.2f,%.2f)",
-                       drone_id_, i,
-                       path_tangent.x(), path_tangent.y(),
-                       path_normal.x(), path_normal.y(),
-                       applied_offset.x(), applied_offset.y());
-        }
-
-        Eigen::Vector3d wp_with_offset = waypoints[i] + applied_offset;
-        my_waypoints.push_back(wp_with_offset);
-
-        log_manager_->infof("Drone %d WP%zu: (%.2f, %.2f) + offset = (%.2f, %.2f)",
-                   drone_id_, i,
-                   waypoints[i].x(), waypoints[i].y(),
-                   wp_with_offset.x(), wp_with_offset.y());
-    }
-
-    // Final target is last waypoint + offset
-    Eigen::Vector3d my_target;
-    if (!my_waypoints.empty()) {
-        my_target = my_waypoints.back();
-    } else {
-        my_target = current_formation_center_ + my_formation_offset;
-    }
-
-    log_manager_->infof("Drone %d final target: (%.2f, %.2f, %.2f) with %zu waypoints",
-               drone_id_, my_target.x(), my_target.y(), my_target.z(), my_waypoints.size());
-
-    if (formation_changed) {
-        log_manager_->infof("[FORMATION SYNC] Drone %d: Formation changed, immediate publish", drone_id_);
-    } else {
-        log_manager_->infof("[FORMATION SYNC] Drone %d: First formation or no change, immediate publish", drone_id_);
-    }
-    publishFormationTarget(my_target, my_waypoints, formation_changed, my_formation_offset);
+    // Publish to formationTargetCallback (which will trigger trajectory planning)
+    publishFormationTarget(target_position, waypoints, false, formation_offset);
 
     auto callback_end = std::chrono::high_resolution_clock::now();
     auto callback_duration = std::chrono::duration_cast<std::chrono::milliseconds>(callback_end - callback_start).count();
-    FSM_LOG_INFO("[DEBUG FORMATION] formationCommandCallback COMPLETED (took %ld ms) at time %.3f",
+    FSM_LOG_INFO("[TRAJECTORY CMD] Callback completed (took %ld ms) at time %.3f",
                  callback_duration, rclcpp::Clock(RCL_ROS_TIME).now().seconds());
 }
 
-void ReplanFSM::generateFormationTargets(
-    const Eigen::Vector3d& center, 
-    const std::string& formation_type, 
-    double scale,
-    const std::vector<Eigen::Vector3d>& waypoints)
-{
-    // Use relative coordinates for formation pattern
-    std::vector<Eigen::Vector3d> formation_pattern =
-        generateFormationPattern(formation_type, num_drones_, scale);
-
-    if (swarm_graph_) {
-        swarm_graph_->setDesiredForm(formation_pattern);  // Pass relative coordinates
-        RCLCPP_INFO(node_->get_logger(), "Set desired formation in SwarmGraph: %s", formation_type.c_str());
-    }
-
-    // For publishFormationTarget, use absolute coordinates (center + pattern)
-    Eigen::Vector3d my_target = center + formation_pattern[drone_id_];
-    publishFormationTarget(my_target, waypoints);
-}
-
-std::vector<Eigen::Vector3d> ReplanFSM::generateFormationPattern(
-    const std::string& formation_type, int num_drones, double scale)
-{
-    // Use shared utility function to avoid code duplication
-    return path_manager::FormationUtils::generateFormationPattern(
-        formation_type, num_drones, scale, formation_z_spacing_);
-}
+// generateFormationTargets and generateFormationPattern functions removed
+// Formation generation is now handled by formation_manager package
 
 void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints, bool formation_changed, const Eigen::Vector3d& formation_offset) {
     path_manager::msg::FormationTarget target_msg;
@@ -1411,396 +1258,5 @@ void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std:
 
 }
 
-// Hungarian algorithm implementation for optimal assignment
-std::vector<int> ReplanFSM::hungarianAssignment(
-    const std::vector<Eigen::Vector3d>& current_positions,
-    const std::vector<Eigen::Vector3d>& target_positions,
-    const std::vector<Eigen::Vector3d>& waypoints)
-{
-    int n = current_positions.size();
-    if (n != target_positions.size()) {
-        RCLCPP_ERROR(node_->get_logger(),
-                     "Hungarian: Size mismatch! current=%d, target=%d",
-                     n, (int)target_positions.size());
-        // Fallback to identity assignment
-        std::vector<int> assignment(n);
-        std::iota(assignment.begin(), assignment.end(), 0);
-        return assignment;
-    }
-
-    // Log input values
-    log_manager_->infof("[HUNGARIAN INPUT] Current positions:");
-    for (int i = 0; i < n; ++i) {
-        log_manager_->infof("  Drone %d: (%.2f, %.2f, %.2f)",
-                    i, current_positions[i].x(), current_positions[i].y(), current_positions[i].z());
-    }
-
-    log_manager_->infof("[HUNGARIAN INPUT] Target positions (intermediate formation):");
-    for (int i = 0; i < n; ++i) {
-        log_manager_->infof("  Target %d: (%.2f, %.2f, %.2f)",
-                    i, target_positions[i].x(), target_positions[i].y(), target_positions[i].z());
-    }
-
-    log_manager_->infof("[HUNGARIAN INPUT] Waypoints (%zu):", waypoints.size());
-    for (size_t i = 0; i < waypoints.size(); ++i) {
-        log_manager_->infof("  Waypoint %zu: (%.2f, %.2f, %.2f)",
-                    i, waypoints[i].x(), waypoints[i].y(), waypoints[i].z());
-    }
-
-    // Build cost matrix with multi-factor cost function
-    std::vector<std::vector<double>> cost_matrix(n, std::vector<double>(n));
-
-    // Get formation pattern for orientation calculation
-    // Use the current formation type's geometry to preserve orientation
-    std::vector<Eigen::Vector3d> formation_pattern =
-        generateFormationPattern(current_formation_type_, num_drones_, current_formation_scale_);
-
-    // Compute formation centers
-    Eigen::Vector3d current_center = Eigen::Vector3d::Zero();
-    Eigen::Vector3d target_center = Eigen::Vector3d::Zero();
-    for (int i = 0; i < n; ++i) {
-        current_center += current_positions[i];
-        target_center += target_positions[i];
-    }
-    current_center /= n;
-    target_center /= n;
-
-    // === PATH-AWARE FORMATION ORIENTATION ===
-    // Calculate desired formation orientation based on path direction
-    Eigen::Vector3d path_direction(1.0, 0.0, 0.0);  // Default: forward (X-axis)
-    bool has_valid_direction = false;
-
-    if (waypoints.size() >= 2) {
-        // Find the waypoint segment closest to target center
-        double min_dist = std::numeric_limits<double>::infinity();
-        int closest_segment = -1;
-
-        for (size_t i = 0; i < waypoints.size() - 1; ++i) {
-            Eigen::Vector3d segment_start = waypoints[i];
-            Eigen::Vector3d segment_end = waypoints[i + 1];
-            Eigen::Vector3d segment_mid = (segment_start + segment_end) / 2.0;
-
-            double dist = (segment_mid - target_center).norm();
-            if (dist < min_dist) {
-                min_dist = dist;
-                closest_segment = i;
-            }
-        }
-
-        if (closest_segment >= 0) {
-            // Calculate path tangent direction at this segment
-            Eigen::Vector3d tangent = waypoints[closest_segment + 1] - waypoints[closest_segment];
-            double tangent_norm = tangent.norm();
-
-            if (tangent_norm > 1e-6) {
-                path_direction = tangent / tangent_norm;  // Normalize
-                has_valid_direction = true;
-
-                RCLCPP_INFO(node_->get_logger(),
-                           "[HUNGARIAN] Path direction at target: (%.3f, %.3f, %.3f) from waypoints %d-%d",
-                           path_direction.x(), path_direction.y(), path_direction.z(),
-                           closest_segment, closest_segment + 1);
-                log_manager_->infof("[HUNGARIAN] Path direction: (%.3f, %.3f, %.3f)",
-                                   path_direction.x(), path_direction.y(), path_direction.z());
-            }
-        }
-    }
-
-    // Rotate formation pattern to align with path direction
-    // Formation pattern is defined with forward direction as +X axis
-    // We need to rotate it to align with actual path direction
-    std::vector<Eigen::Vector3d> rotated_pattern = formation_pattern;
-
-    if (has_valid_direction) {
-        // Calculate rotation angle from default direction (1,0,0) to path direction
-        Eigen::Vector3d default_dir(1.0, 0.0, 0.0);
-
-        // Only consider XY plane rotation (ignore Z for 2D formations)
-        Eigen::Vector2d default_dir_2d(default_dir.x(), default_dir.y());
-        Eigen::Vector2d path_dir_2d(path_direction.x(), path_direction.y());
-
-        double default_norm = default_dir_2d.norm();
-        double path_norm = path_dir_2d.norm();
-
-        if (default_norm > 1e-6 && path_norm > 1e-6) {
-            // Calculate rotation angle using atan2 for proper quadrant handling
-            double angle_default = std::atan2(default_dir_2d.y(), default_dir_2d.x());
-            double angle_path = std::atan2(path_dir_2d.y(), path_dir_2d.x());
-            double rotation_angle = angle_path - angle_default;
-
-            // Rotation matrix for Z-axis rotation (2D rotation in XY plane)
-            double cos_theta = std::cos(rotation_angle);
-            double sin_theta = std::sin(rotation_angle);
-
-            for (size_t i = 0; i < formation_pattern.size(); ++i) {
-                Eigen::Vector3d original = formation_pattern[i];
-
-                // Apply 2D rotation in XY plane
-                rotated_pattern[i] = Eigen::Vector3d(
-                    cos_theta * original.x() - sin_theta * original.y(),
-                    sin_theta * original.x() + cos_theta * original.y(),
-                    original.z()  // Z unchanged
-                );
-            }
-
-            RCLCPP_INFO(node_->get_logger(),
-                       "[HUNGARIAN] Formation pattern rotated by %.2f degrees to align with path",
-                       rotation_angle * 180.0 / M_PI);
-            log_manager_->infof("[HUNGARIAN] Pattern rotated by %.2f deg",
-                               rotation_angle * 180.0 / M_PI);
-        }
-    }
-
-    // === ORDER-PRESERVING ASSIGNMENT FOR LINE FORMATIONS ===
-    // For line formations, preserve ordering along the line direction
-    // This prevents drones from crossing paths and maintains stable formation
-    if (current_formation_type_ == "line_first" || current_formation_type_ == "line_second" ||
-        current_formation_type_ == "line_first_no_offset" || current_formation_type_ == "line_second_no_offset") {
-
-        RCLCPP_INFO(node_->get_logger(),
-                   "[ASSIGNMENT] Using order-preserving assignment for line formation: %s",
-                   current_formation_type_.c_str());
-        log_manager_->infof("[ASSIGNMENT] Order-preserving for line formation: %s",
-                           current_formation_type_.c_str());
-
-        // Calculate line direction from formation pattern
-        Eigen::Vector3d line_direction(1.0, 0.0, 0.0);  // Default
-        if (rotated_pattern.size() >= 2) {
-            line_direction = (rotated_pattern.back() - rotated_pattern.front()).normalized();
-        }
-
-        // Project current positions onto line direction and sort
-        std::vector<std::pair<double, int>> current_projections;
-        for (int i = 0; i < n; ++i) {
-            Eigen::Vector3d relative_pos = current_positions[i] - current_center;
-            double projection = relative_pos.dot(line_direction);
-            current_projections.push_back({projection, i});
-        }
-        std::sort(current_projections.begin(), current_projections.end());
-
-        // Project target positions onto line direction and sort
-        std::vector<std::pair<double, int>> target_projections;
-        for (int j = 0; j < n; ++j) {
-            Eigen::Vector3d relative_pos = target_positions[j] - target_center;
-            double projection = relative_pos.dot(line_direction);
-            target_projections.push_back({projection, j});
-        }
-        std::sort(target_projections.begin(), target_projections.end());
-
-        // Create order-preserving assignment: i-th drone along line -> i-th target along line
-        std::vector<int> assignment(n);
-        for (int i = 0; i < n; ++i) {
-            int drone_idx = current_projections[i].second;
-            int target_idx = target_projections[i].second;
-            assignment[drone_idx] = target_idx;
-
-            RCLCPP_INFO(node_->get_logger(),
-                       "[ASSIGNMENT] Drone %d (proj=%.2f) -> Target %d (proj=%.2f)",
-                       drone_idx, current_projections[i].first,
-                       target_idx, target_projections[i].first);
-        }
-
-        return assignment;
-    }
-
-    // === HUNGARIAN ALGORITHM FOR OTHER FORMATIONS ===
-    // Cost function: Euclidean distance + path crossing penalty
-    RCLCPP_INFO(node_->get_logger(),
-               "[HUNGARIAN] Using Hungarian algorithm with crossing penalty for formation: %s",
-               current_formation_type_.c_str());
-    log_manager_->infof("[HUNGARIAN] Using Hungarian algorithm with crossing penalty for: %s",
-                       current_formation_type_.c_str());
-
-    for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < n; ++j) {
-            // Base cost: Euclidean distance from current position to target formation position
-            double dist_cost = (current_positions[i] - target_positions[j]).norm();
-
-            // Calculate crossing penalty for this assignment (i->j)
-            double crossing_penalty = 0.0;
-
-            // Check against all other possible assignments
-            for (int k = 0; k < n; ++k) {
-                if (k == i) continue;  // Skip self
-
-                for (int l = 0; l < n; ++l) {
-                    if (l == j) continue;  // Skip same target
-
-                    // Check if path (i->j) would cross path (k->l)
-                    if (segmentsIntersect2D(current_positions[i], target_positions[j],
-                                           current_positions[k], target_positions[l])) {
-                        crossing_penalty += hungarian_crossing_penalty_;  // Use config parameter
-                    }
-                }
-            }
-
-            // Total cost = weighted distance + crossing penalty
-            cost_matrix[i][j] = hungarian_distance_weight_ * dist_cost + crossing_penalty;
-        }
-    }
-
-    // Debug: Print cost matrix
-    log_manager_->infof("[HUNGARIAN] Cost matrix:");
-    for (int i = 0; i < n; ++i) {
-        std::string row_str = "  Drone " + std::to_string(i) + ": ";
-        for (int j = 0; j < n; ++j) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%.2f ", cost_matrix[i][j]);
-            row_str += buf;
-        }
-        log_manager_->infof("%s", row_str.c_str());
-    }
-
-    log_manager_->infof("[HUNGARIAN] Cost matrix computed with simple Euclidean distance");
-
-    // ===== Hungarian Algorithm Implementation =====
-    // This is the O(n^3) Hungarian algorithm (Kuhn-Munkres)
-
-    std::vector<double> u(n + 1), v(n + 1);  // Dual variables
-    std::vector<int> p(n + 1), way(n + 1);   // Matching and path
-
-    for (int i = 1; i <= n; ++i) {
-        p[0] = i;
-        int j0 = 0;
-        std::vector<double> minv(n + 1, std::numeric_limits<double>::infinity());
-        std::vector<bool> used(n + 1, false);
-
-        do {
-            used[j0] = true;
-            int i0 = p[j0];
-            double delta = std::numeric_limits<double>::infinity();
-            int j1 = 0;
-
-            for (int j = 1; j <= n; ++j) {
-                if (!used[j]) {
-                    double cur = cost_matrix[i0 - 1][j - 1] - u[i0] - v[j];
-                    if (cur < minv[j]) {
-                        minv[j] = cur;
-                        way[j] = j0;
-                    }
-                    if (minv[j] < delta) {
-                        delta = minv[j];
-                        j1 = j;
-                    }
-                }
-            }
-
-            for (int j = 0; j <= n; ++j) {
-                if (used[j]) {
-                    u[p[j]] += delta;
-                    v[j] -= delta;
-                } else {
-                    minv[j] -= delta;
-                }
-            }
-
-            j0 = j1;
-        } while (p[j0] != 0);
-
-        do {
-            int j1 = way[j0];
-            p[j0] = p[j1];
-            j0 = j1;
-        } while (j0 != 0);
-    }
-
-    // Extract assignment: assignment[i] = j means drone i -> target j
-    std::vector<int> assignment(n, 0);  // Initialize with default values
-    for (int j = 1; j <= n; ++j) {
-        if (p[j] != 0) {
-            int drone_idx = p[j] - 1;
-            int target_idx = j - 1;
-
-            // Bounds check to prevent memory corruption
-            if (drone_idx >= 0 && drone_idx < n && target_idx >= 0 && target_idx < n) {
-                assignment[drone_idx] = target_idx;
-            } else {
-                RCLCPP_ERROR(node_->get_logger(),
-                            "[HUNGARIAN] Assignment out of bounds: drone=%d, target=%d (n=%d)",
-                            drone_idx, target_idx, n);
-                log_manager_->errorf("[HUNGARIAN] Assignment out of bounds: drone=%d, target=%d (n=%d)",
-                                    drone_idx, target_idx, n);
-            }
-        }
-    }
-
-    // Validate all assignments are within bounds
-    for (int i = 0; i < n; ++i) {
-        if (assignment[i] < 0 || assignment[i] >= n) {
-            RCLCPP_WARN(node_->get_logger(),
-                       "[HUNGARIAN] Invalid assignment for drone %d, using identity assignment",
-                       i);
-            assignment[i] = i;
-        }
-    }
-
-    // Log assignment and total cost with detailed information
-    double total_cost = 0.0;
-    log_manager_->infof("[HUNGARIAN] Assignment result:");
-    for (int i = 0; i < n; ++i) {
-        total_cost += cost_matrix[i][assignment[i]];
-
-        Eigen::Vector3d curr_pos = current_positions[i];
-        Eigen::Vector3d tgt_pos = target_positions[assignment[i]];
-        double euclidean_dist = (curr_pos - tgt_pos).norm();
-
-        log_manager_->infof(
-                   "[HUNGARIAN]   Drone %d (%.1f,%.1f) -> Target %d (%.1f,%.1f) | Cost: %.2f | EucDist: %.2f",
-                   i, curr_pos.x(), curr_pos.y(),
-                   assignment[i], tgt_pos.x(), tgt_pos.y(),
-                   cost_matrix[i][assignment[i]], euclidean_dist);
-    }
-    log_manager_->infof("[HUNGARIAN] Total assignment cost: %.2f", total_cost);
-
-    return assignment;
-}
-
-// Helper function: Calculate orientation of ordered triplet (p, q, r)
-// Returns:
-//   0 -> p, q, r are collinear
-//   1 -> Clockwise orientation
-//   2 -> Counterclockwise orientation
-int ReplanFSM::orientation(const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r) {
-    double val = (q.y() - p.y()) * (r.x() - q.x()) - (q.x() - p.x()) * (r.y() - q.y());
-
-    if (std::abs(val) < 1e-9) return 0;  // Collinear
-    return (val > 0) ? 1 : 2;  // Clockwise or Counterclockwise
-}
-
-// Helper function: Check if point q lies on segment pr (only when collinear)
-bool ReplanFSM::onSegment(const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r) {
-    return (q.x() <= std::max(p.x(), r.x()) && q.x() >= std::min(p.x(), r.x()) &&
-            q.y() <= std::max(p.y(), r.y()) && q.y() >= std::min(p.y(), r.y()));
-}
-
-// Check if two 2D line segments (p1,q1) and (p2,q2) intersect
-// Uses orientation-based algorithm (considers only XY plane)
-bool ReplanFSM::segmentsIntersect2D(const Eigen::Vector3d& p1, const Eigen::Vector3d& q1,
-                                    const Eigen::Vector3d& p2, const Eigen::Vector3d& q2) {
-    int o1 = orientation(p1, q1, p2);
-    int o2 = orientation(p1, q1, q2);
-    int o3 = orientation(p2, q2, p1);
-    int o4 = orientation(p2, q2, q1);
-
-    // General case: segments intersect if they have different orientations
-    if (o1 != o2 && o3 != o4) {
-        return true;
-    }
-
-    // Special cases: check for collinear points lying on the segment
-    // p1, q1, p2 are collinear and p2 lies on segment p1q1
-    if (o1 == 0 && onSegment(p1, p2, q1)) return true;
-
-    // p1, q1, q2 are collinear and q2 lies on segment p1q1
-    if (o2 == 0 && onSegment(p1, q2, q1)) return true;
-
-    // p2, q2, p1 are collinear and p1 lies on segment p2q2
-    if (o3 == 0 && onSegment(p2, p1, q2)) return true;
-
-    // p2, q2, q1 are collinear and q1 lies on segment p2q2
-    if (o4 == 0 && onSegment(p2, q1, q2)) return true;
-
-    return false;  // No intersection
-}
 
 }  // namespace path_manager

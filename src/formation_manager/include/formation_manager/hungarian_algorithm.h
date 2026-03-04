@@ -8,7 +8,7 @@
 #include <Eigen/Dense>
 #include <string>
 
-namespace path_manager {
+namespace formation_manager {
 
 /**
  * @brief Cost function parameters for advanced assignment
@@ -184,6 +184,6 @@ private:
         const Eigen::Vector3d& formation_center);
 };
 
-} // namespace path_manager
+} // namespace formation_manager
 
 #endif // HUNGARIAN_ALGORITHM_H

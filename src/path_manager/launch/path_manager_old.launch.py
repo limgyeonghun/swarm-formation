@@ -52,6 +52,10 @@ def create_drone_nodes(context, *args, **kwargs):
     target_drone_id = int(drone_id_str)
     print(f"Target drone ID: {target_drone_id}")
 
+    # Scenario selection
+    scenario = context.perform_substitution(LaunchConfiguration('scenario'))
+    print(f"Selected scenario: {scenario}")
+
     # JFI params
     jfi_port_arg = context.perform_substitution(LaunchConfiguration('jfi_port'))
     jfi_baud_rate_str = context.perform_substitution(LaunchConfiguration('jfi_baud_rate'))
@@ -94,7 +98,23 @@ def create_drone_nodes(context, *args, **kwargs):
     drone_cfg = drones_params['/**']['ros__parameters']
     num_drones = drone_cfg.get('num_drones', 1)
     print(f"Loaded drone hardware config: drone_hardware.yaml (num_drones={num_drones})")
-    print("Note: Start positions will be provided by formation_manager via TrajectoryCommand")
+
+    # Load scenario-specific configuration (initial positions + mission)
+    scenario_filename = f'scenario_{scenario}.yaml'
+    scenario_file = PathJoinSubstitution([pkg_share, 'config', scenario_filename])
+    scenario_params = load_yaml_file(context.perform_substitution(scenario_file))
+    scenario_cfg = scenario_params['/**']['ros__parameters']
+    print(f"Loaded scenario config: {scenario_filename}")
+
+    # Add drone initial positions from scenario to hardware config
+    for i in range(num_drones):
+        drone_key = f'drone_{i}'
+        if drone_key in scenario_cfg and drone_key in drone_cfg:
+            # Add start positions from scenario to drone config
+            drone_cfg[drone_key]['start_point_x'] = scenario_cfg[drone_key]['start_point_x']
+            drone_cfg[drone_key]['start_point_y'] = scenario_cfg[drone_key]['start_point_y']
+            drone_cfg[drone_key]['start_point_z'] = scenario_cfg[drone_key]['start_point_z']
+            print(f"  Added {drone_key} start position from scenario: ({scenario_cfg[drone_key]['start_point_x']}, {scenario_cfg[drone_key]['start_point_y']}, {scenario_cfg[drone_key]['start_point_z']})")
 
     fsm_params = drone_cfg.get('fsm', {})
     n_seconds_ahead = float(fsm_params.get('n_seconds_ahead', 0.0))
@@ -150,8 +170,18 @@ def create_drone_nodes(context, *args, **kwargs):
             'rviz_simulation': rviz_sim,
             'drone_id':        idx,
             'mavlink_id':      mavlink_id,
+            'start_point_x':   float(cfg.get('start_point_x', 0.0)),
+            'start_point_y':   float(cfg.get('start_point_y', 0.0)),
+            'start_point_z':   float(cfg.get('start_point_z', 0.0)),
         }
-        # Note: start_point will be received from TrajectoryCommand message
+
+        # Add ALL drones' initial positions for Hungarian algorithm (deadlock prevention)
+        for j in range(num_drones):
+            drone_key_j = f'drone_{j}'
+            if drone_key_j in drone_cfg:
+                params[f'{drone_key_j}.start_point_x'] = float(drone_cfg[drone_key_j]['start_point_x'])
+                params[f'{drone_key_j}.start_point_y'] = float(drone_cfg[drone_key_j]['start_point_y'])
+                params[f'{drone_key_j}.start_point_z'] = float(drone_cfg[drone_key_j]['start_point_z'])
 
         remaps = []
         id_str = str(idx + 1)
@@ -264,7 +294,7 @@ def create_drone_nodes(context, *args, **kwargs):
         else:
             print("JFI nodes skipped (not in real mode)")
 
-    # Build parameters for path_visualization
+    # Build parameters for path_visualization with scenario start points
     viz_params = [
         drones_file,  # Base drone hardware
         obstacles_file,
@@ -274,14 +304,21 @@ def create_drone_nodes(context, *args, **kwargs):
     # Add threat zones if specified
     if threat_zones_file:
         viz_params.append(threat_zones_file)
-    # Note: Start positions are now provided by formation_manager via TrajectoryCommand
+    # Add start_point overrides from scenario
+    start_point_params = {}
+    for i in range(num_drones):
+        drone_key = f'drone_{i}'
+        if drone_key in scenario_cfg:
+            start_point_params[f'{drone_key}.start_point_x'] = float(scenario_cfg[drone_key]['start_point_x'])
+            start_point_params[f'{drone_key}.start_point_y'] = float(scenario_cfg[drone_key]['start_point_y'])
+            start_point_params[f'{drone_key}.start_point_z'] = float(scenario_cfg[drone_key]['start_point_z'])
 
     visualization_node = Node(
         package='path_visualization',
         executable='path_visualization_node',
         name=f'path_visualization_{target_drone_id}',
         output='screen',
-        parameters=viz_params,
+        parameters=viz_params + [start_point_params],
         condition=IfCondition(LaunchConfiguration('enable_visualization'))
     )
 
@@ -298,9 +335,25 @@ def create_drone_nodes(context, *args, **kwargs):
         condition=IfCondition(LaunchConfiguration('rviz_simulation'))
     )
 
-    # NOTE: formation_manager is run separately (not part of this launch file)
-    # Start it manually in another terminal:
-    #   ros2 run formation_manager formation_manager_node --ros-args -p num_drones:=1 -p scenario:=threat_zones
+    formation_remaps = []
+    if not real_mode:
+        for vid in range(1, num_drones + 1):
+            formation_remaps += [
+                (f'/V{vid}/planning/broadcast_traj_send', '/planning/broadcast_traj_recv'),
+                (f'/V{vid}/j_fi/broadcast_traj_recv',     '/planning/broadcast_traj_recv'),
+            ]
+
+    formation_commander = Node(
+        package='path_manager',
+        executable='formation_commander',
+        name='formation_commander',
+        output='screen',
+        parameters=[
+            drones_file,      # Drone hardware config (mavlink_id, system settings)
+            {'scenario': scenario}  # Pass scenario name - formation_commander will load YAML directly
+        ],
+        remappings=formation_remaps,
+    )
 
     immediate_actions = [visualization_node, rviz_node] + rover_nodes + jfi_nodes
 
@@ -312,6 +365,11 @@ def create_drone_nodes(context, *args, **kwargs):
     replan_nodes_delayed = TimerAction(
         period=0.0,
         actions=replan_nodes,
+    )
+
+    formation_commander_delayed = TimerAction(
+        period=1.0,
+        actions=[formation_commander],
     )
 
     # ROSbag recording (optional)
@@ -348,9 +406,15 @@ def create_drone_nodes(context, *args, **kwargs):
     else:
         print("ROSbag recording disabled")
 
-    # Return all nodes (formation_manager excluded - run separately)
-    print("Launch complete. Remember to start formation_manager separately if needed.")
-    return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed] + rosbag_actions
+    # Formation commander runs only on drone 0 (in real mode) or in simulation mode
+    if real_mode and target_drone_id != 0:
+        # Real mode and not drone 0: don't run formation_commander
+        print(f"Drone {target_drone_id}: formation_commander will NOT run (only drone 0 runs it in real mode)")
+        return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed] + rosbag_actions
+    else:
+        # Simulation mode or drone 0: run formation_commander
+        print(f"Formation_commander will run (simulation mode or drone 0)")
+        return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed, formation_commander_delayed] + rosbag_actions
 
 def generate_launch_description():
     return LaunchDescription([
@@ -368,6 +432,11 @@ def generate_launch_description():
             'drone_id',
             default_value='1',
             description='Target drone ID to run (0-5)'
+        ),
+        DeclareLaunchArgument(
+            'scenario',
+            default_value='default',
+            description='Scenario name (default, straight, test)'
         ),
         DeclareLaunchArgument(
             'map_config',

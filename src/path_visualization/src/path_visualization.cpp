@@ -13,17 +13,17 @@ std::tuple<float, float, float> getDroneColor(int drone_id)
   switch (drone_id)
   {
   case 0:
-    return {1.0f, 0.0f, 0.0f}; // red
-  case 1:
     return {0.0f, 1.0f, 0.0f}; // green
-  case 2:
+  case 1:
     return {0.0f, 0.0f, 1.0f}; // blue
-  case 3:
+  case 2:
     return {1.0f, 1.0f, 0.0f}; // yellow
-  case 4:
+  case 3:
     return {1.0f, 0.0f, 1.0f}; // magenta
-  case 5:
+  case 4:
     return {0.0f, 1.0f, 1.0f}; // cyan
+  case 5:
+    return {1.0f, 0.5f, 0.0f}; // orange
   default:
     return {0.5f, 0.5f, 0.5f}; // gray for any id >=6
   }
@@ -152,9 +152,8 @@ void PathVisualization::simplePathCallback(const nav_msgs::msg::Path::SharedPtr 
     return;
   }
 
-  auto [r, g, b] = getDroneColor(drone_id);
-
-  publishPath(simple_path, drone_id, r, g, b, 0.0, simple_path_marker_pub_);
+  // Use dark blue color for simple path (local path)
+  publishPath(simple_path, drone_id, 0.12f, 0.39f, 1.0f, 0.7, simple_path_marker_pub_);
 
   // RCLCPP_INFO(this->get_logger(), "Drone %d: Published simple path with %zu points", drone_id, simple_path.size());
 }
@@ -305,8 +304,8 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
     }
   }
 
-  auto [r, g, b] = getDroneColor(drone_id);
-  publishPath(optimized_path, drone_id, r, g, b, 1.0, optimized_traj_pub_);
+  // Use dark blue color for optimized path (local trajectory)
+  publishPath(optimized_path, drone_id, 0.12f, 0.39f, 1.0f, 0.8, optimized_traj_pub_);
   
   // Only publish obstacles if obstacle avoidance is enabled
   if (enable_obstacles_)
@@ -392,8 +391,8 @@ void PathVisualization::globalPathCallback(const path_manager::msg::PolyTraj::Sh
     }
   }
 
-  auto [r, g, b] = getDroneColor(msg->drone_id);
-  publishPath(global_path, msg->drone_id, r, g, b, 0.8, global_traj_pub_);
+  // Use light blue color for global path (reference, highly visible)
+  publishPath(global_path, msg->drone_id, 0.59f, 0.71f, 1.0f, 0.85, global_traj_pub_);
 }
 
 void PathVisualization::updatePosition()
@@ -775,49 +774,25 @@ void PathVisualization::publishThreatField()
     return grad;
   };
 
-  // Helper function: Convert threat level to RGB color (gradient visualization)
+  // Helper function: Convert threat level to RGB color (pure red gradient)
   auto threatToColor = [](double threat, double max_threat) -> std::tuple<float, float, float> {
     // Normalize threat to [0, 1]
     double normalized = std::min(threat / max_threat, 1.0);
 
     // Apply power function to make high threat areas more prominent
-    // This creates stronger contrast in overlapping zones
-    normalized = std::pow(normalized, 0.7);  // Makes mid-high values stand out more
+    normalized = std::pow(normalized, 0.8);
 
-    // Color gradient: Blue (safe) -> Cyan -> Green -> Yellow -> Orange -> Red (dangerous)
-    // Using more saturated, vivid colors for better visibility
+    // Pure red gradient: Light red (far from center) -> Dark red (near center)
+    // Inverted: high threat (center) = pure red, low threat (edge) = light red
     float r, g, b;
-    if (normalized < 0.2) {
-      // Deep Blue to Cyan (very low threat)
-      float t = normalized / 0.2;
-      r = 0.0;
-      g = t * 0.7;
-      b = 1.0;
-    } else if (normalized < 0.4) {
-      // Cyan to Green (low threat)
-      float t = (normalized - 0.2) / 0.2;
-      r = 0.0;
-      g = 0.7 + t * 0.3;
-      b = 1.0 - t;
-    } else if (normalized < 0.6) {
-      // Green to Yellow (medium threat)
-      float t = (normalized - 0.4) / 0.2;
-      r = t;
-      g = 1.0;
-      b = 0.0;
-    } else if (normalized < 0.8) {
-      // Yellow to Orange (high threat)
-      float t = (normalized - 0.6) / 0.2;
-      r = 1.0;
-      g = 1.0 - t * 0.5;  // Keep some green for orange
-      b = 0.0;
-    } else {
-      // Orange to Deep Red (very high threat)
-      float t = (normalized - 0.8) / 0.2;
-      r = 1.0;
-      g = 0.5 * (1.0 - t);  // Fade green to get deep red
-      b = 0.0;
-    }
+
+    // Pure red gradient (only red channel, no pink)
+    r = 1.0;  // Always full red
+    g = 0.0;  // No green
+    b = 0.0;  // No blue
+
+    // Vary only the intensity/brightness through alpha in the calling code
+    // Here we return pure red, and let alpha handle the gradient
     return {r, g, b};
   };
 
@@ -926,19 +901,18 @@ void PathVisualization::publishThreatField()
           color.g = g;
           color.b = b;
 
-          // Calculate alpha based on layer position and threat level
-          // Lower alpha per layer so they blend smoothly when stacked
+          // Calculate alpha based on threat level to create gradient effect
+          // High threat (center) = opaque, low threat (edge) = transparent
           double normalized_threat = std::min(threat / max_threat_value, 1.0);
 
-          // Apply power function for stronger color visibility
-          normalized_threat = std::pow(normalized_threat, 0.6);
+          // Apply power function for stronger gradient from center
+          normalized_threat = std::pow(normalized_threat, 0.5);
 
-          // Layer-based alpha: each layer is semi-transparent
-          // Inner layers (smaller ratio) should be slightly more visible
-          double layer_alpha = 0.15 + (1.0 - ratio) * 0.15;  // 0.15 (outer) to 0.30 (inner)
+          // Layer-based alpha: each layer is semi-transparent for blending
+          double layer_alpha = 0.2 + (1.0 - ratio) * 0.15;  // 0.2 (outer) to 0.35 (inner)
 
-          // Combine layer alpha with threat level
-          color.a = layer_alpha * (0.3 + normalized_threat * 0.7);
+          // Alpha increases with threat level (center is more opaque)
+          color.a = layer_alpha * (0.2 + normalized_threat * 0.8);
 
           return color;
         };

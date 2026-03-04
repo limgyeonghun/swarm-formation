@@ -15,6 +15,9 @@ int32 drone_id
 int32 sequence
 string mission_id
 
+# Start position for this specific drone (set by formation_manager or UI)
+geometry_msgs/Point start_position
+
 # Individual target for this specific drone
 geometry_msgs/Point target_position
 geometry_msgs/Vector3 target_velocity
@@ -26,3 +29,7 @@ geometry_msgs/Point[] waypoints
 string formation_type
 float64 formation_scale
 geometry_msgs/Vector3 formation_offset
+
+# Full formation pattern (relative positions for all drones)
+# Used by optimizer for formation cost calculation
+geometry_msgs/Point[] formation_pattern

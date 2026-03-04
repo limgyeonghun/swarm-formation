@@ -18,7 +18,7 @@ Visualization Manager:
       Scale X: 0.1
       Scale Y: 0.1
       Scale Z: 0.1
-    - Class: rviz_default_plugins/Marker  # (/opt_trajectory)
+    - Class: rviz_default_plugins/Marker  # (/V1/planning/trajectory)
       Enabled: true
       Name: Min Jerk Trajectory
       Topic:
@@ -34,7 +34,7 @@ Visualization Manager:
       Scale Z: 0.05
       Color: 0;255;0
       History Length: 1000
-    - Class: rviz_default_plugins/Marker  # (/global_trajectory)
+    - Class: rviz_default_plugins/Marker  # (/V1/planning/global)
       Enabled: true
       Name: Global Trajectory
       Topic:
@@ -44,11 +44,11 @@ Visualization Manager:
         Reliability Policy: Best Effort
         Durability Policy: Volatile
       Value: true
-      Alpha: 0.4
+      Alpha: 0.3
       Scale X: 0.05
       Scale Y: 0.05
       Scale Z: 0.05
-      Color: 50;50;10
+      Color: 150;180;255
       History Length: 1000
     - Class: rviz_default_plugins/Marker  # (/position_markers_drone_0)
       Enabled: true
@@ -152,7 +152,7 @@ Visualization Manager:
       History Length: 1000
 
 
-    - Class: rviz_default_plugins/Marker  # (/simple_path_trajectory)
+    - Class: rviz_default_plugins/Marker  # (/drone_0/simple_path)
       Enabled: true
       Name: Simple Path Trajectory
       Topic:
@@ -162,7 +162,7 @@ Visualization Manager:
         Reliability Policy: Best Effort
         Durability Policy: Volatile
       Value: true
-      Alpha: 0.5
+      Alpha: 0.7
       Scale X: 0.05
       Scale Y: 0.05
       Scale Z: 0.05
@@ -172,10 +172,10 @@ Visualization Manager:
         opt_path_drone_2: true
         opt_path_drone_3: true
       Namespace Colors:
-        opt_path_drone_0: 255;0;0    # drone_0: 빨강
-        opt_path_drone_1: 0;255;0    # drone_1: 초록
-        opt_path_drone_2: 0;0;255    # drone_2: 파랑
-        opt_path_drone_3: 50;50;50   # drone_3: 회색
+        opt_path_drone_0: 30;100;255
+        opt_path_drone_1: 30;100;255
+        opt_path_drone_2: 30;100;255
+        opt_path_drone_3: 30;100;255
       History Length: 1000
     - Class: rviz_default_plugins/Marker  # (/road_boundary)
       Enabled: true
@@ -205,10 +205,11 @@ Visualization Manager:
       Value: true
       Namespaces:
         threat_field: true
-      Alpha: 0.3
+      Alpha: 0.25
       Scale X: 1.0
       Scale Y: 1.0
       Scale Z: 1.0
+      Color: 255;80;80
     - Class: rviz_default_plugins/Marker  # (/waypoint_markers)
       Enabled: true
       Name: Waypoint Markers

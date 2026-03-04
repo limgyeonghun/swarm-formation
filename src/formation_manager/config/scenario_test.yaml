@@ -21,9 +21,10 @@
       start_point_y: -6.0
       start_point_z: 0.0
 
-    # Mission scenario (used by formation_commander)
-    mission:
-      commands:
+# Mission scenario (used by formation_manager)
+scenario:
+  mission:
+    commands:
         - formation_type: "line_test"
           formation_scale: 6.0
           distance_threshold: 6.0

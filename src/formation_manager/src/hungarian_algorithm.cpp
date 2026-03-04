@@ -1,7 +1,7 @@
-#include "path_manager/hungarian_algorithm.h"
+#include "formation_manager/hungarian_algorithm.h"
 #include <iostream>
 
-namespace path_manager {
+namespace formation_manager {
 
 const double HungarianAlgorithm::INF = std::numeric_limits<double>::max() / 2.0;
 
@@ -490,4 +490,4 @@ std::vector<int> HungarianAlgorithm::orderPreservingMatch(
     return solve(cost_matrix);
 }
 
-} // namespace path_manager
+} // namespace formation_manager

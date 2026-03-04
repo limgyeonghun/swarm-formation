@@ -10,11 +10,10 @@
 #include <map>
 #include "path_manager/msg/poly_traj.hpp"
 #include "path_manager/msg/formation_target.hpp"
-#include "path_manager/msg/formation_command.hpp"
+#include "formation_msgs/msg/trajectory_command.hpp"
 #include "path_manager/msg/position_command.hpp"
 #include "path_manager/path_manager.h"
 #include "path_optimizer/plan_container.hpp"
-#include "swarm_graph/swarm_graph.hpp"
 #include "../../common/log_manager.hpp"
 
 // Conditional logging macros to avoid code duplication
@@ -71,7 +70,7 @@ public:
     void PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
     void recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg);
     void formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg);
-    void formationCommandCallback(const path_manager::msg::FormationCommand::SharedPtr msg);
+    void trajectoryCommandCallback(const formation_msgs::msg::TrajectoryCommand::SharedPtr msg);
     void polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     void globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     // Callback groups:
@@ -92,21 +91,8 @@ private:
     bool isMapReady(const Eigen::Vector3d& start_pos);
     bool callEmergencyStop(const Eigen::Vector3d& stop_pos);
     
-    // Formation manager functions
-    void generateFormationTargets(const Eigen::Vector3d& center, const std::string& formation_type, double scale, const std::vector<Eigen::Vector3d>& waypoints = {});
-    std::vector<Eigen::Vector3d> generateFormationPattern(const std::string& formation_type, int num_drones, double scale);
+    // Formation target publishing (now receives pre-calculated targets)
     void publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints = {}, bool formation_changed = false, const Eigen::Vector3d& formation_offset = Eigen::Vector3d::Zero());
-
-    // Hungarian algorithm for optimal drone-target assignment
-    std::vector<int> hungarianAssignment(const std::vector<Eigen::Vector3d>& current_positions,
-                                         const std::vector<Eigen::Vector3d>& target_positions,
-                                         const std::vector<Eigen::Vector3d>& waypoints);
-
-    // Helper functions for line segment intersection checking
-    bool segmentsIntersect2D(const Eigen::Vector3d& p1, const Eigen::Vector3d& q1,
-                             const Eigen::Vector3d& p2, const Eigen::Vector3d& q2);
-    int orientation(const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r);
-    bool onSegment(const Eigen::Vector3d& p, const Eigen::Vector3d& q, const Eigen::Vector3d& r);
 
     std::shared_ptr<PathManager> path_manager_;
 
@@ -118,7 +104,7 @@ private:
     rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr broadcast_traj_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr px4_position_sub_;
     rclcpp::Subscription<path_manager::msg::FormationTarget>::SharedPtr formation_target_sub_;
-    rclcpp::Subscription<path_manager::msg::FormationCommand>::SharedPtr formation_cmd_sub_;
+    rclcpp::Subscription<formation_msgs::msg::TrajectoryCommand>::SharedPtr trajectory_cmd_sub_;
     rclcpp::Publisher<path_manager::msg::FormationTarget>::SharedPtr formation_target_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr waypoint_marker_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
@@ -132,6 +118,7 @@ private:
     bool have_local_traj_;
     bool have_recv_pre_agent_;
     bool flag_replan_astar_;
+    bool start_position_received_;  // Track if we received start position from TrajectoryCommand
     int drone_id_;      // Internal index (0,1,2,3...)
     int mavlink_id_;    // MAVLink system ID for PX4 communication
     double replan_thresh_;
@@ -164,8 +151,8 @@ private:
     std::string current_formation_type_;
     double current_formation_scale_;
     Eigen::Vector3d current_formation_center_;
+    std::vector<Eigen::Vector3d> current_formation_pattern_;  // Full formation pattern from formation_manager
     bool has_formation_command_;
-    SwarmGraph::Ptr swarm_graph_;
 
     // Mission sequencing for robustness
     int last_received_sequence_;        // Last received sequence number to detect duplicates

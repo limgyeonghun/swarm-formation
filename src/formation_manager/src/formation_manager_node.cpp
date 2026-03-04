@@ -20,6 +20,7 @@ struct MissionCommand {
     double distance_threshold;
     double formation_similarity_threshold;
     std::vector<std::vector<double>> waypoints;
+    std::vector<Eigen::Vector3d> start_positions;  // Start positions for each drone
 };
 
 /**
@@ -45,11 +46,13 @@ public:
         this->declare_parameter("distance_threshold", 3.0);
         this->declare_parameter("formation_similarity_threshold", 2.0);
         this->declare_parameter("formation_z_spacing", 2.0);
+        this->declare_parameter("scenario", "default");
 
         num_drones_ = this->get_parameter("num_drones").as_int();
         distance_threshold_ = this->get_parameter("distance_threshold").as_double();
         formation_similarity_threshold_ = this->get_parameter("formation_similarity_threshold").as_double();
         formation_z_spacing_ = this->get_parameter("formation_z_spacing").as_double();
+        scenario_ = this->get_parameter("scenario").as_string();
 
         // Load missions from YAML
         loadMissionFromYAML();
@@ -124,9 +127,24 @@ private:
     void loadMissionFromYAML() {
         try {
             std::string package_share_dir = ament_index_cpp::get_package_share_directory("formation_manager");
-            std::string yaml_file = package_share_dir + "/config/scenario_default.yaml";
+            std::string yaml_file = package_share_dir + "/config/scenario_" + scenario_ + ".yaml";
 
+            RCLCPP_INFO(this->get_logger(), "Loading scenario: %s", yaml_file.c_str());
             YAML::Node config = YAML::LoadFile(yaml_file);
+
+            // Load start positions for each drone
+            std::vector<Eigen::Vector3d> start_positions(num_drones_, Eigen::Vector3d::Zero());
+            for (int i = 0; i < num_drones_; ++i) {
+                std::string drone_key = "drone_" + std::to_string(i);
+                if (config[drone_key]) {
+                    double x = config[drone_key]["start_point_x"].as<double>(0.0);
+                    double y = config[drone_key]["start_point_y"].as<double>(0.0);
+                    double z = config[drone_key]["start_point_z"].as<double>(0.0);
+                    start_positions[i] = Eigen::Vector3d(x, y, z);
+                    RCLCPP_INFO(this->get_logger(), "Loaded start position for drone_%d: (%.2f, %.2f, %.2f)",
+                                i, x, y, z);
+                }
+            }
 
             if (config["scenario"] && config["scenario"]["mission"] && config["scenario"]["mission"]["commands"]) {
                 YAML::Node commands = config["scenario"]["mission"]["commands"];
@@ -149,6 +167,9 @@ private:
                             cmd.waypoints.push_back(waypoint);
                         }
                     }
+
+                    // Assign start positions to this mission
+                    cmd.start_positions = start_positions;
 
                     missions_.push_back(cmd);
                 }
@@ -296,6 +317,18 @@ private:
             msg.sequence = mission_sequence_;
             msg.mission_id = "mission_" + std::to_string(mission_sequence_);
 
+            // Set start position from mission data
+            if (i < (int)mission.start_positions.size()) {
+                msg.start_position.x = mission.start_positions[i].x();
+                msg.start_position.y = mission.start_positions[i].y();
+                msg.start_position.z = mission.start_positions[i].z();
+            } else {
+                // Fallback to zero if not available
+                msg.start_position.x = 0.0;
+                msg.start_position.y = 0.0;
+                msg.start_position.z = 0.0;
+            }
+
             // Assign target based on Hungarian result
             int target_idx = assignment[i];
             Eigen::Vector3d my_target = target_positions[target_idx];
@@ -321,6 +354,14 @@ private:
             msg.formation_offset.x = formation_pattern[target_idx].x();
             msg.formation_offset.y = formation_pattern[target_idx].y();
             msg.formation_offset.z = formation_pattern[target_idx].z();
+
+            // Add full formation pattern for optimizer
+            msg.formation_pattern.resize(formation_pattern.size());
+            for (size_t j = 0; j < formation_pattern.size(); ++j) {
+                msg.formation_pattern[j].x = formation_pattern[j].x();
+                msg.formation_pattern[j].y = formation_pattern[j].y();
+                msg.formation_pattern[j].z = formation_pattern[j].z();
+            }
 
             trajectory_cmd_pubs_[i]->publish(msg);
         }
@@ -348,7 +389,7 @@ private:
         }
 
         // For other formations, use Hungarian algorithm
-        HungarianAlgorithm hungarian;
+        formation_manager::HungarianAlgorithm hungarian;
         std::vector<std::vector<double>> cost_matrix(n, std::vector<double>(n));
 
         for (int i = 0; i < n; ++i) {
@@ -357,7 +398,7 @@ private:
             }
         }
 
-        hungarian.Solve(cost_matrix, assignment);
+        assignment = hungarian.solve(cost_matrix);
         return assignment;
     }
 
@@ -366,6 +407,7 @@ private:
     double formation_similarity_threshold_;
     double formation_z_spacing_;
     int mission_sequence_;
+    std::string scenario_;
 
     std::vector<MissionCommand> missions_;
     std::vector<rclcpp::Publisher<formation_msgs::msg::TrajectoryCommand>::SharedPtr> trajectory_cmd_pubs_;

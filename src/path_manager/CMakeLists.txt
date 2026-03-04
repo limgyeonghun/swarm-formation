@@ -29,7 +29,7 @@ find_package(path_optimizer REQUIRED)
 find_package(path_planner REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
-find_package(swarm_graph REQUIRED)
+find_package(formation_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(ament_index_cpp REQUIRED)
@@ -44,11 +44,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 add_library(${PROJECT_NAME}_lib
   src/path_manager.cpp
-  src/replan_fsm.cpp
   src/uniform_bspline.cpp
   src/polynomial_traj.cpp
-  src/hungarian_algorithm.cpp
-  src/formation_utils.cpp
+  src/replan_fsm.cpp
   ../common/log_manager.cpp
 )
 
@@ -61,7 +59,7 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   path_optimizer
   path_planner
   geometry_msgs
-  swarm_graph
+  formation_msgs
   rosidl_default_runtime
   visualization_msgs
 )
@@ -109,28 +107,6 @@ ament_target_dependencies(traj_server
 )
 
 
-add_executable(formation_commander
-  src/formation_commander.cpp
-  src/hungarian_algorithm.cpp
-  src/formation_utils.cpp
-)
-ament_target_dependencies(formation_commander
-  rclcpp
-  std_msgs
-  geometry_msgs
-  Eigen3
-  path_optimizer
-  rosidl_default_runtime
-  ament_index_cpp
-)
-target_include_directories(formation_commander PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_cpp>
-  ${EIGEN3_INCLUDE_DIRS}
-)
-target_link_libraries(formation_commander
-  yaml-cpp
-)
 
 rosidl_target_interfaces(${PROJECT_NAME}_lib
   ${PROJECT_NAME} "rosidl_typesupport_cpp"
@@ -144,9 +120,7 @@ rosidl_target_interfaces(traj_server
 )
 
 
-rosidl_target_interfaces(formation_commander
-  ${PROJECT_NAME} "rosidl_typesupport_cpp"
-)
+# formation_commander removed
 
 install(TARGETS ${PROJECT_NAME}_lib
   EXPORT export_${PROJECT_NAME}
@@ -164,9 +138,7 @@ install(TARGETS traj_server
 )
 
 
-install(TARGETS formation_commander
-  DESTINATION lib/${PROJECT_NAME}
-)
+# formation_commander removed
 
 install(DIRECTORY include/
   DESTINATION include
@@ -177,6 +149,6 @@ install(DIRECTORY config launch
 )
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp std_msgs px4_msgs nav_msgs Eigen3 path_optimizer geometry_msgs path_planner swarm_graph rosidl_default_generators visualization_msgs)
+ament_export_dependencies(rclcpp std_msgs px4_msgs nav_msgs Eigen3 path_optimizer geometry_msgs path_planner formation_msgs rosidl_default_generators visualization_msgs)
 
 ament_package()

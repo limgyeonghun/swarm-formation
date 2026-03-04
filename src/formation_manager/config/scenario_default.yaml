@@ -21,9 +21,11 @@
       start_point_y: 5.96
       start_point_z: 0.0
 
-    # Mission scenario (used by formation_commander)
-    mission:
-      commands:
+
+# Mission scenario (used by formation_commander)
+scenario:
+  mission:
+    commands:
         # line_first case 0 (1/4 of original trajectory)
         - formation_type: "line_first"
           formation_scale: 5.0

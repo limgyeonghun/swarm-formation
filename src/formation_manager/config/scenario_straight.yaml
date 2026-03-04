@@ -21,9 +21,11 @@
       start_point_y: 8.23
       start_point_z: 0.0
 
-    # Mission scenario (used by formation_commander)
-    mission:
-      commands:
+
+# Mission scenario (used by formation_commander)
+scenario:
+  mission:
+    commands:
         - formation_type: "line_first_reverse"
           formation_scale: 4.0
           distance_threshold: 6.0

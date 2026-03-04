@@ -1,37 +1,36 @@
-# Swarm Formation Control System
+# Path Manager System
 
-A ROS 2-based swarm formation control system for autonomous drones/rovers with real-time trajectory optimization and collision avoidance.
+ROS 2 기반 드론/로버 경로 계획 및 편대 제어 시스템
 
-## 🏗️ Installation
+### 시뮬레이션 실행
 
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd swarm-formation
-   ```
-
-2. **Install dependencies**:
-   ```bash
-   sudo apt update
-   sudo apt install ros-humble-rclcpp ros-humble-nav-msgs ros-humble-visualization-msgs
-   sudo apt install libeigen3-dev libomp-dev
-   ```
-
-3. **Build the workspace**:
-   ```bash
-   colcon build --symlink-install
-   source install/setup.bash
-   ```
-  
-### Simulation Mode
+**터미널 1** - 메인 시스템:
 ```bash
-# Launch with rovers in simulation mode
-ros2 launch path_manager path_manager.launch.py real:=false rviz_simulation:=true enable_visualization:=true
+ros2 launch path_manager path_manager.launch.py \
+  real:=false \
+  rviz_simulation:=true \
+  enable_visualization:=true \
+  map_config:=map_threat_zones \
+  threat_zones:=threat_zones
 ```
 
-### Real Hardware Mode
+**터미널 2** - 편대 명령 트리거 (선택사항):
 ```bash
-# Launch with rover ID 2 and real hardware
-ros2 launch path_manager path_manager.launch.py drone_id:=2 real:=true record_bag:=true
-
+ros2 run formation_manager formation_manager_node \
+  --ros-args -p num_drones:=1 -p scenario:=threat_zones
 ```
+
+> **참고**:
+> - 터미널 2의 formation_manager가 시작점과 목표점을 설정합니다
+> - `scenario` 파라미터로 다양한 시나리오를 실행할 수 있습니다 (default, threat_zones 등)
+
+### 주요 파라미터
+
+| 파라미터 | 설명 | 기본값 |
+|---------|------|--------|
+| `real` | 실제 하드웨어 모드 활성화 | false |
+| `rviz_simulation` | RViz 시각화 활성화 | false |
+| `enable_visualization` | 경로 시각화 노드 활성화 | false |
+| `map_config` | 맵 설정 파일 (map, map_threat_zones) | map |
+| `threat_zones` | 위협 지역 설정 파일 | (없음) |
+| `drone_id` | 실행할 드론 ID (실제 하드웨어 모드) | 1 |
