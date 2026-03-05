@@ -300,24 +300,15 @@ def create_drone_nodes(context, *args, **kwargs):
         condition=IfCondition(LaunchConfiguration('enable_visualization'))
     )
 
-    rviz_node = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        output='screen',
-        arguments=['-d', PathJoinSubstitution([
-            FindPackageShare('path_visualization'),
-            'config',
-            'rviz_config.rviz'
-        ])],
-        condition=IfCondition(LaunchConfiguration('rviz_simulation'))
-    )
+    # NOTE: RViz is now launched separately via:
+    #   ros2 launch mmp_visualization mmp.launch.py
+    # This allows unified visualization with terrain and all path planning topics
 
     # NOTE: formation_manager is run separately (not part of this launch file)
     # Start it manually in another terminal:
     #   ros2 run formation_manager formation_manager_node --ros-args -p num_drones:=1 -p scenario:=threat_zones
 
-    immediate_actions = [visualization_node, rviz_node] + rover_nodes + jfi_nodes
+    immediate_actions = [visualization_node] + rover_nodes + jfi_nodes
 
     traj_nodes_delayed = TimerAction(
         period=0.0,
