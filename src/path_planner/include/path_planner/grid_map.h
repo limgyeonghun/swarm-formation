@@ -46,6 +46,7 @@ struct MappingParameters {
   double esdf_slice_height_ = -0.1;
   bool show_esdf_time_ = false;
   double local_bound_inflate_ = 1.0;
+  double ground_height_ = 0.0;
   
   // ESDF parameters
   double p_hit_ = 0.70, p_miss_ = 0.35, p_min_ = 0.12, p_max_ = 0.97, p_occ_ = 0.80;

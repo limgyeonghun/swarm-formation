@@ -1228,7 +1228,7 @@ namespace ego_planner
     Eigen::Vector3d map_size = grid_map_->getMapSize();
     double resolution = grid_map_->getResolution();
 
-    Eigen::Vector3i pool_size(800, 800, 20);
+    Eigen::Vector3i pool_size(800, 800, 100);
 
     a_star_->initGridMap(grid_map_, pool_size);
   }

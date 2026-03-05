@@ -4,7 +4,7 @@
     optimization/constrain_points_perPiece: 25
     
     # Obstacle Avoidance Control
-    enable_obstacles: false
+    enable_obstacles: true
     
     # Debug Logging Control
     enable_debug_logs: false  # Set to true to enable detailed timing logs
@@ -42,8 +42,8 @@
     manager/planning_horizon: 30.0
     
     # FSM Parameters
-    fsm/thresh_replan_time: 3.0
-    fsm/thresh_no_replan_meter: 1.0
+    fsm/thresh_replan_time: 1.5
+    fsm/thresh_no_replan_meter: 10.0
     fsm/replan_trajectory_time: 0.2
 
     # Hungarian Assignment Parameters

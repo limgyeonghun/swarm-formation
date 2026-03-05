@@ -1,14 +1,15 @@
 /**:
   ros__parameters:
     # Grid Map Settings for Threat Zone Scenario
-    grid_map/resolution: 0.1
-    grid_map/map_size_x: 100.0   # X: -10 ~ 70
-    grid_map/map_size_y: 100.0   # Y: -30 ~ 30
-    grid_map/map_size_z: 10.0    # Z: 0 ~ 30m (3D threat visualization)
+    grid_map/resolution: 0.2
+    grid_map/map_size_x: 100.0   # X: -50 ~ +50 (centered at 0,0)
+    grid_map/map_size_y: 100.0   # Y: -50 ~ +50 (centered at 0,0)
+    grid_map/map_size_z: 10.0    # Z: ground_height ~ ground_height+10
     grid_map/frame_id: "world"
 
-    grid_map/map_origin_x: 0.0
+    grid_map/map_origin_x: 0.0   # 0.0 means auto-center at origin
     grid_map/map_origin_y: 0.0
+    grid_map/ground_height: -0.01  # Ground level
 
     # Obstacle and Collision Settings
     grid_map/obstacles_inflation: 0.8

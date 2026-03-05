@@ -11,6 +11,7 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   node_->declare_parameter("grid_map/map_size_z", -1.0);
   node_->declare_parameter("grid_map/obstacles_inflation", 0.1);
   node_->declare_parameter("grid_map/virtual_ceil_height", -0.1);
+  node_->declare_parameter("grid_map/ground_height", 0.0);
   node_->declare_parameter("grid_map/local_map_margin", 1);
   node_->declare_parameter("grid_map/frame_id", std::string("world"));
   node_->declare_parameter("grid_map/esdf_slice_height", -0.1);
@@ -36,6 +37,7 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   double z_size = node_->get_parameter("grid_map/map_size_z").as_double();
   mp_.obstacles_inflation_ = node_->get_parameter("grid_map/obstacles_inflation").as_double();
   mp_.virtual_ceil_height_ = node_->get_parameter("grid_map/virtual_ceil_height").as_double();
+  mp_.ground_height_ = node_->get_parameter("grid_map/ground_height").as_double();
   mp_.local_map_margin_ = node_->get_parameter("grid_map/local_map_margin").as_int();
   mp_.frame_id_ = node_->get_parameter("grid_map/frame_id").as_string();
   mp_.esdf_slice_height_ = node_->get_parameter("grid_map/esdf_slice_height").as_double();
@@ -123,10 +125,10 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
 
   if (map_origin_x == 0.0 && map_origin_y == 0.0) {
     // Default behavior: center map at (0, 0)
-    mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, -0.01);
+    mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, mp_.ground_height_);
   } else {
     // Use custom origin for optimized map placement
-    mp_.map_origin_ = Eigen::Vector3d(map_origin_x, map_origin_y, -0.01);
+    mp_.map_origin_ = Eigen::Vector3d(map_origin_x, map_origin_y, mp_.ground_height_);
   }
 
   mp_.map_size_ = Eigen::Vector3d(x_size, y_size, z_size);
@@ -145,8 +147,9 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   mp_.map_min_boundary_ = mp_.map_origin_;
   mp_.map_max_boundary_ = mp_.map_origin_ + mp_.map_size_;
 
-  if (mp_.virtual_ceil_height_ >= z_size) {
-    mp_.virtual_ceil_height_ = z_size - mp_.resolution_;
+  // Adjust virtual_ceil_height relative to ground_height (like ROS1 version)
+  if (mp_.virtual_ceil_height_ >= z_size + mp_.ground_height_) {
+    mp_.virtual_ceil_height_ = z_size + mp_.ground_height_ - mp_.resolution_;
   }
 
   // int buffer_size = mp_.map_voxel_num_(0) * mp_.map_voxel_num_(1) * mp_.map_voxel_num_(2);
@@ -713,25 +716,26 @@ void GridMap::updateESDFLocal(const Eigen::Vector3d& center_pos) {
 }
 
 void GridMap::evaluateEDT(const Eigen::Vector3d& pos, double& dist) {
-  if (!isInMap(pos)) {
-    dist = 10000.0;
+  // Ground constraint: Z < 0.0 is treated as obstacle (distance = 0)
+  if (pos.z() < 0.0) {
+    dist = 0.0;
     return;
   }
 
   Eigen::Vector3i idx;
   posToIndex(pos, idx);
 
+  // Local ESDF check (use raw index before clamping)
   if (idx(0) >= local_esdf_min_(0) && idx(0) <= local_esdf_max_(0) &&
       idx(1) >= local_esdf_min_(1) && idx(1) <= local_esdf_max_(1) &&
       idx(2) >= local_esdf_min_(2) && idx(2) <= local_esdf_max_(2)) {
-    
+
     Eigen::Vector3i local_size = local_esdf_max_ - local_esdf_min_ + Eigen::Vector3i(1, 1, 1);
     int local_idx = (idx(0) - local_esdf_min_(0)) * local_size(1) * local_size(2) +
                     (idx(1) - local_esdf_min_(1)) * local_size(2) +
                     (idx(2) - local_esdf_min_(2));
-    
+
     dist = distance_buffer_local_[local_idx];
-    // std::cout << "Local ESDF distance: " << dist << std::endl;
     return;
   }
 
@@ -746,6 +750,12 @@ void GridMap::evaluateEDT(const Eigen::Vector3d& pos, double& dist) {
 }
 
 void GridMap::evaluateFirstGrad(const Eigen::Vector3d& pos, Eigen::Vector3d& grad) {
+  // Ground constraint: Z < 0.0 has upward gradient to push away from ground
+  if (pos.z() < 0.0) {
+    grad = Eigen::Vector3d(0.0, 0.0, 1.0);  // Push upward
+    return;
+  }
+
   Eigen::Vector3d diff;
   Eigen::Vector3d sur_pts[2][2][2];
   getSurroundPts(pos, sur_pts, diff);
