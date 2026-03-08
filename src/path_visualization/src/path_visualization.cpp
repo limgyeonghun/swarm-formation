@@ -31,6 +31,8 @@ std::tuple<float, float, float> getDroneColor(int drone_id)
 
 PathVisualization::PathVisualization() : Node("path_visualization")
 {
+  tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+
   // Load obstacle avoidance parameter
   this->declare_parameter("enable_obstacles", true);
   this->get_parameter("enable_obstacles", enable_obstacles_);
@@ -502,6 +504,26 @@ void PathVisualization::updatePosition()
     pos_msg.point.y = y;
     pos_msg.point.z = z;
     position_pubs_[drone_id]->publish(pos_msg);
+
+    // Publish TF frame for follow-camera view (drone_N_base)
+    // Frame X-axis aligned with velocity direction for ThirdPersonFollower in RViz
+    geometry_msgs::msg::TransformStamped tf_msg;
+    tf_msg.header.stamp = this->now();
+    tf_msg.header.frame_id = "map";
+    tf_msg.child_frame_id = "drone_" + std::to_string(drone_id) + "_base";
+    tf_msg.transform.translation.x = x;
+    tf_msg.transform.translation.y = y;
+    tf_msg.transform.translation.z = z;
+    // Compute yaw and pitch from velocity direction
+    double yaw   = std::atan2(vel.y(), vel.x());
+    double pitch = -std::asin(std::clamp(vel.z(), -1.0, 1.0));
+    tf2::Quaternion q;
+    q.setRPY(0.0, pitch, yaw);
+    tf_msg.transform.rotation.x = q.x();
+    tf_msg.transform.rotation.y = q.y();
+    tf_msg.transform.rotation.z = q.z();
+    tf_msg.transform.rotation.w = q.w();
+    tf_broadcaster_->sendTransform(tf_msg);
   }
 }
 

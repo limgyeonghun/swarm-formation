@@ -11,6 +11,8 @@
   <depend>geometry_msgs</depend>
   <depend>path_manager</depend>
   <depend>eigen3_cmake_module</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

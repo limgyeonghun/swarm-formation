@@ -16,6 +16,8 @@ find_package(visualization_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(path_manager REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2 REQUIRED)
 
 # Include directories
 include_directories(
@@ -33,6 +35,8 @@ ament_target_dependencies(path_visualization_node
   geometry_msgs
   path_manager
   Eigen3
+  tf2_ros
+  tf2
 )
 
 # Install targets
