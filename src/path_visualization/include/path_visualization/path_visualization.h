@@ -22,6 +22,7 @@ private:
 
   struct DroneData {
     Eigen::Vector3d start_pt;
+    Eigen::Vector3d velocity{0.0, 0.0, 0.0};
     path_manager::msg::PolyTraj current_traj;
   };
 

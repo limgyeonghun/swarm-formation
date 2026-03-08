@@ -17,8 +17,8 @@
       200.0,                # max threat level
 
       # AAA Site 1 (medium threat)
-      40.0, 10.0, 0.0,     # center position
-      15.0,                 # detection range
+      40.0, 10.0, 10.0,     # center position
+      5.0,                 # detection range
       6.0,                  # engagement range
       90.0,                 # max threat level (AAA = 50)
     ]
