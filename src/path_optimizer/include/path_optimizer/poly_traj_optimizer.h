@@ -6,6 +6,7 @@
 #include <chrono>
 #include <fstream>
 #include <rclcpp/rclcpp.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 #include <path_planner/dyn_a_star.h>
 #include <path_planner/grid_map.h>
 #include <swarm_graph/swarm_graph.hpp>
@@ -143,6 +144,7 @@ namespace ego_planner
     double dbg_cost_lat_accel_;      // Total lateral acceleration violation cost
 
     rclcpp::Node::SharedPtr node_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr esdf_sample_pub_;
 
   public:
     PolyTrajOptimizer() {}
@@ -253,6 +255,9 @@ namespace ego_planner
     // Jerk metric calculation functions
     double computeTotalJerk(const poly_traj::Trajectory &traj);
     double computeMaxJerk(const poly_traj::Trajectory &traj);
+
+    // ESDF visualization
+    void visualizeESDFSamples(const std::vector<Eigen::Vector3d>& sample_points);
 
   public:
     typedef std::unique_ptr<PolyTrajOptimizer> Ptr;

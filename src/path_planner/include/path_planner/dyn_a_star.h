@@ -52,13 +52,9 @@ private:
     inline void coord2gridIndexFast(const double x, const double y, const double z, int &id_x, int &id_y, int &id_z);
 
     double getDiagHeu(GridNodePtr node1, GridNodePtr node2);
-    double getDiagHeu2D(GridNodePtr node1, GridNodePtr node2);
     double getManhHeu(GridNodePtr node1, GridNodePtr node2);
-    double getManhHeu2D(GridNodePtr node1, GridNodePtr node2);
     double getEuclHeu(GridNodePtr node1, GridNodePtr node2);
-    double getEuclHeu2D(GridNodePtr node1, GridNodePtr node2);
     inline double getHeu(GridNodePtr node1, GridNodePtr node2);
-    inline double getHeu2D(GridNodePtr node1, GridNodePtr node2);
 
     bool ConvertToIndexAndAdjustStartEndPoints(const Eigen::Vector3d start_pt, const Eigen::Vector3d end_pt, Eigen::Vector3i &start_idx, Eigen::Vector3i &end_idx);
 
@@ -67,23 +63,12 @@ private:
 
     //bool (*checkOccupancyPtr)( const Eigen::Vector3d &pos );
     
-    inline bool checkOccupancy(const Eigen::Vector3d &pos) { 
+    inline bool checkOccupancy(const Eigen::Vector3d &pos) {
         int occ = grid_map_->getInflateOccupancy(pos);
         return (occ > 0);  // -1(out of map) is false, 1(obstacle) is true, 0(free space) is false
     }
-    inline bool checkOccupancy2D(const Eigen::Vector3d &pos) { 
-        int occ = grid_map_->getInflateOccupancy2D(pos);
-        return (occ > 0);
-    }
     inline bool checkOccupancy_esdf(const Eigen::Vector3d &pos){
         const double dist = 0.2;
-        if (grid_map_->getDistance(pos) < dist ) 
-            return true;
-        else
-            return false;
-    }
-    inline bool checkOccupancy_esdf2D(const Eigen::Vector3d &pos){
-        const double dist = 0.15;
         if (grid_map_->getDistance(pos) < dist )
             return true;
         else
@@ -131,11 +116,9 @@ public:
 
     bool AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check);
 
-    bool AstarSearch2D(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, bool use_esdf_check);
-
     std::vector<Eigen::Vector3d> getPath();
+
     std::vector<Eigen::Vector3d> astarSearchAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, int drone_id);
-    std::vector<Eigen::Vector3d> astarSearch2DAndGetSimplePath(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt, int drone_id, bool use_esdf_check);
     
     Eigen::Vector3d getOrigin() const { return grid_map_->getOrigin(); }
     Eigen::Vector3d getMapSize() const { return grid_map_->getMapSize(); }
@@ -144,11 +127,6 @@ public:
 inline double AStar::getHeu(GridNodePtr node1, GridNodePtr node2)
 {
     return tie_breaker_ * getDiagHeu(node1, node2);
-}
-
-inline double AStar::getHeu2D(GridNodePtr node1, GridNodePtr node2)
-{
-    return tie_breaker_ * getDiagHeu2D(node1, node2);
 }
 
 inline Eigen::Vector3d AStar::Index2Coord(const Eigen::Vector3i &index) const

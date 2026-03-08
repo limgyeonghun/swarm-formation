@@ -13,7 +13,7 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   node_->declare_parameter("grid_map/virtual_ceil_height", -0.1);
   node_->declare_parameter("grid_map/ground_height", 0.0);
   node_->declare_parameter("grid_map/local_map_margin", 1);
-  node_->declare_parameter("grid_map/frame_id", std::string("world"));
+  node_->declare_parameter("grid_map/frame_id", std::string("map"));
   node_->declare_parameter("grid_map/esdf_slice_height", -0.1);
   node_->declare_parameter("grid_map/show_esdf_time", false);
   node_->declare_parameter("grid_map/local_bound_inflate", 1.0);
@@ -30,6 +30,11 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   node_->declare_parameter("grid_map/use_threat_zones", false);
   node_->declare_parameter("grid_map/threat_cost_weight", 1.0);
   node_->declare_parameter("threat_zones", std::vector<double>());
+
+  // Terrain gridmap parameters
+  node_->declare_parameter("grid_map/use_terrain_obstacles", false);
+  node_->declare_parameter("grid_map/terrain_obstacle_threshold", 0.0);
+  node_->declare_parameter("grid_map/terrain_target_cell_size", 50.0);
 
   mp_.resolution_ = node_->get_parameter("grid_map/resolution").as_double();
   double x_size = node_->get_parameter("grid_map/map_size_x").as_double();
@@ -52,6 +57,11 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   // Threat zone parameters
   mp_.use_threat_zones_ = node_->get_parameter("grid_map/use_threat_zones").as_bool();
   mp_.threat_cost_weight_ = node_->get_parameter("grid_map/threat_cost_weight").as_double();
+
+  // Terrain gridmap parameters
+  mp_.use_terrain_obstacles_ = node_->get_parameter("grid_map/use_terrain_obstacles").as_bool();
+  mp_.terrain_obstacle_threshold_ = node_->get_parameter("grid_map/terrain_obstacle_threshold").as_double();
+  mp_.terrain_target_cell_size_ = node_->get_parameter("grid_map/terrain_target_cell_size").as_double();
 
   auto road_segments = node_->get_parameter("grid_map/road_segments").as_double_array();
   if (road_segments.size() % 5 == 0) {
@@ -115,6 +125,9 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
               << "), detection=" << zone.detection_range << "m, engagement=" << zone.engagement_range
               << "m, threat=" << zone.max_threat_level << std::endl;
   }
+  std::cout << "  use_terrain_obstacles: " << mp_.use_terrain_obstacles_ << std::endl;
+  std::cout << "  terrain_obstacle_threshold: " << mp_.terrain_obstacle_threshold_ << "m" << std::endl;
+  std::cout << "  terrain_target_cell_size: " << mp_.terrain_target_cell_size_ << "m" << std::endl;
 
   mp_.local_bound_inflate_ = std::max(mp_.resolution_, mp_.local_bound_inflate_);
   mp_.resolution_inv_ = 1.0 / mp_.resolution_;
@@ -167,6 +180,22 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   distance_buffer_local_.clear();
   local_esdf_min_ = Eigen::Vector3i(0, 0, 0);
   local_esdf_max_ = Eigen::Vector3i(0, 0, 0);
+
+  // Subscribe to terrain gridmap if enabled
+  if (mp_.use_terrain_obstacles_) {
+    terrain_sub_ = node_->create_subscription<grid_map_msgs::msg::GridMap>(
+      "/terrain/grid_map",
+      rclcpp::QoS(1).transient_local().reliable(),
+      [this](const grid_map_msgs::msg::GridMap::SharedPtr msg) {
+        this->processTerrainGridMap(msg);
+      });
+    RCLCPP_INFO(node_->get_logger(), "Subscribed to /terrain/grid_map for terrain obstacles");
+  }
+
+  global_esdf_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+    "/global_esdf_visualization",
+    rclcpp::QoS(1).transient_local().reliable());
+  RCLCPP_INFO(node_->get_logger(), "Global ESDF publisher created with TRANSIENT_LOCAL QoS");
 }
 
 void GridMap::setStaticMap(const std::vector<double>& static_occupancy) {
@@ -253,8 +282,9 @@ void GridMap::inflatePoint(const Eigen::Vector3i& pt, int step) {
 
 void GridMap::inflatePoint(const Eigen::Vector3i& pt, int step, std::vector<Eigen::Vector3i>& pts) {
     int num = 0;
-    
-    // All inflate - create 3D cube box for obstacle inflation
+
+    // Use full 3D inflation (same as original code)
+    // This is needed for depth sensor / point cloud inflation
     for (int x = -step; x <= step; ++x) {
         for (int y = -step; y <= step; ++y) {
             for (int z = -step; z <= step; ++z) {
@@ -909,4 +939,349 @@ Eigen::Vector3d GridMap::getThreatGradient(const Eigen::Vector3d& pos) const {
   }
 
   return grad;
+}
+
+// ============================================================================
+// Terrain GridMap Functions
+// ============================================================================
+
+void GridMap::processTerrainGridMap(const grid_map_msgs::msg::GridMap::SharedPtr msg) {
+  if (!mp_.use_terrain_obstacles_) {
+    return;
+  }
+
+  auto start_time = rclcpp::Clock().now();
+
+  RCLCPP_INFO(node_->get_logger(), "Processing terrain gridmap...");
+  RCLCPP_INFO(node_->get_logger(), "  Terrain map size: %.1fm x %.1fm",
+              msg->info.length_x, msg->info.length_y);
+
+  // msg->info.resolution contains the scale_factor (actual_cell_size / TARGET_CELL_SIZE_M)
+  double terrain_scale_factor = msg->info.resolution;
+  RCLCPP_INFO(node_->get_logger(), "  Terrain resolution scale factor: %.4f", terrain_scale_factor);
+  RCLCPP_INFO(node_->get_logger(), "  Terrain layers: %zu", msg->layers.size());
+
+  // Find elevation and water layers
+  int elevation_idx = -1;
+  int water_idx = -1;
+  for (size_t i = 0; i < msg->layers.size(); ++i) {
+    if (msg->layers[i] == "elevation") {
+      elevation_idx = i;
+    } else if (msg->layers[i] == "water") {
+      water_idx = i;
+    }
+  }
+
+  if (elevation_idx < 0) {
+    RCLCPP_ERROR(node_->get_logger(), "No 'elevation' layer found in terrain gridmap!");
+    return;
+  }
+
+  const auto& elevation_layer = msg->data[elevation_idx];
+  const auto* water_layer = (water_idx >= 0) ? &msg->data[water_idx] : nullptr;
+
+  // Get terrain gridmap dimensions
+  if (elevation_layer.layout.dim.size() < 2) {
+    RCLCPP_ERROR(node_->get_logger(), "Invalid elevation layer dimensions!");
+    return;
+  }
+
+  int terrain_cols = elevation_layer.layout.dim[0].size;
+  int terrain_rows = elevation_layer.layout.dim[1].size;
+
+  RCLCPP_INFO(node_->get_logger(), "  Terrain grid dimensions: %d x %d cells",
+              terrain_cols, terrain_rows);
+
+  // Terrain gridmap origin (center of the map)
+  double terrain_origin_x = msg->info.pose.position.x - msg->info.length_x / 2.0;
+  double terrain_origin_y = msg->info.pose.position.y - msg->info.length_y / 2.0;
+
+  // Terrain cell size in meters = map_length / grid_size
+  double terrain_cell_size_x = msg->info.length_x / terrain_cols;
+  double terrain_cell_size_y = msg->info.length_y / terrain_rows;
+
+  RCLCPP_INFO(node_->get_logger(), "  Terrain origin: (%.1f, %.1f)",
+              terrain_origin_x, terrain_origin_y);
+  RCLCPP_INFO(node_->get_logger(), "  Terrain bounds: X[%.1f, %.1f], Y[%.1f, %.1f]",
+              terrain_origin_x, terrain_origin_x + msg->info.length_x,
+              terrain_origin_y, terrain_origin_y + msg->info.length_y);
+  RCLCPP_INFO(node_->get_logger(), "  Our map bounds: X[%.1f, %.1f], Y[%.1f, %.1f]",
+              mp_.map_min_boundary_(0), mp_.map_max_boundary_(0),
+              mp_.map_min_boundary_(1), mp_.map_max_boundary_(1));
+  RCLCPP_INFO(node_->get_logger(), "  Terrain cell size: %.2fm x %.2fm",
+              terrain_cell_size_x, terrain_cell_size_y);
+  RCLCPP_INFO(node_->get_logger(), "  Using obstacle threshold: %.1fm",
+              mp_.terrain_obstacle_threshold_);
+
+  // Process terrain gridmap and mark obstacles
+  int obstacle_count = 0;
+  int valid_terrain_count = 0;
+  int total_cells = 0;
+  double min_elevation = 999999.0;
+  double max_elevation = -999999.0;
+
+  for (int terrain_x = 0; terrain_x < terrain_cols; ++terrain_x) {
+    for (int terrain_y = 0; terrain_y < terrain_rows; ++terrain_y) {
+      total_cells++;
+
+      // GridMap uses column-major order (Fortran-style)
+      int terrain_idx = terrain_x * terrain_rows + terrain_y;
+
+      if (terrain_idx >= (int)elevation_layer.data.size()) {
+        continue;
+      }
+
+      // Get elevation value (scaled by (scale_factor / TARGET_CELL_SIZE_M) in terrain_publisher.py)
+      float elevation_normalized = elevation_layer.data[terrain_idx];
+
+      // Check if this is a NaN (water/invalid cell in elevation layer)
+      if (std::isnan(elevation_normalized)) {
+        continue;
+      }
+
+      // terrain_publisher: elevation_normalized = (elevation_meters * scale_factor) / TARGET_CELL_SIZE_M
+      // elevation_normalized is a dimensionless ratio representing height in units of TARGET_CELL_SIZE_M
+      //
+      // Our grid uses mp_.resolution_ (0.2m) per cell in a NORMALIZED coordinate system
+      // where 1.0 unit = TARGET_CELL_SIZE_M (mp_.terrain_target_cell_size_) in real world
+      // So elevation_normalized directly represents height in our normalized grid units
+      //
+      // Example: real elevation = 947m, scale_factor = 0.4411, TARGET_CELL_SIZE_M = 50m
+      // normalized = (947 * 0.4411) / 50 = 8.36
+      // In our grid: 8.36 units (where 1 unit = 50m concept)
+      // In grid cells: 8.36 / mp_.resolution_ = 8.36 / 0.2 = 41.8 cells
+      // elevation_normalized is already in normalized grid units (same coordinate system as XY)
+      double elevation = elevation_normalized;
+
+      valid_terrain_count++;
+      if (elevation < min_elevation) min_elevation = elevation;
+      if (elevation > max_elevation) max_elevation = elevation;
+
+      // Note: elevation layer already filters out water (NaN values)
+      // If we reach here, it's valid land terrain
+
+      // Check if elevation exceeds threshold (obstacle must be taller than threshold)
+      // Convert threshold from real meters to normalized units for comparison
+      double threshold_normalized = (mp_.terrain_obstacle_threshold_ * terrain_scale_factor) / mp_.terrain_target_cell_size_;
+      if (elevation > threshold_normalized) {
+        // Convert terrain grid position to world coordinates
+        double world_x_temp = terrain_origin_x + (terrain_x + 0.5) * terrain_cell_size_x;
+        double world_y_temp = terrain_origin_y + (terrain_y + 0.5) * terrain_cell_size_y;
+
+        double terrain_center_x = terrain_origin_x + msg->info.length_x / 2.0;
+        double terrain_center_y = terrain_origin_y + msg->info.length_y / 2.0;
+
+        double flipped_x = 2.0 * terrain_center_x - world_x_temp;
+        double flipped_y = world_y_temp;
+
+        double rel_x = flipped_x - terrain_center_x;
+        double rel_y = flipped_y - terrain_center_y;
+
+        double world_x = terrain_center_x - rel_y;
+        double world_y = terrain_center_y + rel_x;
+        double world_z = 0.0;
+
+        Eigen::Vector3d world_pos(world_x, world_y, world_z);
+
+        // Check if world position is within our map bounds
+        if (!isInMap(world_pos)) {
+          if (obstacle_count == 0) {
+            RCLCPP_WARN(node_->get_logger(),
+                       "First obstacle out of bounds: world(%.1f,%.1f,%.1f), map bounds X[%.1f,%.1f] Y[%.1f,%.1f] Z[%.1f,%.1f]",
+                       world_x, world_y, world_z,
+                       mp_.map_min_boundary_(0), mp_.map_max_boundary_(0),
+                       mp_.map_min_boundary_(1), mp_.map_max_boundary_(1),
+                       mp_.map_min_boundary_(2), mp_.map_max_boundary_(2));
+          }
+          continue;
+        }
+
+        // Convert to our grid_map index for base position
+        Eigen::Vector3i base_idx;
+        posToIndex(world_pos, base_idx);
+
+        // Calculate how many Z levels to fill based on normalized elevation
+        // elevation is in normalized units, mp_.resolution_ is grid resolution in normalized units
+        int z_cells_to_fill = static_cast<int>(std::ceil(elevation / mp_.resolution_));
+
+        // Clamp to map height
+        z_cells_to_fill = std::min(z_cells_to_fill, mp_.map_voxel_num_(2));
+
+        // Set as obstacle - mark from ground up to elevation height
+        // Apply 2D inflation (X, Y only) for terrain to avoid sticking to terrain
+        int inf_step = ceil(mp_.obstacles_inflation_ / mp_.resolution_);
+
+        for (int dx = -inf_step; dx <= inf_step; ++dx) {
+          for (int dy = -inf_step; dy <= inf_step; ++dy) {
+            Eigen::Vector3i inflated_base(base_idx(0) + dx, base_idx(1) + dy, 0);
+
+            // Fill Z only up to actual terrain height (no Z inflation)
+            for (int z = 0; z < z_cells_to_fill; ++z) {
+              Eigen::Vector3i idx_z(inflated_base(0), inflated_base(1), z);
+              if (isInMap(idx_z)) {
+                int idx = toAddress(idx_z);
+                md_.occupancy_buffer_[idx] = 1.0;
+                md_.occupancy_buffer_inflate_[idx] = 1;  // ESDF uses inflate buffer
+              }
+            }
+          }
+        }
+        obstacle_count++;
+
+        // Debug: log first few obstacles with detailed Z info
+        if (obstacle_count <= 20) {
+          double world_z_max_normalized = z_cells_to_fill * mp_.resolution_;
+          RCLCPP_INFO(node_->get_logger(),
+                     "  Obstacle %d: terrain[%d,%d] elev_norm=%.3f -> z_cells=%d",
+                     obstacle_count, terrain_x, terrain_y, elevation, z_cells_to_fill);
+          RCLCPP_INFO(node_->get_logger(),
+                     "    world(%.1f, %.1f, 0.0) -> idx(%d, %d, 0~%d)",
+                     world_x, world_y, base_idx(0), base_idx(1), z_cells_to_fill-1);
+          RCLCPP_INFO(node_->get_logger(),
+                     "    Z range: 0.0 ~ %.3f normalized units (resolution=%.2f, cells=%d)",
+                     world_z_max_normalized, mp_.resolution_, z_cells_to_fill);
+        }
+      }
+    }
+  }
+
+  int water_count = total_cells - valid_terrain_count;
+  double max_z_height = max_elevation;  // Normalized units
+  int max_z_cells = static_cast<int>(std::ceil(max_elevation / mp_.resolution_));
+
+  RCLCPP_INFO(node_->get_logger(),
+              "Terrain statistics: total=%d, valid_land=%d, water=%d",
+              total_cells, valid_terrain_count, water_count);
+  RCLCPP_INFO(node_->get_logger(),
+              "  Elevation range (normalized): [%.3f, %.3f] = [%.0fm, %.0fm] real",
+              min_elevation, max_elevation, min_elevation * mp_.terrain_target_cell_size_, max_elevation * mp_.terrain_target_cell_size_);
+  RCLCPP_INFO(node_->get_logger(),
+              "  Max Z height in grid: %.3f units (%d cells at resolution %.2f)",
+              max_z_height, max_z_cells, mp_.resolution_);
+  RCLCPP_INFO(node_->get_logger(),
+              "  Map Z bounds: [%.1f, %.1f]",
+              mp_.map_min_boundary_(2), mp_.map_max_boundary_(2));
+  RCLCPP_INFO(node_->get_logger(),
+              "Terrain processing complete: %d obstacles added (threshold=%.1fm)",
+              obstacle_count, mp_.terrain_obstacle_threshold_);
+
+  if (obstacle_count == 0) {
+    RCLCPP_WARN(node_->get_logger(), "No terrain obstacles found! Check threshold and terrain data.");
+    return;
+  }
+
+  // Terrain obstacles already have 2D inflation (X, Y only) applied during addition
+  // No need to re-inflate - this avoids Z-axis over-inflation
+  RCLCPP_INFO(node_->get_logger(), "Terrain obstacles already inflated (2D only, preserving Z height)");
+
+  RCLCPP_INFO(node_->get_logger(), "Updating ESDF with terrain obstacles...");
+  updateESDF3d();
+
+  auto end_time = rclcpp::Clock().now();
+  double elapsed_ms = (end_time - start_time).seconds() * 1000.0;
+  RCLCPP_INFO(node_->get_logger(), "Terrain gridmap processing completed in %.2f ms", elapsed_ms);
+
+  publishGlobalESDFVisualization();
+}
+
+void GridMap::publishGlobalESDFVisualization() {
+  if (!global_esdf_pub_) {
+    global_esdf_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/global_esdf_visualization", 10);
+    RCLCPP_INFO(node_->get_logger(), "Global ESDF visualization publisher initialized");
+  }
+
+  RCLCPP_INFO(node_->get_logger(), "Starting global ESDF visualization...");
+  RCLCPP_INFO(node_->get_logger(), "Map bounds: X[%.1f, %.1f], Y[%.1f, %.1f], Z[%.1f, %.1f]",
+              mp_.map_min_boundary_(0), mp_.map_max_boundary_(0),
+              mp_.map_min_boundary_(1), mp_.map_max_boundary_(1),
+              mp_.map_min_boundary_(2), mp_.map_max_boundary_(2));
+
+  visualization_msgs::msg::MarkerArray marker_array;
+
+  double sample_resolution = 10.0;
+  int marker_id = 0;
+  int total_samples = 0;
+  int valid_samples = 0;
+
+  double viz_x_min = 0.0;
+  double viz_x_max = 400.0;
+  double viz_y_min = 0.0;
+  double viz_y_max = 400.0;
+  double viz_z_min = 0.0;
+  double viz_z_max = 50.0;
+
+  RCLCPP_INFO(node_->get_logger(), "Visualizing ESDF (2 layers) in region: X[%.1f, %.1f], Y[%.1f, %.1f], Z[%.1f, %.1f]",
+              viz_x_min, viz_x_max, viz_y_min, viz_y_max, viz_z_min, viz_z_max);
+
+  for (double x = viz_x_min; x < viz_x_max; x += sample_resolution) {
+    for (double y = viz_y_min; y < viz_y_max; y += sample_resolution) {
+      for (double z = viz_z_min; z <= viz_z_max; z += sample_resolution) {
+        total_samples++;
+        Eigen::Vector3d pos(x, y, z);
+
+        if (!isInMap(pos)) continue;
+        valid_samples++;
+
+        double dist;
+        evaluateEDT(pos, dist);
+
+        if (dist < 0.01) continue;
+
+        visualization_msgs::msg::Marker marker;
+        marker.header.frame_id = "map";
+        marker.header.stamp = node_->now();
+        marker.ns = "global_esdf";
+        marker.id = marker_id++;
+        marker.type = visualization_msgs::msg::Marker::CUBE;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+
+        marker.pose.position.x = pos(0);
+        marker.pose.position.y = pos(1);
+        marker.pose.position.z = pos(2);
+        marker.pose.orientation.w = 1.0;
+
+        double scale = sample_resolution * 1.2;
+        marker.scale.x = scale;
+        marker.scale.y = scale;
+        marker.scale.z = scale;
+
+        if (dist < 0.5) {
+          marker.color.r = 1.0;
+          marker.color.g = 0.0;
+          marker.color.b = 0.0;
+          marker.color.a = 1.0;
+        } else if (dist < 1.5) {
+          float ratio = (dist - 0.5) / 1.0;
+          marker.color.r = 1.0;
+          marker.color.g = ratio;
+          marker.color.b = 0.0;
+          marker.color.a = 0.9;
+        } else {
+          marker.color.r = 0.0;
+          marker.color.g = 1.0;
+          marker.color.b = 0.0;
+          marker.color.a = 0.7;
+        }
+
+        marker_array.markers.push_back(marker);
+
+        if (marker_id >= 60000) {
+          RCLCPP_WARN(node_->get_logger(), "Reached maximum marker limit (3000)");
+          goto publish_markers;
+        }
+      }
+    }
+  }
+
+publish_markers:
+  RCLCPP_INFO(node_->get_logger(),
+              "Global ESDF visualization: total_samples=%d, valid_samples=%d, markers=%d",
+              total_samples, valid_samples, marker_id);
+
+  if (marker_id == 0) {
+    RCLCPP_WARN(node_->get_logger(), "No ESDF markers generated! Check if obstacles exist in the map.");
+  }
+
+  global_esdf_pub_->publish(marker_array);
 }

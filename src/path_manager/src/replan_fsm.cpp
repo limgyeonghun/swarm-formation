@@ -661,7 +661,16 @@ void ReplanFSM::globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
 bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTraj, bool use_formation) {
     auto replan_start = std::chrono::high_resolution_clock::now();
 
+    log_manager_->infof("[callPathManager] ENTER: start=(%.2f,%.2f,%.2f), end=(%.2f,%.2f,%.2f), use_formation=%d, have_local_traj=%d",
+                 start_pt_(0), start_pt_(1), start_pt_(2),
+                 end_pt_(0), end_pt_(1), end_pt_(2),
+                 use_formation, have_local_traj_);
+
     path_manager_->getLocalTarget(start_pt_, end_pt_, local_target_pt_, local_target_vel_, t_to_target_);
+
+    log_manager_->infof("[callPathManager] After getLocalTarget: local_target=(%.2f,%.2f,%.2f), local_vel=(%.2f,%.2f,%.2f)",
+                 local_target_pt_(0), local_target_pt_(1), local_target_pt_(2),
+                 local_target_vel_(0), local_target_vel_(1), local_target_vel_(2));
 
     Eigen::Vector3d desired_start_pt, desired_start_vel, desired_start_acc;
     double desired_start_time;

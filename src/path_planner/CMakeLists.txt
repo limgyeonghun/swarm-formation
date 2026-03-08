@@ -32,6 +32,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(grid_map_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 add_library(${PROJECT_NAME}_lib
   src/dyn_a_star.cpp
@@ -49,6 +51,8 @@ target_include_directories(${PROJECT_NAME}_lib PUBLIC
 ament_target_dependencies(${PROJECT_NAME}_lib
   rclcpp
   Eigen3
+  grid_map_msgs
+  visualization_msgs
 )
 
 # Add OpenMP compile and link options (INTERFACE to propagate dependencies)
@@ -69,6 +73,6 @@ install(DIRECTORY include/
 )
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp Eigen3)
+ament_export_dependencies(rclcpp Eigen3 grid_map_msgs visualization_msgs)
 
 ament_package()

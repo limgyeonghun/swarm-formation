@@ -48,7 +48,7 @@ namespace ego_planner
 
     if (use_formation)
     {
-      lbfgs_params.max_iterations = 200;
+      lbfgs_params.max_iterations = 600;
       // Note: use_formation_ is already set by setFormation()
       // For NONE mode, it's already false, so no need to change it here
     }
@@ -422,6 +422,9 @@ namespace ego_planner
     dbg_cost_fwd_vel_ = 0.0;
     dbg_cost_lat_accel_ = 0.0;
 
+    std::vector<Eigen::Vector3d> esdf_sample_points;
+    bool should_visualize = (iter_num_ % 10 == 0);
+
     for (int i = 0; i < N; ++i)
     {
       const Eigen::Matrix<double, 6, 3> &c = jerkOpt_.get_b().block<6, 3>(i * 6, 0);
@@ -447,6 +450,10 @@ namespace ego_planner
         omg = (j == 0 || j == K) ? 0.5 : 1.0;
 
         cps_.points.col(i_dp) = pos;
+
+        if (should_visualize && j % 2 == 0) {
+            esdf_sample_points.push_back(pos);
+        }
 
         // Obstacle cost calculation
         if (enable_obstacles_) {
@@ -568,6 +575,11 @@ namespace ego_planner
     costs(5) += var;
 
     dbg_cost_formation_ = costs(2);
+
+    // Visualize ESDF samples
+    if (should_visualize && !esdf_sample_points.empty()) {
+        visualizeESDFSamples(esdf_sample_points);
+    }
 
   }
 
@@ -1204,12 +1216,12 @@ namespace ego_planner
     }
 
     swarm_graph_.reset(new SwarmGraph);
-    
+
     // Set initial formation based on optimizer_params.yaml
     int initial_formation_type = 2; // Default to REGULAR_SQUARE
     node_->declare_parameter("optimization/formation_type", initial_formation_type);
     node_->get_parameter("optimization/formation_type", initial_formation_type);
-    
+
     LOG_INFO("Setting initial formation type: %d", initial_formation_type);
     setDesiredFormation(initial_formation_type);
   }
@@ -1247,6 +1259,12 @@ namespace ego_planner
   void PolyTrajOptimizer::setDroneId(const int drone_id)
   {
     drone_id_ = drone_id;
+
+    if (node_) {
+      esdf_sample_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+          "/planner/esdf_samples_drone_" + std::to_string(drone_id_), 10);
+      LOG_INFO("ESDF sample visualization publisher initialized for drone %d", drone_id_);
+    }
   }
 
   void PolyTrajOptimizer::setFormation(const std::vector<Eigen::Vector3d>& formation_positions, int formation_size)
@@ -1415,5 +1433,99 @@ namespace ego_planner
     }
 
     return max_jerk;
+  }
+
+  void PolyTrajOptimizer::visualizeESDFSamples(const std::vector<Eigen::Vector3d>& sample_points)
+  {
+    if (!esdf_sample_pub_) return;
+
+    visualization_msgs::msg::MarkerArray marker_array;
+
+    for (size_t i = 0; i < sample_points.size(); ++i)
+    {
+      const auto& p = sample_points[i];
+
+      double dist;
+      grid_map_->evaluateEDT(p, dist);
+
+      int occ = grid_map_->getOccupancy(p);
+      int infl = grid_map_->getInflateOccupancy(p);
+
+      visualization_msgs::msg::Marker marker;
+      marker.header.frame_id = "map";
+      marker.header.stamp = node_->get_clock()->now();
+      marker.ns = "esdf_samples";
+      marker.id = i;
+      marker.type = visualization_msgs::msg::Marker::SPHERE;
+      marker.action = visualization_msgs::msg::Marker::ADD;
+      marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+      marker.pose.position.x = p.x();
+      marker.pose.position.y = p.y();
+      marker.pose.position.z = p.z();
+      marker.pose.orientation.w = 1.0;
+
+      double sphere_size = std::max(0.1, std::min(0.5, dist * 0.3));
+      marker.scale.x = marker.scale.y = marker.scale.z = sphere_size;
+
+      if (occ == 1 || infl == 1)
+      {
+        marker.color.r = 0.0;
+        marker.color.g = 0.0;
+        marker.color.b = 1.0;
+        marker.color.a = 1.0;
+      }
+      else if (dist < obs_clearance_)
+      {
+        marker.color.r = 1.0;
+        marker.color.g = 0.0;
+        marker.color.b = 0.0;
+        marker.color.a = 0.9;
+      }
+      else if (dist < obs_clearance_ * 1.5)
+      {
+        marker.color.r = 1.0;
+        marker.color.g = 1.0;
+        marker.color.b = 0.0;
+        marker.color.a = 0.7;
+      }
+      else
+      {
+        marker.color.r = 0.0;
+        marker.color.g = 1.0;
+        marker.color.b = 0.0;
+        marker.color.a = 0.5;
+      }
+
+      marker_array.markers.push_back(marker);
+
+      visualization_msgs::msg::Marker text_marker;
+      text_marker.header = marker.header;
+      text_marker.ns = "esdf_values";
+      text_marker.id = i + 10000;
+      text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+      text_marker.action = visualization_msgs::msg::Marker::ADD;
+      text_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+      text_marker.pose.position.x = p.x();
+      text_marker.pose.position.y = p.y();
+      text_marker.pose.position.z = p.z() + 0.3;
+      text_marker.pose.orientation.w = 1.0;
+
+      text_marker.scale.z = 0.15;
+
+      text_marker.color.r = 1.0;
+      text_marker.color.g = 1.0;
+      text_marker.color.b = 1.0;
+      text_marker.color.a = 1.0;
+
+      char text_buf[64];
+      snprintf(text_buf, sizeof(text_buf), "%.2fm\nocc:%d", dist, occ);
+      text_marker.text = text_buf;
+
+      marker_array.markers.push_back(text_marker);
+    }
+
+    esdf_sample_pub_->publish(marker_array);
   }
 }

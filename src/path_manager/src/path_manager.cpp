@@ -39,10 +39,12 @@ namespace path_manager
         node_->get_parameter("manager/planning_horizon", planning_horizen_);
         node_->get_parameter("manager/intermediate_waypoint_ratio", intermediate_waypoint_ratio_);
 
-        // Clamp intermediate_waypoint_ratio to valid range (0.0, 1.0)
-        if (intermediate_waypoint_ratio_ <= 0.0 || intermediate_waypoint_ratio_ >= 1.0) {
+        if (intermediate_waypoint_ratio_ < 0.0) {
+            RCLCPP_INFO(node_->get_logger(),
+                       "Intermediate waypoint disabled (ratio=%.2f)", intermediate_waypoint_ratio_);
+        } else if (intermediate_waypoint_ratio_ == 0.0 || intermediate_waypoint_ratio_ >= 1.0) {
             RCLCPP_WARN(node_->get_logger(),
-                       "Invalid intermediate_waypoint_ratio: %.2f. Clamping to 0.3",
+                       "Invalid intermediate_waypoint_ratio: %.2f. Using default 0.3",
                        intermediate_waypoint_ratio_);
             intermediate_waypoint_ratio_ = 0.3;
         }
@@ -394,30 +396,17 @@ namespace path_manager
             return false;
         }
 
-        // Step 1: Use waypoints directly without adjustment (skip outer/inner line calculation)
-        // std::vector<Eigen::Vector3d> adjusted_waypoints = adjustWaypointsForFormation(waypoints, start_pos);
-        std::vector<Eigen::Vector3d> adjusted_waypoints = waypoints;  // Use original waypoints directly
-
-        // Step 2: Add intermediate alignment waypoint for smoother trajectory
-        // The intermediate point is placed between start and first waypoint to ensure
-        // the global path is not too straight (nearly a direct line)
+        std::vector<Eigen::Vector3d> adjusted_waypoints = waypoints;
         std::vector<Eigen::Vector3d> waypoints_with_intermediate;
 
-        if (!adjusted_waypoints.empty()) {
-            // Calculate intermediate alignment point
-            // Position it at ratio * distance from start to first waypoint
+        if (!adjusted_waypoints.empty() && intermediate_waypoint_ratio_ > 0.0 && intermediate_waypoint_ratio_ < 1.0) {
             Eigen::Vector3d first_waypoint = adjusted_waypoints.front();
             Eigen::Vector3d direction = (first_waypoint - start_pos).normalized();
             double distance_to_first = (first_waypoint - start_pos).norm();
-
-            // Intermediate point: place it at intermediate_waypoint_ratio_ of the way to first waypoint
-            // Important: This must be AHEAD of start_pos (not behind)
             Eigen::Vector3d intermediate_point = start_pos + direction * (distance_to_first * intermediate_waypoint_ratio_);
 
-            // Verify intermediate point is not behind start position
             Eigen::Vector3d start_to_intermediate = intermediate_point - start_pos;
             if (start_to_intermediate.dot(direction) > 0.0) {
-                // Add intermediate waypoint only if it's ahead of start
                 waypoints_with_intermediate.push_back(intermediate_point);
 
                 log_manager_->infof("Added intermediate alignment waypoint at (%.2f, %.2f, %.2f), ratio=%.2f",
@@ -427,14 +416,13 @@ namespace path_manager
                 RCLCPP_WARN(node_->get_logger(),
                            "Intermediate waypoint would be behind start position, skipping");
             }
+        } else if (!adjusted_waypoints.empty()) {
+            log_manager_->infof("Intermediate waypoint disabled (ratio=%.2f)", intermediate_waypoint_ratio_);
         }
 
-        // Add all original waypoints after intermediate point
         for (const auto& wp : adjusted_waypoints) {
             waypoints_with_intermediate.push_back(wp);
         }
-
-        // Step 3: Prepare waypoints for B-spline generation
         std::vector<Eigen::Vector3d> all_points;
         all_points.push_back(start_pos);
         for (const auto& wp : waypoints_with_intermediate) {
@@ -445,22 +433,18 @@ namespace path_manager
                    waypoints_with_intermediate.size(),
                    waypoints_with_intermediate.size() > adjusted_waypoints.size() ? "1" : "0");
 
-        // Step 4: Convert Vector3d to VectorXd for playground_bspline
         std::vector<Eigen::VectorXd> pts_vectorxd;
         if (!all_points.empty()) {
-            // Start point: repeat 3 times
             for (int i = 0; i < 3; ++i) {
                 Eigen::VectorXd pt_vectorxd(3);
                 pt_vectorxd << all_points.front().x(), all_points.front().y(), all_points.front().z();
                 pts_vectorxd.push_back(pt_vectorxd);
             }
-            // Middle waypoints: add once for smooth trajectory
             for (size_t i = 1; i < all_points.size() - 1; ++i) {
                 Eigen::VectorXd pt_vectorxd(3);
                 pt_vectorxd << all_points[i].x(), all_points[i].y(), all_points[i].z();
                 pts_vectorxd.push_back(pt_vectorxd);
             }
-            // End point: repeat 3 times
             for (int i = 0; i < 3; ++i) {
                 Eigen::VectorXd pt_vectorxd(3);
                 pt_vectorxd << all_points.back().x(), all_points.back().y(), all_points.back().z();
@@ -471,8 +455,7 @@ namespace path_manager
         // Safety check: B-spline requires at least 4 control points (order=3)
         if (pts_vectorxd.size() < 4) {
             RCLCPP_ERROR(node_->get_logger(),
-                        "planGlobalTraj: Not enough points for B-spline (need >=4, got %zu). "
-                        "This usually happens when A* returns too few waypoints.",
+                        "planGlobalTraj: Not enough points for B-spline (need >=4, got %zu).",
                         pts_vectorxd.size());
             return false;
         }
@@ -488,13 +471,10 @@ namespace path_manager
             sampled_points.push_back(Eigen::Vector3d(b_pt.x(), b_pt.y(), b_pt.z()));
         }
 
-        // Step 7: Convert to MINCO trajectory
         poly_traj::MinJerkOpt globalMJO;
 
-        // Create waypoint trajectory using the sampled points
         Eigen::Matrix<double, 3, 3> headState, tailState;
         headState << start_pos, start_vel, start_acc;
-        // Use adjusted waypoints' last point (not original waypoints)
         tailState << adjusted_waypoints.back(), end_vel, end_acc;
         
         Eigen::MatrixXd innerPts;

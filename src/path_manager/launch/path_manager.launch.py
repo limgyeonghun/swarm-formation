@@ -407,7 +407,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'disable_file_logging',
-            default_value='true',
+            default_value='false',
             description='Disable file logging (logs will only appear in console)'
         ),
         OpaqueFunction(function=create_drone_nodes),

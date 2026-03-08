@@ -9,6 +9,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend>
   <depend>Eigen3</depend>
+  <depend>grid_map_msgs</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -4,6 +4,8 @@
 #include <Eigen/Eigen>
 #include <Eigen/StdVector>
 #include <rclcpp/rclcpp.hpp>
+#include <grid_map_msgs/msg/grid_map.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 #include <vector>
 #include <string>
 #include <memory>
@@ -63,6 +65,11 @@ struct MappingParameters {
   bool use_threat_zones_ = false;
   std::vector<ThreatZone> threat_zones_;
   double threat_cost_weight_ = 1.0;  // Weight for A* path planning
+
+  // Terrain gridmap parameters
+  bool use_terrain_obstacles_ = false;
+  double terrain_obstacle_threshold_ = 0.0;  // Elevation threshold (m) for obstacle
+  double terrain_target_cell_size_ = 50.0;   // TARGET_CELL_SIZE_M from terrain_publisher (m)
 };
 
 struct MappingData {
@@ -109,6 +116,9 @@ public:
   double getDistance(const Eigen::Vector3d& pos);
   double getDistance(const Eigen::Vector3i& id);
 
+  // Global ESDF visualization
+  void publishGlobalESDFVisualization();
+
   void evaluateEDT(const Eigen::Vector3d& pos, double& dist);
   void evaluateFirstGrad(const Eigen::Vector3d& pos, Eigen::Vector3d& grad);
 
@@ -119,6 +129,9 @@ public:
   double getThreatLevel(const Eigen::Vector3d& pos) const;
   Eigen::Vector3d getThreatGradient(const Eigen::Vector3d& pos) const;
   const std::vector<ThreatZone>& getThreatZones() const { return mp_.threat_zones_; }
+
+  // Terrain gridmap management
+  void processTerrainGridMap(const grid_map_msgs::msg::GridMap::SharedPtr msg);
 
   inline void posToIndex(const Eigen::Vector3d& pos, Eigen::Vector3i& id);
   inline void indexToPos(const Eigen::Vector3i& id, Eigen::Vector3d& pos);
@@ -164,6 +177,12 @@ private:
   std::shared_ptr<rclcpp::Node> node_;
   std::vector<double> distance_buffer_local_;
   Eigen::Vector3i local_esdf_min_, local_esdf_max_;
+
+  // Terrain gridmap subscriber
+  rclcpp::Subscription<grid_map_msgs::msg::GridMap>::SharedPtr terrain_sub_;
+
+  // Global ESDF visualization publisher
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr global_esdf_pub_;
 
   template <typename F_get_val, typename F_set_val>
   void fillESDF(F_get_val f_get_val, F_set_val f_set_val, int start, int end, int dim);
