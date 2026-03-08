@@ -412,13 +412,13 @@ void PathVisualization::updatePosition()
       double current_ros_time = this->now().seconds();
       double trajectory_start_time = data.current_traj.start_time.sec + data.current_traj.start_time.nanosec * 1e-9;
       double t_cur = current_ros_time - trajectory_start_time;
-      
+
       double total_duration = 0.0;
       for (const auto &dur : data.current_traj.duration)
         total_duration += dur;
 
       t_cur = std::max(0.0, std::min(t_cur, total_duration));
-      
+
       if (t_cur <= total_duration)
       {
         double t_remaining = t_cur;
@@ -429,13 +429,24 @@ void PathVisualization::updatePosition()
           {
             int offset = i * (data.current_traj.order + 1);
             x = 0.0, y = 0.0, z = 0.0;
+            double vx = 0.0, vy = 0.0, vz = 0.0;
             for (int j = 0; j <= data.current_traj.order; ++j)
             {
               double t_pow = std::pow(t_remaining, data.current_traj.order - j);
               x += data.current_traj.coef_x[offset + j] * t_pow;
               y += data.current_traj.coef_y[offset + j] * t_pow;
               z += data.current_traj.coef_z[offset + j] * t_pow;
+              // Velocity: derivative of position polynomial
+              int exp = data.current_traj.order - j;
+              if (exp > 0)
+              {
+                double t_pow_vel = std::pow(t_remaining, exp - 1);
+                vx += data.current_traj.coef_x[offset + j] * exp * t_pow_vel;
+                vy += data.current_traj.coef_y[offset + j] * exp * t_pow_vel;
+                vz += data.current_traj.coef_z[offset + j] * exp * t_pow_vel;
+              }
             }
+            data.velocity = Eigen::Vector3d(vx, vy, vz);
             break;
           }
           t_remaining -= duration;
@@ -454,17 +465,35 @@ void PathVisualization::updatePosition()
           y += data.current_traj.coef_y[offset + j] * t_pow;
           z += data.current_traj.coef_z[offset + j] * t_pow;
         }
+        data.velocity = Eigen::Vector3d::Zero();
       }
       data.start_pt = Eigen::Vector3d(x, y, z);
     }
+
+    // Compute arrow direction from velocity; fall back to +x if near-zero
+    Eigen::Vector3d vel = data.velocity;
+    constexpr double kArrowLength = 1.5;
+    constexpr double kArrowShaftDiam = 0.15;
+    constexpr double kArrowHeadDiam  = 0.35;
+    if (vel.norm() < 1e-3)
+      vel = Eigen::Vector3d(1.0, 0.0, 0.0);
+    else
+      vel.normalize();
+
     auto [r, g, b] = getDroneColor(drone_id);
     auto marker = createMarker("position_drone_" + std::to_string(drone_id), 0,
-                               visualization_msgs::msg::Marker::POINTS, 0.3, r, g, b, 1.0);
-    geometry_msgs::msg::Point p;
-    p.x = x;
-    p.y = y;
-    p.z = z;
-    marker.points.push_back(p);
+                               visualization_msgs::msg::Marker::ARROW, 1.0, r, g, b, 1.0);
+    // ARROW with two points: points[0]=tail, points[1]=tip
+    marker.scale.x = kArrowShaftDiam;  // shaft diameter
+    marker.scale.y = kArrowHeadDiam;   // head diameter
+    marker.scale.z = 0.0;
+    geometry_msgs::msg::Point tail, tip;
+    tail.x = x; tail.y = y; tail.z = z;
+    tip.x  = x + vel.x() * kArrowLength;
+    tip.y  = y + vel.y() * kArrowLength;
+    tip.z  = z + vel.z() * kArrowLength;
+    marker.points.push_back(tail);
+    marker.points.push_back(tip);
     position_marker_pubs_[drone_id]->publish(marker);
     geometry_msgs::msg::PointStamped pos_msg;
     pos_msg.header.frame_id = "map";
