@@ -831,7 +831,8 @@ void PathVisualization::publishThreatField()
 
   // Define concentric sphere layers (from outside to inside)
   // More layers = smoother gradient
-  std::vector<double> layer_ratios = {1.0, 0.85, 0.70, 0.55, 0.40, 0.25, 0.10};
+  // std::vector<double> layer_ratios = {1.0, 0.85, 0.70, 0.55, 0.40, 0.25, 0.10};
+  std::vector<double> layer_ratios = {1.0, 0.70, 0.20};
 
   for (const auto& zone : threat_zones_) {
     // Draw each layer from outside to inside
@@ -844,9 +845,16 @@ void PathVisualization::publishThreatField()
 
       double sphere_radius = zone.detection_range * ratio;  // Scale radius by layer ratio
 
+    // Compute max latitude index for z >= 0 clipping (ground plane)
+    int max_lat = num_latitude;
+    if (zone.center.z() < sphere_radius) {
+      double cos_max = std::clamp(-zone.center.z() / sphere_radius, -1.0, 1.0);
+      max_lat = static_cast<int>(acos(cos_max) / M_PI * num_latitude);
+    }
+
     // Generate sphere mesh with gradient colors
     // Use latitude/longitude parameterization
-    for (int lat = 0; lat < num_latitude; ++lat) {
+    for (int lat = 0; lat < max_lat; ++lat) {
       for (int lon = 0; lon < num_longitude; ++lon) {
         // Calculate angles for this quad
         double phi1 = M_PI * lat / num_latitude;       // Current latitude
