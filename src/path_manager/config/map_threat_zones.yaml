@@ -14,6 +14,7 @@
     # Obstacle and Collision Settings
     grid_map/obstacles_inflation: 1.0
     grid_map/local_bound_inflate: 15.0
+    grid_map/publish_global_esdf_viz: false
 
     # Map Boundary Settings (2D)
     grid_map/virtual_ceil_height: -1.0

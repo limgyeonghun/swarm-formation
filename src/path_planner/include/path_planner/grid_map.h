@@ -70,6 +70,9 @@ struct MappingParameters {
   bool use_terrain_obstacles_ = false;
   double terrain_obstacle_threshold_ = 0.0;  // Elevation threshold (m) for obstacle
   double terrain_target_cell_size_ = 50.0;   // TARGET_CELL_SIZE_M from terrain_publisher (m)
+
+  // Visualization parameters
+  bool publish_global_esdf_viz_ = false;  // Publish global ESDF visualization (debugging)
 };
 
 struct MappingData {

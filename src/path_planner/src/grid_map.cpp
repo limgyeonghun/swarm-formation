@@ -36,6 +36,9 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   node_->declare_parameter("grid_map/terrain_obstacle_threshold", 0.0);
   node_->declare_parameter("grid_map/terrain_target_cell_size", 50.0);
 
+  // Visualization parameters
+  node_->declare_parameter("grid_map/publish_global_esdf_viz", false);
+
   mp_.resolution_ = node_->get_parameter("grid_map/resolution").as_double();
   double x_size = node_->get_parameter("grid_map/map_size_x").as_double();
   double y_size = node_->get_parameter("grid_map/map_size_y").as_double();
@@ -62,6 +65,9 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   mp_.use_terrain_obstacles_ = node_->get_parameter("grid_map/use_terrain_obstacles").as_bool();
   mp_.terrain_obstacle_threshold_ = node_->get_parameter("grid_map/terrain_obstacle_threshold").as_double();
   mp_.terrain_target_cell_size_ = node_->get_parameter("grid_map/terrain_target_cell_size").as_double();
+
+  // Visualization parameters
+  mp_.publish_global_esdf_viz_ = node_->get_parameter("grid_map/publish_global_esdf_viz").as_bool();
 
   auto road_segments = node_->get_parameter("grid_map/road_segments").as_double_array();
   if (road_segments.size() % 5 == 0) {
@@ -128,6 +134,7 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   std::cout << "  use_terrain_obstacles: " << mp_.use_terrain_obstacles_ << std::endl;
   std::cout << "  terrain_obstacle_threshold: " << mp_.terrain_obstacle_threshold_ << "m" << std::endl;
   std::cout << "  terrain_target_cell_size: " << mp_.terrain_target_cell_size_ << "m" << std::endl;
+  std::cout << "  publish_global_esdf_viz: " << mp_.publish_global_esdf_viz_ << std::endl;
 
   mp_.local_bound_inflate_ = std::max(mp_.resolution_, mp_.local_bound_inflate_);
   mp_.resolution_inv_ = 1.0 / mp_.resolution_;
@@ -189,13 +196,11 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
       [this](const grid_map_msgs::msg::GridMap::SharedPtr msg) {
         this->processTerrainGridMap(msg);
       });
-    RCLCPP_INFO(node_->get_logger(), "Subscribed to /terrain/grid_map for terrain obstacles");
   }
 
   global_esdf_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
     "/global_esdf_visualization",
     rclcpp::QoS(1).transient_local().reliable());
-  RCLCPP_INFO(node_->get_logger(), "Global ESDF publisher created with TRANSIENT_LOCAL QoS");
 }
 
 void GridMap::setStaticMap(const std::vector<double>& static_occupancy) {
@@ -228,7 +233,6 @@ void GridMap::setStaticMap(const std::vector<double>& static_occupancy) {
     }
   }
   updateESDF3d(Eigen::Vector3i(0,0,0), mp_.map_voxel_num_ - Eigen::Vector3i(1,1,1));
-  RCLCPP_INFO(node_->get_logger(), "Full ESDF computed after setting static map.");
   md_.esdf_need_update_ = true;
 }
 
@@ -344,7 +348,6 @@ void GridMap::updateESDF3d(const Eigen::Vector3i &min_esdf, const Eigen::Vector3
   // Disable parallelization for small data (prevent overhead)
   bool use_parallel = esdf_voxel_count > 10000; // Adjustable threshold
 
-  // RCLCPP_INFO(node_->get_logger(), "ESDF processing voxel size: %d %d %d (%d voxels), parallel=%s",
   //             esdf_voxel_size(0), esdf_voxel_size(1), esdf_voxel_size(2), esdf_voxel_count, 
   //             use_parallel ? "true" : "false");
 
@@ -741,7 +744,8 @@ void GridMap::updateESDFLocal(const Eigen::Vector3d& center_pos) {
 
   rclcpp::Time t2 = rclcpp::Clock().now();
   if (mp_.show_esdf_time_) {
-    RCLCPP_INFO(node_->get_logger(), "Local ESDF update: %.3f ms", (t2 - t1).seconds() * 1000.0);
+    md_.esdf_time_ += (t2 - t1).seconds();
+    md_.max_esdf_time_ = std::max(md_.max_esdf_time_, (t2 - t1).seconds());
   }
 }
 
@@ -802,22 +806,12 @@ void GridMap::evaluateFirstGrad(const Eigen::Vector3d& pos, Eigen::Vector3d& gra
 
 void GridMap::addThreatZone(const ThreatZone& zone) {
   mp_.threat_zones_.push_back(zone);
-  RCLCPP_INFO(node_->get_logger(),
-              "Added threat zone '%s' at (%.2f, %.2f, %.2f): detection=%.1fm, engagement=%.1fm, threat=%.1f",
-              zone.name.c_str(), zone.center.x(), zone.center.y(), zone.center.z(),
-              zone.detection_range, zone.engagement_range, zone.max_threat_level);
-
-  // Update threat field after adding new zone
   updateThreatField();
 }
 
 void GridMap::clearThreatZones() {
   mp_.threat_zones_.clear();
-
-  // Reset threat buffer to zero
   std::fill(md_.threat_buffer_.begin(), md_.threat_buffer_.end(), 0.0);
-
-  RCLCPP_INFO(node_->get_logger(), "All threat zones cleared");
 }
 
 void GridMap::updateThreatField() {
@@ -870,9 +864,6 @@ void GridMap::updateThreatField() {
   auto end_time = rclcpp::Clock().now();
   double elapsed_ms = (end_time - start_time).seconds() * 1000.0;
 
-  RCLCPP_INFO(node_->get_logger(),
-              "Threat field updated for %zu zones in %.2f ms",
-              mp_.threat_zones_.size(), elapsed_ms);
 }
 
 double GridMap::getThreatLevel(const Eigen::Vector3d& pos) const {
@@ -950,16 +941,7 @@ void GridMap::processTerrainGridMap(const grid_map_msgs::msg::GridMap::SharedPtr
     return;
   }
 
-  auto start_time = rclcpp::Clock().now();
-
-  RCLCPP_INFO(node_->get_logger(), "Processing terrain gridmap...");
-  RCLCPP_INFO(node_->get_logger(), "  Terrain map size: %.1fm x %.1fm",
-              msg->info.length_x, msg->info.length_y);
-
-  // msg->info.resolution contains the scale_factor (actual_cell_size / TARGET_CELL_SIZE_M)
   double terrain_scale_factor = msg->info.resolution;
-  RCLCPP_INFO(node_->get_logger(), "  Terrain resolution scale factor: %.4f", terrain_scale_factor);
-  RCLCPP_INFO(node_->get_logger(), "  Terrain layers: %zu", msg->layers.size());
 
   // Find elevation and water layers
   int elevation_idx = -1;
@@ -989,40 +971,18 @@ void GridMap::processTerrainGridMap(const grid_map_msgs::msg::GridMap::SharedPtr
   int terrain_cols = elevation_layer.layout.dim[0].size;
   int terrain_rows = elevation_layer.layout.dim[1].size;
 
-  RCLCPP_INFO(node_->get_logger(), "  Terrain grid dimensions: %d x %d cells",
-              terrain_cols, terrain_rows);
-
-  // Terrain gridmap origin (center of the map)
   double terrain_origin_x = msg->info.pose.position.x - msg->info.length_x / 2.0;
   double terrain_origin_y = msg->info.pose.position.y - msg->info.length_y / 2.0;
 
-  // Terrain cell size in meters = map_length / grid_size
   double terrain_cell_size_x = msg->info.length_x / terrain_cols;
   double terrain_cell_size_y = msg->info.length_y / terrain_rows;
 
-  RCLCPP_INFO(node_->get_logger(), "  Terrain origin: (%.1f, %.1f)",
-              terrain_origin_x, terrain_origin_y);
-  RCLCPP_INFO(node_->get_logger(), "  Terrain bounds: X[%.1f, %.1f], Y[%.1f, %.1f]",
-              terrain_origin_x, terrain_origin_x + msg->info.length_x,
-              terrain_origin_y, terrain_origin_y + msg->info.length_y);
-  RCLCPP_INFO(node_->get_logger(), "  Our map bounds: X[%.1f, %.1f], Y[%.1f, %.1f]",
-              mp_.map_min_boundary_(0), mp_.map_max_boundary_(0),
-              mp_.map_min_boundary_(1), mp_.map_max_boundary_(1));
-  RCLCPP_INFO(node_->get_logger(), "  Terrain cell size: %.2fm x %.2fm",
-              terrain_cell_size_x, terrain_cell_size_y);
-  RCLCPP_INFO(node_->get_logger(), "  Using obstacle threshold: %.1fm",
-              mp_.terrain_obstacle_threshold_);
-
   // Process terrain gridmap and mark obstacles
   int obstacle_count = 0;
-  int valid_terrain_count = 0;
-  int total_cells = 0;
-  double min_elevation = 999999.0;
-  double max_elevation = -999999.0;
+  static bool out_of_bounds_warned = false;
 
   for (int terrain_x = 0; terrain_x < terrain_cols; ++terrain_x) {
     for (int terrain_y = 0; terrain_y < terrain_rows; ++terrain_y) {
-      total_cells++;
 
       // GridMap uses column-major order (Fortran-style)
       int terrain_idx = terrain_x * terrain_rows + terrain_y;
@@ -1053,10 +1013,6 @@ void GridMap::processTerrainGridMap(const grid_map_msgs::msg::GridMap::SharedPtr
       // elevation_normalized is already in normalized grid units (same coordinate system as XY)
       double elevation = elevation_normalized;
 
-      valid_terrain_count++;
-      if (elevation < min_elevation) min_elevation = elevation;
-      if (elevation > max_elevation) max_elevation = elevation;
-
       // Note: elevation layer already filters out water (NaN values)
       // If we reach here, it's valid land terrain
 
@@ -1085,13 +1041,10 @@ void GridMap::processTerrainGridMap(const grid_map_msgs::msg::GridMap::SharedPtr
 
         // Check if world position is within our map bounds
         if (!isInMap(world_pos)) {
-          if (obstacle_count == 0) {
+          if (!out_of_bounds_warned) {
             RCLCPP_WARN(node_->get_logger(),
-                       "First obstacle out of bounds: world(%.1f,%.1f,%.1f), map bounds X[%.1f,%.1f] Y[%.1f,%.1f] Z[%.1f,%.1f]",
-                       world_x, world_y, world_z,
-                       mp_.map_min_boundary_(0), mp_.map_max_boundary_(0),
-                       mp_.map_min_boundary_(1), mp_.map_max_boundary_(1),
-                       mp_.map_min_boundary_(2), mp_.map_max_boundary_(2));
+                       "Some terrain obstacles are out of map bounds (terrain map is larger than planning map). This warning will only be shown once.");
+            out_of_bounds_warned = true;
           }
           continue;
         }
@@ -1128,100 +1081,46 @@ void GridMap::processTerrainGridMap(const grid_map_msgs::msg::GridMap::SharedPtr
         }
         obstacle_count++;
 
-        // Debug: log first few obstacles with detailed Z info
-        if (obstacle_count <= 20) {
-          double world_z_max_normalized = z_cells_to_fill * mp_.resolution_;
-          RCLCPP_INFO(node_->get_logger(),
-                     "  Obstacle %d: terrain[%d,%d] elev_norm=%.3f -> z_cells=%d",
-                     obstacle_count, terrain_x, terrain_y, elevation, z_cells_to_fill);
-          RCLCPP_INFO(node_->get_logger(),
-                     "    world(%.1f, %.1f, 0.0) -> idx(%d, %d, 0~%d)",
-                     world_x, world_y, base_idx(0), base_idx(1), z_cells_to_fill-1);
-          RCLCPP_INFO(node_->get_logger(),
-                     "    Z range: 0.0 ~ %.3f normalized units (resolution=%.2f, cells=%d)",
-                     world_z_max_normalized, mp_.resolution_, z_cells_to_fill);
-        }
       }
     }
   }
-
-  int water_count = total_cells - valid_terrain_count;
-  double max_z_height = max_elevation;  // Normalized units
-  int max_z_cells = static_cast<int>(std::ceil(max_elevation / mp_.resolution_));
-
-  RCLCPP_INFO(node_->get_logger(),
-              "Terrain statistics: total=%d, valid_land=%d, water=%d",
-              total_cells, valid_terrain_count, water_count);
-  RCLCPP_INFO(node_->get_logger(),
-              "  Elevation range (normalized): [%.3f, %.3f] = [%.0fm, %.0fm] real",
-              min_elevation, max_elevation, min_elevation * mp_.terrain_target_cell_size_, max_elevation * mp_.terrain_target_cell_size_);
-  RCLCPP_INFO(node_->get_logger(),
-              "  Max Z height in grid: %.3f units (%d cells at resolution %.2f)",
-              max_z_height, max_z_cells, mp_.resolution_);
-  RCLCPP_INFO(node_->get_logger(),
-              "  Map Z bounds: [%.1f, %.1f]",
-              mp_.map_min_boundary_(2), mp_.map_max_boundary_(2));
-  RCLCPP_INFO(node_->get_logger(),
-              "Terrain processing complete: %d obstacles added (threshold=%.1fm)",
-              obstacle_count, mp_.terrain_obstacle_threshold_);
 
   if (obstacle_count == 0) {
     RCLCPP_WARN(node_->get_logger(), "No terrain obstacles found! Check threshold and terrain data.");
     return;
   }
 
-  // Terrain obstacles already have 2D inflation (X, Y only) applied during addition
-  // No need to re-inflate - this avoids Z-axis over-inflation
-  RCLCPP_INFO(node_->get_logger(), "Terrain obstacles already inflated (2D only, preserving Z height)");
-
-  RCLCPP_INFO(node_->get_logger(), "Updating ESDF with terrain obstacles...");
   updateESDF3d();
 
-  auto end_time = rclcpp::Clock().now();
-  double elapsed_ms = (end_time - start_time).seconds() * 1000.0;
-  RCLCPP_INFO(node_->get_logger(), "Terrain gridmap processing completed in %.2f ms", elapsed_ms);
-
-  publishGlobalESDFVisualization();
+  if (mp_.publish_global_esdf_viz_) {
+    publishGlobalESDFVisualization();
+  }
 }
 
 void GridMap::publishGlobalESDFVisualization() {
   if (!global_esdf_pub_) {
     global_esdf_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
       "/global_esdf_visualization", 10);
-    RCLCPP_INFO(node_->get_logger(), "Global ESDF visualization publisher initialized");
   }
-
-  RCLCPP_INFO(node_->get_logger(), "Starting global ESDF visualization...");
-  RCLCPP_INFO(node_->get_logger(), "Map bounds: X[%.1f, %.1f], Y[%.1f, %.1f], Z[%.1f, %.1f]",
-              mp_.map_min_boundary_(0), mp_.map_max_boundary_(0),
-              mp_.map_min_boundary_(1), mp_.map_max_boundary_(1),
-              mp_.map_min_boundary_(2), mp_.map_max_boundary_(2));
 
   visualization_msgs::msg::MarkerArray marker_array;
 
-  double sample_resolution = 10.0;
+  double sample_resolution = 0.5;
   int marker_id = 0;
-  int total_samples = 0;
-  int valid_samples = 0;
 
   double viz_x_min = 0.0;
-  double viz_x_max = 400.0;
+  double viz_x_max = 100.0;
   double viz_y_min = 0.0;
-  double viz_y_max = 400.0;
+  double viz_y_max = 100.0;
   double viz_z_min = 0.0;
-  double viz_z_max = 50.0;
-
-  RCLCPP_INFO(node_->get_logger(), "Visualizing ESDF (2 layers) in region: X[%.1f, %.1f], Y[%.1f, %.1f], Z[%.1f, %.1f]",
-              viz_x_min, viz_x_max, viz_y_min, viz_y_max, viz_z_min, viz_z_max);
+  double viz_z_max = 20.0;
 
   for (double x = viz_x_min; x < viz_x_max; x += sample_resolution) {
     for (double y = viz_y_min; y < viz_y_max; y += sample_resolution) {
       for (double z = viz_z_min; z <= viz_z_max; z += sample_resolution) {
-        total_samples++;
         Eigen::Vector3d pos(x, y, z);
 
         if (!isInMap(pos)) continue;
-        valid_samples++;
 
         double dist;
         evaluateEDT(pos, dist);
@@ -1250,24 +1149,23 @@ void GridMap::publishGlobalESDFVisualization() {
           marker.color.r = 1.0;
           marker.color.g = 0.0;
           marker.color.b = 0.0;
-          marker.color.a = 1.0;
+          marker.color.a = 0.1;
         } else if (dist < 1.5) {
           float ratio = (dist - 0.5) / 1.0;
           marker.color.r = 1.0;
           marker.color.g = ratio;
           marker.color.b = 0.0;
-          marker.color.a = 0.9;
+          marker.color.a = 0.05;
         } else {
           marker.color.r = 0.0;
           marker.color.g = 1.0;
           marker.color.b = 0.0;
-          marker.color.a = 0.7;
+          marker.color.a = 0.01;
         }
 
         marker_array.markers.push_back(marker);
 
-        if (marker_id >= 60000) {
-          RCLCPP_WARN(node_->get_logger(), "Reached maximum marker limit (3000)");
+        if (marker_id >= 600000) {
           goto publish_markers;
         }
       }
@@ -1275,10 +1173,6 @@ void GridMap::publishGlobalESDFVisualization() {
   }
 
 publish_markers:
-  RCLCPP_INFO(node_->get_logger(),
-              "Global ESDF visualization: total_samples=%d, valid_samples=%d, markers=%d",
-              total_samples, valid_samples, marker_id);
-
   if (marker_id == 0) {
     RCLCPP_WARN(node_->get_logger(), "No ESDF markers generated! Check if obstacles exist in the map.");
   }
