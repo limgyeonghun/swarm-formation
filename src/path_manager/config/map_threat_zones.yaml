@@ -25,8 +25,7 @@
     grid_map/show_esdf_time: false
 
     # Threat Zone Settings (ENABLED for this scenario)
-    grid_map/use_threat_zones: false
-    grid_map/threat_cost_weight: 1.0
+    grid_map/use_threat_zones: true
 
     # Terrain Obstacle Settings (ENABLED for terrain-based path planning)
     grid_map/use_terrain_obstacles: true
@@ -34,5 +33,5 @@
     grid_map/terrain_target_cell_size: 100.0   # Match TARGET_CELL_SIZE_M in terrain_publisher.py
 
     # Path visualization threat zone settings
-    enable_threat_zones: false
+    enable_threat_zones: true
     threat_visualization_resolution: 1.0  # 3D visualization (larger = less cubes, better visibility)

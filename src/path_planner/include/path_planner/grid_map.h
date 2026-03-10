@@ -64,7 +64,6 @@ struct MappingParameters {
   // Threat zone parameters for air defense penetration
   bool use_threat_zones_ = false;
   std::vector<ThreatZone> threat_zones_;
-  double threat_cost_weight_ = 1.0;  // Weight for A* path planning
 
   // Terrain gridmap parameters
   bool use_terrain_obstacles_ = false;

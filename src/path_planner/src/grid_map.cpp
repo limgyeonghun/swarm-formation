@@ -28,7 +28,6 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
 
   // Threat zone parameters
   node_->declare_parameter("grid_map/use_threat_zones", false);
-  node_->declare_parameter("grid_map/threat_cost_weight", 1.0);
   node_->declare_parameter("threat_zones", std::vector<double>());
 
   // Terrain gridmap parameters
@@ -59,7 +58,6 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
 
   // Threat zone parameters
   mp_.use_threat_zones_ = node_->get_parameter("grid_map/use_threat_zones").as_bool();
-  mp_.threat_cost_weight_ = node_->get_parameter("grid_map/threat_cost_weight").as_double();
 
   // Terrain gridmap parameters
   mp_.use_terrain_obstacles_ = node_->get_parameter("grid_map/use_terrain_obstacles").as_bool();
@@ -123,7 +121,6 @@ void GridMap::initMap(const std::shared_ptr<rclcpp::Node>& node) {
   std::cout << "  map_origin_x: " << node_->get_parameter("grid_map/map_origin_x").as_double() << std::endl;
   std::cout << "  map_origin_y: " << node_->get_parameter("grid_map/map_origin_y").as_double() << std::endl;
   std::cout << "  use_threat_zones: " << mp_.use_threat_zones_ << std::endl;
-  std::cout << "  threat_cost_weight: " << mp_.threat_cost_weight_ << std::endl;
   std::cout << "  threat_zones: " << mp_.threat_zones_.size() << " zones" << std::endl;
   for (size_t i = 0; i < mp_.threat_zones_.size(); ++i) {
     const auto& zone = mp_.threat_zones_[i];

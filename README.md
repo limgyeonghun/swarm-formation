@@ -6,12 +6,7 @@ ROS 2 기반 드론/로버 경로 계획 및 편대 제어 시스템
 
 **터미널 1** - 메인 시스템:
 ```bash
-ros2 launch path_manager path_manager.launch.py \
-  real:=false \
-  rviz_simulation:=true \
-  enable_visualization:=true \
-  map_config:=map_threat_zones \
-  threat_zones:=threat_zones
+ros2 launch path_manager rviz_path_manager.launch.py scenario:=scenario_basic
 ```
 
 **터미널 2** - 편대 명령 트리거 (선택사항):

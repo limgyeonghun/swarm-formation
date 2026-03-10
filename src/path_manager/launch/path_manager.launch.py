@@ -79,7 +79,6 @@ def create_drone_nodes(context, *args, **kwargs):
 
     # Config paths
     pkg_share = FindPackageShare('path_manager')
-    obstacles_file  = PathJoinSubstitution([pkg_share, 'config', 'obstacles.yaml'])
     optimizer_file  = PathJoinSubstitution([pkg_share, 'config', 'optimizer_params.yaml'])
 
     # Map config selection (default or scenario-specific)
@@ -91,14 +90,14 @@ def create_drone_nodes(context, *args, **kwargs):
         map_file = PathJoinSubstitution([pkg_share, 'config', 'map.yaml'])
         print("Using default map config: map.yaml")
 
-    # Threat zones config (optional)
-    threat_zones_config = context.perform_substitution(LaunchConfiguration('threat_zones'))
-    if threat_zones_config:
-        threat_zones_file = PathJoinSubstitution([pkg_share, 'config', f'{threat_zones_config}.yaml'])
-        print(f"Using threat zones config: {threat_zones_config}.yaml")
+    # Scenario config (obstacles + threat zones)
+    scenario_config = context.perform_substitution(LaunchConfiguration('scenario'))
+    if scenario_config:
+        scenario_file = PathJoinSubstitution([pkg_share, 'config', 'scenarios', f'{scenario_config}.yaml'])
+        print(f"Using scenario config: {scenario_config}.yaml")
     else:
-        threat_zones_file = None
-        print("No threat zones config specified")
+        scenario_file = PathJoinSubstitution([pkg_share, 'config', 'scenarios', 'scenario_basic.yaml'])
+        print("No scenario specified, using default: scenario_basic.yaml")
 
     # Load base drone hardware configuration
     drones_file = PathJoinSubstitution([pkg_share, 'config', 'drone_hardware.yaml'])
@@ -190,10 +189,8 @@ def create_drone_nodes(context, *args, **kwargs):
         # No additional remapping needed - formation_targets now uses topic_prefix directly
         all_remaps = remaps
 
-        # Build parameter list with optional threat zones
-        replan_params = [params, obstacles_file, optimizer_file, drones_file, map_file]
-        if threat_zones_file:
-            replan_params.append(threat_zones_file)
+        # Build parameter list with scenario config
+        replan_params = [params, scenario_file, optimizer_file, drones_file, map_file]
 
         replan_nodes.append(
             Node(
@@ -282,13 +279,10 @@ def create_drone_nodes(context, *args, **kwargs):
     # Build parameters for path_visualization
     viz_params = [
         drones_file,  # Base drone hardware
-        obstacles_file,
+        scenario_file,
         optimizer_file,
         map_file,
     ]
-    # Add threat zones if specified
-    if threat_zones_file:
-        viz_params.append(threat_zones_file)
     # Note: Start positions are now provided by formation_manager via TrajectoryCommand
 
     visualization_node = Node(
@@ -381,9 +375,9 @@ def generate_launch_description():
             description='Map configuration file (default: map, or map_threat_zones, etc.)'
         ),
         DeclareLaunchArgument(
-            'threat_zones',
+            'scenario',
             default_value='',
-            description='Threat zones configuration file (e.g., threat_zones)'
+            description='Scenario configuration file containing obstacles and threat zones (e.g., scenario_basic, scenario_sam_defense, scenario_complex)'
         ),
         DeclareLaunchArgument(
             'jfi_port',
