@@ -297,6 +297,34 @@ void GridMap::inflatePoint(const Eigen::Vector3i& pt, int step, std::vector<Eige
     }
 }
 
+void GridMap::inflateRectangle(const Eigen::Vector3d& center, double width, double height) {
+    Eigen::Vector3i center_idx;
+    posToIndex(center, center_idx);
+
+    int half_width_cells = ceil((width / 2.0) * mp_.resolution_inv_);
+    int half_height_cells = ceil((height / 2.0) * mp_.resolution_inv_);
+    int z_cells = ceil(mp_.obstacles_inflation_ * mp_.resolution_inv_);
+
+    for (int x = -half_width_cells; x <= half_width_cells; ++x) {
+        for (int y = -half_height_cells; y <= half_height_cells; ++y) {
+            for (int z = -z_cells; z <= z_cells; ++z) {
+                Eigen::Vector3i inf_pt = center_idx + Eigen::Vector3i(x, y, z);
+                if (isInMap(inf_pt)) {
+                    if (mp_.use_road_boundary_) {
+                        Eigen::Vector3d pos;
+                        indexToPos(inf_pt, pos);
+                        if (!isInRoadBoundary(pos)) {
+                            md_.occupancy_buffer_inflate_[toAddress(inf_pt)] = 1;
+                            continue;
+                        }
+                    }
+                    md_.occupancy_buffer_inflate_[toAddress(inf_pt)] = 1;
+                }
+            }
+        }
+    }
+}
+
 template <typename F_get_val, typename F_set_val>
 void GridMap::fillESDF(F_get_val f_get_val, F_set_val f_set_val, int start, int end, int dim) {
   std::vector<int> v(mp_.map_voxel_num_(dim));

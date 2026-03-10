@@ -200,31 +200,57 @@ void PathVisualization::loadDroneParameters()
 
 void PathVisualization::loadObstacleParameters()
 {
-  // Declare and get obstacles as a vector of doubles
   this->declare_parameter("obstacles", std::vector<double>{});
   std::vector<double> obstacle_params;
   if (this->get_parameter("obstacles", obstacle_params))
   {
-    if (obstacle_params.size() % 3 != 0)
+    size_t i = 0;
+    while (i < obstacle_params.size())
     {
-      RCLCPP_ERROR(this->get_logger(), "Invalid obstacles.yaml format, size not divisible by 3");
-      throw std::runtime_error("Invalid obstacles.yaml format");
-    }
-    for (size_t i = 0; i < obstacle_params.size(); i += 3)
-    {
-      obstacle_centers_.emplace_back(obstacle_params[i], obstacle_params[i + 1], obstacle_params[i + 2]);
+      if (i + 2 >= obstacle_params.size()) break;
+
+      Eigen::Vector3d center(obstacle_params[i], obstacle_params[i + 1], obstacle_params[i + 2]);
+
+      if (i + 3 < obstacle_params.size())
+      {
+        int shape_type = static_cast<int>(obstacle_params[i + 3]);
+
+        if (shape_type == 0 && i + 4 < obstacle_params.size())
+        {
+          double radius = obstacle_params[i + 4];
+          obstacle_centers_.emplace_back(center, radius);
+          i += 5;
+        }
+        else if (shape_type == 1 && i + 5 < obstacle_params.size())
+        {
+          double width = obstacle_params[i + 4];
+          double height = obstacle_params[i + 5];
+          obstacle_centers_.emplace_back(center, width, height);
+          i += 6;
+        }
+        else
+        {
+          obstacle_centers_.emplace_back(center);
+          i += 3;
+        }
+      }
+      else
+      {
+        obstacle_centers_.emplace_back(center);
+        i += 3;
+      }
     }
   }
   else
   {
     RCLCPP_ERROR(this->get_logger(), "Failed to load obstacles.yaml, using default obstacles");
     obstacle_centers_ = {
-        Eigen::Vector3d(-2.0, -2.25, 0.5),
-        Eigen::Vector3d(1.0, 0.0, 0.5),
-        Eigen::Vector3d(0.0, 1.0, 0.5),
-        Eigen::Vector3d(3.0, 3.0, 0.5)};
+        Obstacle(Eigen::Vector3d(-2.0, -2.25, 0.5)),
+        Obstacle(Eigen::Vector3d(1.0, 0.0, 0.5)),
+        Obstacle(Eigen::Vector3d(0.0, 1.0, 0.5)),
+        Obstacle(Eigen::Vector3d(3.0, 3.0, 0.5))};
   }
-  
+
   RCLCPP_INFO(this->get_logger(), "Loaded %zu obstacles for visualization", obstacle_centers_.size());
 }
 
@@ -546,31 +572,50 @@ void PathVisualization::publishPath(const std::vector<Eigen::Vector3d> &path, in
 
 void PathVisualization::publishObstacles()
 {
-  // Only publish obstacles if obstacle avoidance is enabled
   if (!enable_obstacles_)
   {
     return;
   }
-  
-  // Create a single marker array for all obstacles to improve performance
-  auto marker = createMarker("obstacles", 0, visualization_msgs::msg::Marker::CUBE_LIST, 1.5, 0.0, 1.0, 0.0, 0.7);
-  
-  // Set lifetime to ensure markers don't disappear
-  marker.lifetime = rclcpp::Duration::from_seconds(2.0);
-  
-  // Add all obstacle positions to the marker
+
   for (size_t i = 0; i < obstacle_centers_.size(); ++i)
   {
-    geometry_msgs::msg::Point point;
-    point.x = obstacle_centers_[i].x();
-    point.y = obstacle_centers_[i].y();
-    point.z = obstacle_centers_[i].z();
-    marker.points.push_back(point);
+    const auto& obs = obstacle_centers_[i];
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = "map";
+    marker.header.stamp = this->now();
+    marker.ns = "obstacles";
+    marker.id = i;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.lifetime = rclcpp::Duration::from_seconds(2.0);
+    marker.color.a = 0.7;
+    marker.color.r = 0.0;
+    marker.color.g = 1.0;
+    marker.color.b = 0.0;
+
+    marker.pose.position.x = obs.center.x();
+    marker.pose.position.y = obs.center.y();
+    marker.pose.position.z = obs.center.z();
+    marker.pose.orientation.w = 1.0;
+
+    if (obs.shape == ObstacleShape::CIRCLE)
+    {
+      marker.type = visualization_msgs::msg::Marker::CYLINDER;
+      double radius = (obs.param1 > 0) ? obs.param1 : 1.0;
+      marker.scale.x = radius * 2.0;
+      marker.scale.y = radius * 2.0;
+      marker.scale.z = 2.0;
+    }
+    else if (obs.shape == ObstacleShape::RECTANGLE)
+    {
+      marker.type = visualization_msgs::msg::Marker::CUBE;
+      marker.scale.x = obs.param1;
+      marker.scale.y = obs.param2;
+      marker.scale.z = 2.0;
+    }
+
+    marker_pub_->publish(marker);
   }
-  
-  // Publish the single marker containing all obstacles
-  marker_pub_->publish(marker);
-  
+
   RCLCPP_DEBUG(this->get_logger(), "Published %zu obstacles", obstacle_centers_.size());
 }
 
@@ -964,7 +1009,7 @@ void PathVisualization::publishThreatField()
           normalized_threat = std::pow(normalized_threat, 0.5);
 
           // Layer-based alpha: each layer is semi-transparent for blending
-          double layer_alpha = 0.2 + (1.0 - ratio) * 0.15;  // 0.2 (outer) to 0.35 (inner)
+          double layer_alpha = 0.2 + (1.0 - ratio) * 0.5;
 
           // Alpha increases with threat level (center is more opaque)
           color.a = layer_alpha * (0.2 + normalized_threat * 0.8);

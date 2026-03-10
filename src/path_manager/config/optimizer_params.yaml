@@ -18,10 +18,10 @@
     optimization/weight_time: 10.0
     optimization/weight_formation: 0.0
     optimization/weight_nonholonomic: 0.0
-    optimization/weight_threat: 0.2
+    optimization/weight_threat: 0.6
 
     # Safety Distance Settings
-    optimization/obstacle_clearance: 0.5
+    optimization/obstacle_clearance: 0.8
     optimization/swarm_clearance: 0.5
 
     # Formation and Dynamics Constraints

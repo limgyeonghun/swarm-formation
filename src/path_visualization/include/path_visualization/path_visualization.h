@@ -14,6 +14,23 @@
 #include <string>
 #include <memory>
 
+enum class ObstacleShape {
+  CIRCLE,
+  RECTANGLE
+};
+
+struct Obstacle {
+  Eigen::Vector3d center;
+  ObstacleShape shape;
+  double param1;
+  double param2;
+
+  Obstacle() : center(0, 0, 0), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0) {}
+  Obstacle(const Eigen::Vector3d& c) : center(c), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0) {}
+  Obstacle(const Eigen::Vector3d& c, double radius) : center(c), shape(ObstacleShape::CIRCLE), param1(radius), param2(0.0) {}
+  Obstacle(const Eigen::Vector3d& c, double width, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(height) {}
+};
+
 class PathVisualization : public rclcpp::Node {
 public:
   PathVisualization();
@@ -49,7 +66,7 @@ private:
 
   int num_drones_;
   bool enable_obstacles_;
-  std::vector<Eigen::Vector3d> obstacle_centers_;
+  std::vector<Obstacle> obstacle_centers_;
 
   // Threat zone parameters
   struct ThreatZoneViz {

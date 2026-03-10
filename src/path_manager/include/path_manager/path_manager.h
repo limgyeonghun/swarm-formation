@@ -21,6 +21,23 @@ using namespace ego_planner;
 
 namespace path_manager
 {
+  enum class ObstacleShape {
+    CIRCLE,
+    RECTANGLE
+  };
+
+  struct Obstacle {
+    Eigen::Vector3d center;
+    ObstacleShape shape;
+    double param1;  // Circle: radius, Rectangle: width
+    double param2;  // Circle: unused, Rectangle: height
+
+    Obstacle() : center(0, 0, 0), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0) {}
+    Obstacle(const Eigen::Vector3d& c) : center(c), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0) {}
+    Obstacle(const Eigen::Vector3d& c, double radius) : center(c), shape(ObstacleShape::CIRCLE), param1(radius), param2(0.0) {}
+    Obstacle(const Eigen::Vector3d& c, double width, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(height) {}
+  };
+
   class PathManager
   {
   public:
@@ -122,7 +139,7 @@ namespace path_manager
     GridMap::Ptr grid_map_;
     AStar astar_;
     std::vector<Eigen::Vector3d> simple_path_;
-    std::vector<Eigen::Vector3d> obstacle_centers_;
+    std::vector<Obstacle> obstacle_centers_;
     std::vector<LocalTrajData> swarm_traj_;
     double max_vel_;
     double max_acc_;

@@ -111,6 +111,7 @@ public:
   void setOccupancy(const Eigen::Vector3i& id, double occ);
   void inflatePoint(const Eigen::Vector3i& pt, int step);
   void inflatePoint(const Eigen::Vector3i& pt, int step, std::vector<Eigen::Vector3i>& pts);
+  void inflateRectangle(const Eigen::Vector3d& center, double width, double height);
 
   void updateESDF3d();
   void updateESDF3d(const Eigen::Vector3i& min_esdf, const Eigen::Vector3i& max_esdf);

@@ -61,30 +61,69 @@ namespace path_manager
         std::vector<double> obstacle_params;
         node_->get_parameter("obstacles", obstacle_params);
 
-        for (size_t i = 0; i < obstacle_params.size(); i += 3)
+        // Parse obstacles with flexible format:
+        // Basic: [x, y, z] - uses default inflation
+        // Circle: [x, y, z, 0, radius]
+        // Rectangle: [x, y, z, 1, width, height]
+        size_t i = 0;
+        while (i < obstacle_params.size())
         {
-            obstacle_centers_.emplace_back(obstacle_params[i], obstacle_params[i + 1], obstacle_params[i + 2]);
+            if (i + 2 >= obstacle_params.size()) break;
+
+            Eigen::Vector3d center(obstacle_params[i], obstacle_params[i + 1], obstacle_params[i + 2]);
+
+            if (i + 3 < obstacle_params.size())
+            {
+                int shape_type = static_cast<int>(obstacle_params[i + 3]);
+
+                if (shape_type == 0 && i + 4 < obstacle_params.size())  // CIRCLE
+                {
+                    double radius = obstacle_params[i + 4];
+                    obstacle_centers_.emplace_back(center, radius);
+                    i += 5;
+                }
+                else if (shape_type == 1 && i + 5 < obstacle_params.size())  // RECTANGLE
+                {
+                    double width = obstacle_params[i + 4];
+                    double height = obstacle_params[i + 5];
+                    obstacle_centers_.emplace_back(center, width, height);
+                    i += 6;
+                }
+                else
+                {
+                    obstacle_centers_.emplace_back(center);
+                    i += 3;
+                }
+            }
+            else
+            {
+                obstacle_centers_.emplace_back(center);
+                i += 3;
+            }
         }
 
-        // Obstacle centers logged to file only
-        // std::cout << "Obstacle centers: ";
-        // for (const auto &obs : obstacle_centers_)
-        // {
-        //     std::cout << "(" << obs.x() << ", " << obs.y() << ", " << obs.z() << ") ";
-        // }
-        // std::cout << std::endl;
+        // Calculate inflation step from obstacles_inflation parameter (default)
+        int default_inf_step = ceil(grid_map_->getObstaclesInflation() / grid_map_->getResolution());
+        double resolution = grid_map_->getResolution();
 
-        // Calculate inflation step from obstacles_inflation parameter
-        int inf_step = ceil(grid_map_->getObstaclesInflation() / grid_map_->getResolution());
-        
         for (const auto &obs : obstacle_centers_)
         {
             Eigen::Vector3i idx;
-            grid_map_->posToIndex(obs, idx);
+            grid_map_->posToIndex(obs.center, idx);
             grid_map_->setOccupancy(idx, 1.0);
-            grid_map_->inflatePoint(idx, inf_step);
+
+            // Use shape-specific inflation
+            if (obs.shape == ObstacleShape::CIRCLE)
+            {
+                int inf_step = (obs.param1 > 0) ? ceil(obs.param1 / resolution) : default_inf_step;
+                grid_map_->inflatePoint(idx, inf_step);
+            }
+            else if (obs.shape == ObstacleShape::RECTANGLE)
+            {
+                grid_map_->inflateRectangle(obs.center, obs.param1, obs.param2);
+            }
         }
-        grid_map_->updateESDF3d(); // not used? -> esdf_timer
+        grid_map_->updateESDF3d();
 
         simple_path_pub_ = node_->create_publisher<nav_msgs::msg::Path>(
             "/drone_" + std::to_string(drone_id) + "/simple_path", 10);
