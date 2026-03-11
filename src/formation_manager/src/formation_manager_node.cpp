@@ -2,6 +2,7 @@
 #include "formation_msgs/msg/trajectory_command.hpp"
 #include <geometry_msgs/msg/point.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <visualization_msgs/msg/marker.hpp>
 #include <Eigen/Dense>
 #include <chrono>
 #include <cmath>
@@ -70,6 +71,9 @@ public:
             auto pub = this->create_publisher<formation_msgs::msg::TrajectoryCommand>(topic_name, sensor_qos);
             trajectory_cmd_pubs_.push_back(pub);
         }
+
+        // Create waypoint marker publisher
+        waypoint_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("waypoint_markers", 10);
 
         // Subscribe to odometry from all drones (for position tracking)
         for (int i = 0; i < num_drones_; ++i) {
@@ -366,6 +370,9 @@ private:
             trajectory_cmd_pubs_[i]->publish(msg);
         }
 
+        // Publish waypoint markers for visualization (same as replan_fsm does)
+        publishWaypointMarkers(mission);
+
         previous_formation_type_ = mission.formation_type;
 
         RCLCPP_INFO(this->get_logger(),
@@ -402,6 +409,119 @@ private:
         return assignment;
     }
 
+    void publishWaypointMarkers(const MissionCommand& mission) {
+        // Publish start point markers (green for drone 0)
+        visualization_msgs::msg::Marker start_marker;
+        start_marker.header.frame_id = "map";
+        start_marker.header.stamp = this->now();
+        start_marker.ns = "start_points";
+        start_marker.id = 0;
+        start_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+        start_marker.action = visualization_msgs::msg::Marker::ADD;
+        start_marker.scale.x = start_marker.scale.y = start_marker.scale.z = 0.5;  // Larger for visibility
+        start_marker.color.r = 0.0;
+        start_marker.color.g = 1.0;  // Green for start
+        start_marker.color.b = 0.0;
+        start_marker.color.a = 1.0;
+
+        for (int i = 0; i < num_drones_; ++i) {
+            if (i < (int)mission.start_positions.size()) {
+                geometry_msgs::msg::Point p;
+                p.x = mission.start_positions[i].x();
+                p.y = mission.start_positions[i].y();
+                p.z = mission.start_positions[i].z();
+                start_marker.points.push_back(p);
+            }
+        }
+        waypoint_marker_pub_->publish(start_marker);
+
+        // Publish waypoint/goal markers (red for drone 0)
+        visualization_msgs::msg::Marker waypoint_marker;
+        waypoint_marker.header.frame_id = "map";
+        waypoint_marker.header.stamp = this->now();
+        waypoint_marker.ns = "waypoints_drone_0";
+        waypoint_marker.id = 0;
+        waypoint_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+        waypoint_marker.action = visualization_msgs::msg::Marker::ADD;
+        waypoint_marker.scale.x = waypoint_marker.scale.y = waypoint_marker.scale.z = 0.5;  // Larger for visibility
+        waypoint_marker.color.r = 1.0;  // Red for waypoints/goals
+        waypoint_marker.color.g = 0.0;
+        waypoint_marker.color.b = 0.0;
+        waypoint_marker.color.a = 1.0;
+
+        for (const auto& wp : mission.waypoints) {
+            geometry_msgs::msg::Point p;
+            p.x = wp[0];
+            p.y = wp[1];
+            p.z = wp[2];
+            waypoint_marker.points.push_back(p);
+        }
+        waypoint_marker_pub_->publish(waypoint_marker);
+
+        // Publish START text labels
+        for (int i = 0; i < num_drones_; ++i) {
+            if (i < (int)mission.start_positions.size()) {
+                visualization_msgs::msg::Marker start_text;
+                start_text.header.frame_id = "map";
+                start_text.header.stamp = this->now();
+                start_text.ns = "gui_start_goal_labels";
+                start_text.id = i * 100;  // Unique ID for each drone's start text
+                start_text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+                start_text.action = visualization_msgs::msg::Marker::ADD;
+
+                start_text.pose.position.x = mission.start_positions[i].x();
+                start_text.pose.position.y = mission.start_positions[i].y();
+                start_text.pose.position.z = mission.start_positions[i].z() + 1.5;  // Offset above sphere
+                start_text.pose.orientation.w = 1.0;
+
+                start_text.scale.z = 0.8;  // Text height
+                start_text.color.r = 1.0;
+                start_text.color.g = 1.0;
+                start_text.color.b = 1.0;
+                start_text.color.a = 1.0;
+
+                start_text.text = "START";
+
+                waypoint_marker_pub_->publish(start_text);
+            }
+        }
+
+        // Publish text labels for waypoints (WP1, WP2, ... or GOAL)
+        for (size_t i = 0; i < mission.waypoints.size(); ++i) {
+            visualization_msgs::msg::Marker text_marker;
+            text_marker.header.frame_id = "map";
+            text_marker.header.stamp = this->now();
+            text_marker.ns = "gui_waypoint_labels";
+            text_marker.id = i;
+            text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+            text_marker.action = visualization_msgs::msg::Marker::ADD;
+
+            text_marker.pose.position.x = mission.waypoints[i][0];
+            text_marker.pose.position.y = mission.waypoints[i][1];
+            text_marker.pose.position.z = mission.waypoints[i][2] + 1.5;  // Offset above sphere
+            text_marker.pose.orientation.w = 1.0;
+
+            text_marker.scale.z = 0.8;  // Text height
+            text_marker.color.r = 1.0;
+            text_marker.color.g = 1.0;
+            text_marker.color.b = 1.0;
+            text_marker.color.a = 1.0;
+
+            // Last waypoint is GOAL, others are WP1, WP2, etc.
+            if (i == mission.waypoints.size() - 1) {
+                text_marker.text = "GOAL";
+            } else {
+                text_marker.text = "WP" + std::to_string(i + 1);
+            }
+
+            waypoint_marker_pub_->publish(text_marker);
+        }
+
+        RCLCPP_INFO(this->get_logger(),
+                   "Published %zu start points (green) and %zu waypoints (red) with text labels to RViz",
+                   mission.start_positions.size(), mission.waypoints.size());
+    }
+
     int num_drones_;
     double distance_threshold_;
     double formation_similarity_threshold_;
@@ -423,6 +543,8 @@ private:
     rclcpp::TimerBase::SharedPtr distance_check_timer_;
 
     SwarmGraph::Ptr swarm_graph_;
+
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr waypoint_marker_pub_;
 };
 
 int main(int argc, char** argv) {

@@ -1,0 +1,18 @@
+/**:
+  ros__parameters:
+
+    drone_0:
+      start_point_x: 0.0
+      start_point_y: 0.0
+      start_point_z: 1.0
+
+# Mission scenario - Air defense penetration (single drone)
+scenario:
+  mission:
+    commands:
+        # Direct penetration through threat zones
+        - formation_type: "none"
+          formation_scale: 0.0
+          distance_threshold: 0.1
+          waypoints:
+            - [60.0, 4.0, 1.0]

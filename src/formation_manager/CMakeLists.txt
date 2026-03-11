@@ -11,6 +11,7 @@ find_package(rclcpp REQUIRED)
 find_package(formation_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(swarm_graph REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(ament_index_cpp REQUIRED)
@@ -29,6 +30,7 @@ ament_target_dependencies(formation_manager_node
   formation_msgs
   geometry_msgs
   nav_msgs
+  visualization_msgs
   swarm_graph
   ament_index_cpp
   Eigen3
