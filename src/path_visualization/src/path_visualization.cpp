@@ -66,6 +66,8 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   simple_path_subs_.resize(num_drones_);
   optimized_path_subs_.resize(num_drones_);
   global_path_subs_.resize(num_drones_);
+  traveled_paths_.resize(num_drones_);
+  traveled_path_pubs_.resize(num_drones_);
 
   for (int drone_id = 0; drone_id < num_drones_; ++drone_id)
   {
@@ -76,6 +78,8 @@ PathVisualization::PathVisualization() : Node("path_visualization")
     position_pubs_[drone_id] = this->create_publisher<geometry_msgs::msg::PointStamped>(position_topic, sensor_qos);
     position_marker_pubs_[drone_id] = this->create_publisher<visualization_msgs::msg::Marker>(
         "position_markers_drone_" + std::to_string(drone_id), sensor_qos);
+    traveled_path_pubs_[drone_id] = this->create_publisher<visualization_msgs::msg::Marker>(
+        "traveled_path_drone_" + std::to_string(drone_id), sensor_qos);
 
     std::string simple_path_topic = topic_prefix + "/simple_path";
     simple_path_subs_[drone_id] = this->create_subscription<nav_msgs::msg::Path>(
@@ -108,6 +112,7 @@ PathVisualization::PathVisualization() : Node("path_visualization")
 
   timer_ = this->create_wall_timer(10ms, std::bind(&PathVisualization::updatePosition, this));
   log_timer_ = this->create_wall_timer(150ms, std::bind(&PathVisualization::logPositions, this));
+  traveled_path_timer_ = this->create_wall_timer(200ms, std::bind(&PathVisualization::publishTraveledPaths, this));
 
   // Only publish obstacles if obstacle avoidance is enabled
   if (enable_obstacles_)
@@ -496,6 +501,15 @@ void PathVisualization::updatePosition()
         data.velocity = Eigen::Vector3d::Zero();
       }
       data.start_pt = Eigen::Vector3d(x, y, z);
+
+      // Accumulate traveled path
+      {
+        Eigen::Vector3d new_pt(x, y, z);
+        auto &tpath = traveled_paths_[drone_id];
+        constexpr double kMinPathPointDist = 0.1;
+        if (tpath.empty() || (new_pt - tpath.back()).norm() > kMinPathPointDist)
+          tpath.push_back(new_pt);
+      }
     }
 
     // Compute arrow direction from velocity; fall back to +x if near-zero
@@ -804,6 +818,31 @@ void PathVisualization::loadThreatZones()
                   i, zone.center.x(), zone.center.y(), zone.center.z(),
                   zone.detection_range, zone.engagement_range, zone.max_threat_level);
     }
+  }
+}
+
+void PathVisualization::publishTraveledPaths()
+{
+  for (int drone_id = 0; drone_id < num_drones_; ++drone_id)
+  {
+    const auto &path = traveled_paths_[drone_id];
+    if (path.size() < 2)
+      continue;
+
+    auto [r, g, b] = getDroneColor(drone_id);
+    auto marker = createMarker("traveled_path_drone_" + std::to_string(drone_id), drone_id,
+                               visualization_msgs::msg::Marker::LINE_STRIP, 0.1, r, g, b, 0.85);
+    marker.lifetime = rclcpp::Duration(0, 0); // Never expire in RViz
+
+    for (const auto &pt : path)
+    {
+      geometry_msgs::msg::Point p;
+      p.x = pt.x();
+      p.y = pt.y();
+      p.z = pt.z();
+      marker.points.push_back(p);
+    }
+    traveled_path_pubs_[drone_id]->publish(marker);
   }
 }
 

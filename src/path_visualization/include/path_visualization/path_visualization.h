@@ -63,6 +63,7 @@ private:
   void publishThreatField();
   void loadThreatZones();
   void simplePathCallback(const nav_msgs::msg::Path::SharedPtr msg, int drone_id);
+  void publishTraveledPaths();
 
   int num_drones_;
   bool enable_obstacles_;
@@ -100,10 +101,13 @@ private:
   std::vector<rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr> optimized_path_subs_;
   std::vector<rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr> global_path_subs_;
   std::vector<rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr> simple_path_subs_;
+  std::vector<std::vector<Eigen::Vector3d>> traveled_paths_;
+  std::vector<rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr> traveled_path_pubs_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr log_timer_;
   rclcpp::TimerBase::SharedPtr obstacle_timer_;
   rclcpp::TimerBase::SharedPtr threat_field_timer_;
+  rclcpp::TimerBase::SharedPtr traveled_path_timer_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 };
 
