@@ -24,6 +24,12 @@ namespace ego_planner
     piece_num_ = initT.size();
 
     jerkOpt_.reset(iniState, finState, piece_num_);
+
+    // Build piece-to-polytope mapping for GCOPTER-style SFC corridor constraints
+    if (!sfc_hpolys_.empty()) {
+      buildPiecePolytopeMapping(piece_num_);
+    }
+
     Eigen::Vector3d start_pos = iniState.col(0);
 
     double final_cost;
@@ -38,31 +44,27 @@ namespace ego_planner
     Eigen::Map<Eigen::VectorXd> Vt(q.data() + initInnerPts.size(), initT.size());
     RealT2VirtualT(initT, Vt);
 
-    // 3. L-BFGS parameter setup
+    // 3. L-BFGS parameter setup (GCOPTER-style: converge until cost stops improving)
     auto t3 = node_->get_clock()->now();
     lbfgs::lbfgs_parameter_t lbfgs_params;
     lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
-    lbfgs_params.mem_size = 32;
-    lbfgs_params.g_epsilon = 0.01;
-    lbfgs_params.min_step = 1e-32;
+    lbfgs_params.mem_size = 256;
+    lbfgs_params.g_epsilon = 0.0;          // Disable gradient norm test
+    lbfgs_params.past = 3;                 // Compare cost with 3 iterations ago
+    lbfgs_params.delta = 1.0e-5;           // Stop when relative cost change < 1e-5
+    lbfgs_params.min_step = 1.0e-32;
+    lbfgs_params.max_iterations = 0;       // Unlimited (GCOPTER-style: converge by delta only)
 
-    if (use_formation)
+    if (!use_formation)
     {
-      lbfgs_params.max_iterations = 600;
-      // Note: use_formation_ is already set by setFormation()
-      // For NONE mode, it's already false, so no need to change it here
-    }
-    else
-    {
-      lbfgs_params.max_iterations = 600;
       use_formation_ = false;
     }
 
     // Debug: Print L-BFGS parameters
     if (log_manager_ && enable_debug_logs_) {
-        log_manager_->infof("L-BFGS params: mem_size=%d, max_iter=%d, g_epsilon=%f, min_step=%f, use_formation=%d",
-          lbfgs_params.mem_size, lbfgs_params.max_iterations, lbfgs_params.g_epsilon, 
-          lbfgs_params.min_step, use_formation);
+        log_manager_->infof("L-BFGS params: mem_size=%d, max_iter=%d, g_epsilon=%f, past=%d, delta=%f, use_formation=%d",
+          lbfgs_params.mem_size, lbfgs_params.max_iterations, lbfgs_params.g_epsilon,
+          lbfgs_params.past, lbfgs_params.delta, use_formation);
     }
 
     iter_num_ = 0;
@@ -107,32 +109,6 @@ namespace ego_planner
 
         log_manager_->infof("[COST] formation_cost=%f (wei_formation=%f, similarity=%f)", dbg_cost_formation_, wei_formation_, debug_similarity_);
 
-        // Nonholonomic constraint summary
-        // ALWAYS log for Before/After comparison (even when weight=0 and no violations)
-        double total_nonholo_cost = dbg_cost_curvature_ + dbg_cost_braking_ +
-                                     dbg_cost_fwd_vel_ + dbg_cost_lat_accel_;
-        int total_violations = dbg_curv_violations_ + dbg_brake_violations_ +
-                               dbg_fwd_vel_violations_ + dbg_lat_accel_violations_;
-
-        // Always log (unconditional) to ensure consistent Before/After data
-        log_manager_->infof("[NONHOLONOMIC SUMMARY] total_violations=%d, total_cost=%.6f (weight=%.3f)",
-                             total_violations, total_nonholo_cost, wei_nonholo_);
-
-        if (total_violations > 0 || wei_nonholo_ > 0.0) {
-            if (dbg_curv_violations_ > 0) {
-                log_manager_->infof("  ⚠ Curvature violations: %d (max_κ=%.4f > limit=%.4f)",
-                                     dbg_curv_violations_, dbg_max_curvature_, max_curvature_);
-            }
-            if (dbg_brake_violations_ > 0) {
-                log_manager_->infof("  ⚠ Braking violations: %d (min_decel=%.4f < limit=-%.4f m/s²)",
-                                     dbg_brake_violations_, dbg_max_brake_decel_, max_brake_decel_);
-            }
-            if (total_violations == 0 && wei_nonholo_ > 0.0) {
-                log_manager_->infof("  ✓ All nonholonomic constraints satisfied! max_κ=%.4f (limit=%.4f)",
-                                     dbg_max_curvature_, max_curvature_);
-            }
-        }
-
         // Additional debugging info
         if (enable_debug_logs_) {
             const char* result_str = lbfgs::lbfgs_strerror(result);
@@ -160,7 +136,7 @@ namespace ego_planner
   {
     double T_end;
     poly_traj::Trajectory traj = jerkOpt_.getTraj();
-  
+
     int N = traj.getPieceNum();
     int k = cps_num_prePiece_ * N + 1;
     int idx = k / 3 * 2;
@@ -174,44 +150,48 @@ namespace ego_planner
             + durations(piece_of_idx)
             * (idx - piece_of_idx * cps_num_prePiece_) / (double)cps_num_prePiece_;
     }
-  
+
     bool occ = false;
     double dt = 0.01;
     int i_end = std::max(1, (int)floor(T_end / dt));
     double t = 0.0;
     collision_check_time_end_ = T_end;
-  
-    for (int i = 0; i < i_end; i++)
+
+    if (!sfc_hpolys_.empty())
     {
-      Eigen::Vector3d pos = traj.getPos(t);
-
-      int infl = grid_map_->getInflateOccupancy(pos);
-      if (infl == 1)
+      // SFC corridor-based collision check
+      for (int i = 0; i < i_end; i++)
       {
-        bool in_map   = grid_map_->isInMap(pos);
-        bool in_road  = grid_map_->isInRoadBoundary(pos);
-        int  occ_raw  = grid_map_->getOccupancy(pos);
-        double dist_esdf = 0.0;
-        grid_map_->evaluateEDT(pos, dist_esdf);
-  
-        LOG_WARN("[COLLISION] t=%.3f pos=(%.3f, %.3f, %.3f) infl=1 in_map=%d in_road=%d occ=%d esdf=%.3f",
-                 t, pos.x(), pos.y(), pos.z(), (int)in_map, (int)in_road, occ_raw, dist_esdf);
+        Eigen::Vector3d pos = traj.getPos(t);
 
-        if (in_map && !in_road) {
-          LOG_WARN("[COLLISION] Road-boundary violation at t=%.3f (treated as obstacle). "
-                   "Check grid_map.use_road_boundary/road_width/road_margin/segments.", t);
+        // Check if point is inside any polytope in the corridor
+        bool inside_corridor = false;
+        for (const auto &hp : sfc_hpolys_)
+        {
+          Eigen::VectorXd viola = hp.leftCols<3>() * pos + hp.rightCols<1>();
+          if (viola.maxCoeff() <= 0.0)
+          {
+            inside_corridor = true;
+            break;
+          }
         }
 
-        if (!in_map) {
-          LOG_WARN("[COLLISION] Out of map at t=%.3f. Check map size/origin/resolution.", t);
+        if (!inside_corridor)
+        {
+          LOG_WARN("[COLLISION] t=%.3f pos=(%.3f, %.3f, %.3f) outside SFC corridor",
+                   t, pos.x(), pos.y(), pos.z());
+          occ = true;
+          break;
         }
-  
-        occ = true;
-        break;
+
+        t += dt;
       }
-  
-      t += dt;
     }
+    else
+    {
+      LOG_WARN("[COLLISION] No SFC corridor available for collision check");
+    }
+
     return occ;
   }
 
@@ -287,31 +267,6 @@ namespace ego_planner
         opt->log_manager_->infof("  formation_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(2), opt->wei_formation_);
         opt->log_manager_->infof("  feasibility_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(4), opt->wei_feas_);
         opt->log_manager_->infof("  time_cost=%.6f (weight=%.3f)", time_cost, opt->wei_time_);
-
-        // Detailed nonholonomic constraint violation logging
-        // ALWAYS log if violations exist (for Before/After comparison analysis)
-        double total_nonholo_cost = opt->dbg_cost_curvature_ + opt->dbg_cost_braking_ +
-                                     opt->dbg_cost_fwd_vel_ + opt->dbg_cost_lat_accel_;
-        int total_violations = opt->dbg_curv_violations_ + opt->dbg_brake_violations_ +
-                               opt->dbg_fwd_vel_violations_ + opt->dbg_lat_accel_violations_;
-
-        // Log if: (1) violations exist, OR (2) weight > 0 (to show constraint is active)
-        if (total_violations > 0 || opt->wei_nonholo_ > 0.0) {
-            opt->log_manager_->infof("[NONHOLONOMIC VIOLATIONS] total_cost=%.6f (weight=%.3f)",
-                                      total_nonholo_cost, opt->wei_nonholo_);
-            opt->log_manager_->infof("  curvature: violations=%d, cost=%.6f, max_κ=%.4f (limit=%.4f)",
-                                      opt->dbg_curv_violations_, opt->dbg_cost_curvature_,
-                                      opt->dbg_max_curvature_, opt->max_curvature_);
-            opt->log_manager_->infof("  braking: violations=%d, cost=%.6f, min_decel=%.4f m/s² (limit=-%.4f)",
-                                      opt->dbg_brake_violations_, opt->dbg_cost_braking_,
-                                      opt->dbg_max_brake_decel_, opt->max_brake_decel_);
-            opt->log_manager_->infof("  fwd_velocity: violations=%d, cost=%.6f (min_vel=%.4f m/s)",
-                                      opt->dbg_fwd_vel_violations_, opt->dbg_cost_fwd_vel_,
-                                      opt->min_forward_vel_);
-            opt->log_manager_->infof("  lateral_accel: violations=%d, cost=%.6f (limit=%.4f m/s²)",
-                                      opt->dbg_lat_accel_violations_, opt->dbg_cost_lat_accel_,
-                                      opt->max_lateral_accel_);
-        }
 
         // Store formation cost for final logging
         opt->dbg_cost_formation_ = obs_swarm_feas_qvar_costs(2);
@@ -410,21 +365,6 @@ namespace ego_planner
     costs.setZero();
     double t = 0;
 
-    // Reset nonholonomic constraint violation tracking
-    dbg_curv_violations_ = 0;
-    dbg_brake_violations_ = 0;
-    dbg_fwd_vel_violations_ = 0;
-    dbg_lat_accel_violations_ = 0;
-    dbg_max_curvature_ = 0.0;
-    dbg_max_brake_decel_ = 0.0;
-    dbg_cost_curvature_ = 0.0;
-    dbg_cost_braking_ = 0.0;
-    dbg_cost_fwd_vel_ = 0.0;
-    dbg_cost_lat_accel_ = 0.0;
-
-    std::vector<Eigen::Vector3d> esdf_sample_points;
-    bool should_visualize = (iter_num_ % 10 == 0);
-
     for (int i = 0; i < N; ++i)
     {
       const Eigen::Matrix<double, 6, 3> &c = jerkOpt_.get_b().block<6, 3>(i * 6, 0);
@@ -451,28 +391,16 @@ namespace ego_planner
 
         cps_.points.col(i_dp) = pos;
 
-        if (should_visualize && j % 2 == 0) {
-            esdf_sample_points.push_back(pos);
-        }
-
-        // Obstacle cost calculation
-        if (enable_obstacles_) {
-            if (obstacleGradCostP(i_dp, pos, gradp, costp)) {
+        // Obstacle/Corridor cost calculation (SFC corridor-based, GCOPTER approach)
+        if (enable_obstacles_ && !sfc_hpolys_.empty()) {
+            bool has_corridor_cost = corridorGradCostP(i, pos, gradp, costp);
+            if (has_corridor_cost) {
                 gradViolaPc = beta0 * gradp.transpose();
                 gradViolaPt = alpha * gradp.transpose() * vel;
                 jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
                 gdT(i) += omg * (costp / K + step * gradViolaPt);
                 costs(0) += omg * step * costp;
             }
-        }
-
-        // Threat zone cost calculation (soft constraint for air defense penetration)
-        if (threatGradCostP(i_dp, pos, gradp, costp)) {
-            gradViolaPc = beta0 * gradp.transpose();
-            gradViolaPt = alpha * gradp.transpose() * vel;
-            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
-            gdT(i) += omg * (costp / K + step * gradViolaPt);
-            costs(0) += omg * step * costp;  // Add to obstacle cost for logging
         }
 
         double gradt, grad_prev_t;
@@ -519,23 +447,6 @@ namespace ego_planner
             costs(4) += omg * step * costa;
         }
 
-        // Nonholonomic constraint cost (forward velocity + braking + curvature + lateral acceleration)
-        Eigen::Vector3d grad_nonholo_vel, grad_nonholo_acc;
-        double cost_nonholo;
-        if (nonholonomicGradCost(vel, acc, grad_nonholo_vel, grad_nonholo_acc, cost_nonholo)) {
-            // Gradient w.r.t. control points from velocity
-            gradViolaVc = beta1 * grad_nonholo_vel.transpose();
-            gradViolaVt = alpha * grad_nonholo_vel.transpose() * acc;
-
-            // Gradient w.r.t. control points from acceleration
-            gradViolaAc = beta2 * grad_nonholo_acc.transpose();
-            gradViolaAt = alpha * grad_nonholo_acc.transpose() * jer;
-
-            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * (gradViolaVc + gradViolaAc);
-            gdT(i) += omg * (cost_nonholo / K + step * (gradViolaVt + gradViolaAt));
-            costs(4) += omg * step * cost_nonholo;  // Add to feasibility cost
-        }
-
         s1 += step;
         if (j != K || (j == K && i == N - 1)) {
             ++i_dp;
@@ -575,11 +486,6 @@ namespace ego_planner
     costs(5) += var;
 
     dbg_cost_formation_ = costs(2);
-
-    // Visualize ESDF samples
-    if (should_visualize && !esdf_sample_points.empty()) {
-        visualizeESDFSamples(esdf_sample_points);
-    }
 
   }
 
@@ -669,58 +575,96 @@ namespace ego_planner
     return ret;
   }
 
-  bool PolyTrajOptimizer::obstacleGradCostP(const int i_dp,
-                                            const Eigen::Vector3d &p,
-                                            Eigen::Vector3d &gradp,
-                                            double &costp)
+  void PolyTrajOptimizer::buildPiecePolytopeMapping(int piece_num)
   {
-
-    if (i_dp == 0 || i_dp >= cps_.cp_size * 2 / 3)
-      return false;
-
-    bool ret = false;
-    gradp.setZero();
-    costp = 0;
-
-    double dist;
-    grid_map_->evaluateEDT(p, dist);
-    double dist_err = obs_clearance_ - dist;
-    if (dist_err > 0)
+    // GCOPTER-style: distribute pieces evenly across polytopes
+    int polyN = sfc_hpolys_.size();
+    if (polyN == 0 || piece_num <= 0)
     {
-      ret = true;
-      Eigen::Vector3d dist_grad;
-      grid_map_->evaluateFirstGrad(p, dist_grad);
-
-      costp = wei_obs_ * pow(dist_err, 3);
-      gradp = -wei_obs_ * 3.0 * pow(dist_err, 2) * dist_grad;
+      hpoly_piece_idx_.resize(0);
+      return;
     }
 
-    return ret;
+    hpoly_piece_idx_.resize(piece_num);
+
+    if (polyN == 1)
+    {
+      // All pieces map to the single polytope
+      hpoly_piece_idx_.setZero();
+      return;
+    }
+
+    // Distribute pieces proportionally across polytopes
+    // Each polytope gets at least 1 piece
+    Eigen::VectorXi piecesPerPoly = Eigen::VectorXi::Ones(polyN);
+    int remaining = piece_num - polyN;
+    // Distribute remaining pieces evenly
+    for (int i = 0; i < remaining; ++i)
+    {
+      piecesPerPoly(i % polyN) += 1;
+    }
+
+    // Build the mapping
+    int j = 0;
+    for (int i = 0; i < polyN; ++i)
+    {
+      for (int k = 0; k < piecesPerPoly(i) && j < piece_num; ++k, ++j)
+      {
+        hpoly_piece_idx_(j) = i;
+      }
+    }
   }
 
-  bool PolyTrajOptimizer::threatGradCostP(const int i_dp,
-                                          const Eigen::Vector3d &p,
-                                          Eigen::Vector3d &gradp,
-                                          double &costp)
+  bool PolyTrajOptimizer::corridorGradCostP(const int piece_idx,
+                                             const Eigen::Vector3d &p,
+                                             Eigen::Vector3d &gradp,
+                                             double &costp)
   {
-    if (i_dp == 0 || i_dp >= cps_.cp_size * 2 / 3)
-      return false;
-
-    bool ret = false;
     gradp.setZero();
     costp = 0;
 
-    // Get threat level and gradient from grid map
-    double threat = grid_map_->getThreatLevel(p);
+    if (sfc_hpolys_.empty()) return false;
 
-    if (threat > 0.01) // Only penalize significant threats
+    // GCOPTER-style: use piece-to-polytope mapping
+    int poly_idx;
+    if (hpoly_piece_idx_.size() > 0 && piece_idx >= 0 && piece_idx < hpoly_piece_idx_.size())
     {
-      ret = true;
-      Eigen::Vector3d threat_grad = grid_map_->getThreatGradient(p);
+      poly_idx = hpoly_piece_idx_(piece_idx);
+    }
+    else
+    {
+      // Fallback: find closest polytope (legacy behavior)
+      double best_max_violation = std::numeric_limits<double>::max();
+      poly_idx = 0;
+      for (size_t k = 0; k < sfc_hpolys_.size(); ++k)
+      {
+        Eigen::VectorXd violations = sfc_hpolys_[k].leftCols<3>() * p + sfc_hpolys_[k].rightCols<1>();
+        double max_viola = violations.maxCoeff();
+        if (max_viola < best_max_violation)
+        {
+          best_max_violation = max_viola;
+          poly_idx = k;
+        }
+      }
+    }
 
-      // Quadratic cost: increases smoothly with threat level
-      costp = wei_threat_ * pow(threat, 2);
-      gradp = wei_threat_ * 2.0 * threat * threat_grad;
+    // GCOPTER-style: smoothedL1 penalty for each violating face of assigned polytope
+    bool ret = false;
+    const Eigen::MatrixX4d &hPoly = sfc_hpolys_[poly_idx];
+    int K = hPoly.rows();
+
+    for (int k = 0; k < K; ++k)
+    {
+      Eigen::Vector3d outerNormal = hPoly.row(k).head<3>();
+      double violaPos = outerNormal.dot(p) + hPoly(k, 3);
+
+      double violaPosPena, violaPosPenaD;
+      if (smoothedL1(violaPos, smoothing_eps_, violaPosPena, violaPosPenaD))
+      {
+        gradp += wei_obs_ * violaPosPenaD * outerNormal;
+        costp += wei_obs_ * violaPosPena;
+        ret = true;
+      }
     }
 
     return ret;
@@ -808,11 +752,13 @@ namespace ego_planner
                                                Eigen::Vector3d &gradv,
                                                double &costv)
   {
+    // GCOPTER-style: smoothedL1 penalty for each velocity component
     double vpen = v.squaredNorm() - max_vel_ * max_vel_;
-    if (vpen > 0)
+    double violaVelPena, violaVelPenaD;
+    if (smoothedL1(vpen, smoothing_eps_, violaVelPena, violaVelPenaD))
     {
-      gradv = wei_feas_ * 6 * vpen * vpen * v;
-      costv = wei_feas_ * vpen * vpen * vpen;
+      gradv = wei_feas_ * violaVelPenaD * 2.0 * v;
+      costv = wei_feas_ * violaVelPena;
       return true;
     }
     return false;
@@ -822,182 +768,16 @@ namespace ego_planner
                                                Eigen::Vector3d &grada,
                                                double &costa)
   {
+    // GCOPTER-style: smoothedL1 penalty for acceleration
     double apen = a.squaredNorm() - max_acc_ * max_acc_;
-    if (apen > 0)
+    double violaAccPena, violaAccPenaD;
+    if (smoothedL1(apen, smoothing_eps_, violaAccPena, violaAccPenaD))
     {
-      grada = wei_feas_ * 6 * apen * apen * a;
-      costa = wei_feas_ * apen * apen * apen;
+      grada = wei_feas_ * violaAccPenaD * 2.0 * a;
+      costa = wei_feas_ * violaAccPena;
       return true;
     }
     return false;
-  }
-
-  bool PolyTrajOptimizer::nonholonomicGradCost(const Eigen::Vector3d &vel,
-                                               const Eigen::Vector3d &acc,
-                                               Eigen::Vector3d &grad_vel,
-                                               Eigen::Vector3d &grad_acc,
-                                               double &cost_nonholo)
-  {
-    /**
-     * Nonholonomic Constraints for Rover Dynamics
-     *
-     * Combines 4 constraints to prevent backward motion, sharp turns, and sudden braking:
-     * 1. Forward velocity constraint: v_forward > v_min (prevent backward/hovering)
-     * 2. Braking deceleration constraint: a_forward > -a_brake_max (prevent sudden stops)
-     * 3. Curvature constraint: κ < κ_max (prevent sharp turns)
-     * 4. Centripetal acceleration: v²×κ < a_lat_max (speed-curvature coupling)
-     */
-
-    grad_vel.setZero();
-    grad_acc.setZero();
-    cost_nonholo = 0.0;
-
-    double cost1 = 0.0, cost2 = 0.0, cost3 = 0.0, cost4 = 0.0;  // Individual costs
-    double v_norm = vel.norm();
-
-    // Skip if velocity is too small (stationary or near-stationary)
-    if (v_norm < 1e-4) {
-      // Penalize zero velocity (hovering not allowed for rover)
-      if (min_forward_vel_ > 1e-3) {
-        double vel_deficit = min_forward_vel_;
-        cost_nonholo = wei_nonholo_ * vel_deficit * vel_deficit * vel_deficit;
-        // Gradient is zero since velocity is already zero
-      }
-      return cost_nonholo > 0.0;
-    }
-
-    // Calculate heading (velocity direction)
-    Eigen::Vector3d heading = vel / v_norm;
-
-    // ========== Constraint 1: Minimum Forward Velocity ==========
-    // Prevent backward motion and hovering
-    double v_forward = v_norm;  // In 2D/3D, we want minimum speed
-
-    if (v_forward < min_forward_vel_) {
-      double fwd_deficit = min_forward_vel_ - v_forward;
-      cost1 = wei_nonholo_ * fwd_deficit * fwd_deficit * fwd_deficit;
-
-      // Gradient: ∂cost/∂v = ∂cost/∂||v|| · ∂||v||/∂v
-      Eigen::Vector3d grad1_v = wei_nonholo_ * 3.0 * fwd_deficit * fwd_deficit * (-heading);
-
-      cost_nonholo += cost1;
-      grad_vel += grad1_v;
-      dbg_fwd_vel_violations_++;
-      dbg_cost_fwd_vel_ += cost1;
-    }
-
-    // ========== Constraint 2: Maximum Braking Deceleration ==========
-    // Prevent sudden stops (deceleration in direction of motion)
-    double a_forward = acc.dot(heading);
-
-    if (a_forward < -max_brake_decel_) {
-      double brake_excess = -max_brake_decel_ - a_forward;
-      cost2 = wei_nonholo_ * brake_excess * brake_excess * brake_excess;
-
-      // Gradient w.r.t. acceleration
-      Eigen::Vector3d grad2_a = wei_nonholo_ * 3.0 * brake_excess * brake_excess * (-heading);
-
-      // Gradient w.r.t. velocity (from heading dependency)
-      // ∂(a·h)/∂v = ∂(a·(v/||v||))/∂v = (a - (a·h)h) / ||v||
-      Eigen::Vector3d grad2_v = wei_nonholo_ * 3.0 * brake_excess * brake_excess *
-                                (acc - a_forward * heading) / v_norm;
-
-      cost_nonholo += cost2;
-      grad_acc += grad2_a;
-      grad_vel += grad2_v;
-      dbg_brake_violations_++;
-      dbg_cost_braking_ += cost2;
-      if (a_forward < dbg_max_brake_decel_) {
-        dbg_max_brake_decel_ = a_forward;
-      }
-    }
-
-    // ========== Constraint 3: Curvature Constraint ==========
-    // Prevent sharp turns (minimum turning radius)
-    Eigen::Vector3d v_cross_a = vel.cross(acc);
-    double cross_norm = v_cross_a.norm();
-
-    // Use a minimum velocity threshold to prevent numerical instability
-    // When v is very small, curvature becomes unreliable, so we clip it
-    const double v_min_for_curvature = 0.05;  // 5 cm/s minimum
-    double v_safe = std::max(v_norm, v_min_for_curvature);
-    double v_safe3 = v_safe * v_safe * v_safe;
-
-    // Calculate curvature once and reuse for both constraints
-    double curvature = 0.0;
-    Eigen::Vector3d dcurv_dcross = Eigen::Vector3d::Zero();
-    double dcurv_dvnorm = 0.0;
-
-    if (cross_norm > 1e-6) {
-      // Use safe velocity for curvature calculation (prevents division by near-zero)
-      curvature = cross_norm / v_safe3;
-
-      // Track maximum curvature
-      if (curvature > dbg_max_curvature_) {
-        dbg_max_curvature_ = curvature;
-      }
-
-      // Pre-compute curvature gradients for reuse
-      // ∂κ/∂(v×a) = 1 / v_safe³ · (v×a) / ||v×a||
-      dcurv_dcross = v_cross_a / (cross_norm * v_safe3);
-      // ∂κ/∂||v|| = -3κ / v_safe (only if v_norm >= v_min, else gradient is zero)
-      dcurv_dvnorm = (v_norm >= v_min_for_curvature) ? (-3.0 * curvature / v_safe) : 0.0;
-
-      if (curvature > max_curvature_) {
-        double curv_excess = curvature - max_curvature_;
-        cost3 = wei_nonholo_ * curv_excess * curv_excess * curv_excess;
-
-        // ∂cost/∂κ
-        double dcost_dcurv = wei_nonholo_ * 3.0 * curv_excess * curv_excess;
-
-        // Gradient w.r.t. velocity
-        Eigen::Vector3d grad3_v_cross = acc.cross(dcurv_dcross);
-        Eigen::Vector3d grad3_v_norm = dcurv_dvnorm * heading;
-        Eigen::Vector3d grad3_v = dcost_dcurv * (grad3_v_cross + grad3_v_norm);
-
-        // Gradient w.r.t. acceleration
-        Eigen::Vector3d grad3_a = dcost_dcurv * vel.cross(dcurv_dcross);
-
-        cost_nonholo += cost3;
-        grad_vel += grad3_v;
-        grad_acc += grad3_a;
-        dbg_curv_violations_++;
-        dbg_cost_curvature_ += cost3;
-      }
-    }
-
-    // ========== Constraint 4: Centripetal Acceleration ==========
-    // Speed-curvature coupling: prevent rollover/slip
-    if (cross_norm > 1e-6) {
-      // Reuse curvature calculated above (no redundant computation)
-      double centripetal_acc = v_norm * v_norm * curvature;
-
-      if (centripetal_acc > max_lateral_accel_) {
-        double lat_excess = centripetal_acc - max_lateral_accel_;
-        cost4 = wei_nonholo_ * lat_excess * lat_excess * lat_excess;
-
-        // ∂cost/∂(v²κ)
-        double dcost_dlat = wei_nonholo_ * 3.0 * lat_excess * lat_excess;
-
-        // Complete gradient: ∂(v²κ)/∂v = 2v·κ·heading + v²·∂κ/∂v·heading
-        // ∂(v²κ)/∂(v×a) = v²·∂κ/∂(v×a)
-        Eigen::Vector3d grad4_v_norm = 2.0 * v_norm * curvature * heading;
-        Eigen::Vector3d grad4_v_curv = v_norm * v_norm * dcurv_dvnorm * heading;
-        Eigen::Vector3d grad4_v = dcost_dlat * (grad4_v_norm + grad4_v_curv);
-
-        Eigen::Vector3d grad4_v_cross = v_norm * v_norm * acc.cross(dcurv_dcross);
-        Eigen::Vector3d grad4_a_cross = v_norm * v_norm * vel.cross(dcurv_dcross);
-        Eigen::Vector3d grad4_a = dcost_dlat * grad4_a_cross;
-        grad_vel += grad4_v + dcost_dlat * grad4_v_cross;
-        grad_acc += grad4_a;
-
-        cost_nonholo += cost4;
-        dbg_lat_accel_violations_++;
-        dbg_cost_lat_accel_ += cost4;
-      }
-    }
-
-    return cost_nonholo > 0.0;
   }
 
   void PolyTrajOptimizer::distanceSqrVarianceWithGradCost2p(const Eigen::MatrixXd &ps,
@@ -1026,52 +806,6 @@ namespace ego_planner
         gdp.col(i) += wei_sqrvar_ * (-4.0 * (dsqrs(i) - dsqrmean) / N * dps.col(i));
       }
     }
-  }
-
-  void PolyTrajOptimizer::astarWithMinTraj(const Eigen::MatrixXd &iniState,
-                                           const Eigen::MatrixXd &finState,
-                                           vector<Eigen::Vector3d> &simple_path,
-                                           Eigen::MatrixXd &ctl_points,
-                                           poly_traj::MinJerkOpt &frontendMJ)
-  {
-    Eigen::Vector3d start_pos = iniState.col(0);
-    Eigen::Vector3d end_pos = finState.col(0);
-
-    simple_path = a_star_->astarSearchAndGetSimplePath(grid_map_->getResolution(), start_pos, end_pos, drone_id_);
-
-    int piece_num = simple_path.size() - 1;
-    Eigen::MatrixXd innerPts;
-    if (piece_num > 1)
-    {
-      innerPts.resize(3, piece_num - 1);
-      for (int i = 0; i < piece_num - 1; i++)
-        innerPts.col(i) = simple_path[i + 1];
-    }
-    else
-    {
-      piece_num = 2;
-      innerPts.resize(3, 1);
-      innerPts.col(0) = (simple_path[0] + simple_path[1]) / 2;
-    }
-    frontendMJ.reset(iniState, finState, piece_num);
-
-    double des_vel = max_vel_;
-    Eigen::VectorXd time_vec(piece_num);
-    int debug_num = 0;
-    do
-    {
-      for (size_t i = 1; i <= piece_num; ++i)
-      {
-        time_vec(i - 1) = (i == 1) ? (simple_path[1] - start_pos).norm() / des_vel
-                                   : (simple_path[i] - simple_path[i - 1]).norm() / des_vel;
-      }
-      frontendMJ.generate(innerPts, time_vec);
-      debug_num++;
-      des_vel /= 1.5;
-    } while (frontendMJ.getTraj().getMaxVelRate() > max_vel_ && debug_num < 1);
-
-    poly_traj::Trajectory traj = frontendMJ.getTraj();
-    ctl_points = frontendMJ.getInitConstrainPoints(cps_num_prePiece_);
   }
 
   bool PolyTrajOptimizer::getFormationPos(vector<Eigen::Vector3d> &swarm_graph_pos, Eigen::Vector3d pos)
@@ -1177,17 +911,6 @@ namespace ego_planner
     node_->get_parameter("optimization/weight_formation", wei_formation_);
     wei_formation_base_ = wei_formation_;  // Store base weight for adaptive adjustment
 
-    // Only declare if not already declared (may be declared by ReplanFSM for dynamic changes)
-    if (!node_->has_parameter("optimization/weight_nonholonomic")) {
-        node_->declare_parameter("optimization/weight_nonholonomic", 15000.0);
-    }
-    node_->get_parameter("optimization/weight_nonholonomic", wei_nonholo_);
-
-    node_->declare_parameter("optimization/weight_threat", 100.0);
-    node_->get_parameter("optimization/weight_threat", wei_threat_);
-
-    node_->declare_parameter("optimization/obstacle_clearance", 0.1);
-    node_->get_parameter("optimization/obstacle_clearance", obs_clearance_);
     node_->declare_parameter("optimization/swarm_clearance", 0.5);
     node_->get_parameter("optimization/swarm_clearance", swarm_clearance_);
     node_->declare_parameter("optimization/max_vel", 1.0);
@@ -1195,15 +918,9 @@ namespace ego_planner
     node_->declare_parameter("optimization/max_acc", 1.0);
     node_->get_parameter("optimization/max_acc", max_acc_);
 
-    // Check vehicle type to determine if nonholonomic constraints should be applied
-    // 3D holonomic motion - no nonholonomic constraints
-    min_forward_vel_ = 0.0;
-    max_brake_decel_ = 999.0;
-    max_curvature_ = 999.0;
-    max_lateral_accel_ = 999.0;
-    wei_nonholo_ = 0.0;
-
-    LOG_INFO("3D holonomic motion enabled");
+    // GCOPTER-style smoothedL1 smoothing factor
+    node_->declare_parameter("optimization/smoothing_eps", 0.01);
+    node_->get_parameter("optimization/smoothing_eps", smoothing_eps_);
 
     // Log initialization based on enable_debug_logs setting
     if (enable_debug_logs_) {
@@ -1226,25 +943,6 @@ namespace ego_planner
     setDesiredFormation(initial_formation_type);
   }
 
-  void PolyTrajOptimizer::setEnvironment(const GridMap::Ptr &map)
-  {
-    grid_map_ = map;
-    a_star_.reset(new AStar);
-
-    // Set log manager for A* if available
-    if (log_manager_) {
-      a_star_->setLogManager(log_manager_);
-    }
-
-    // Calculate pool size based on map size and resolution
-    Eigen::Vector3d map_size = grid_map_->getMapSize();
-    double resolution = grid_map_->getResolution();
-
-    Eigen::Vector3i pool_size(800, 800, 100);
-
-    a_star_->initGridMap(grid_map_, pool_size);
-  }
-
   void PolyTrajOptimizer::setControlPoints(const Eigen::MatrixXd &points)
   {
     cps_.resize_cp(points.cols());
@@ -1259,12 +957,6 @@ namespace ego_planner
   void PolyTrajOptimizer::setDroneId(const int drone_id)
   {
     drone_id_ = drone_id;
-
-    if (node_) {
-      esdf_sample_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-          "/planner/esdf_samples_drone_" + std::to_string(drone_id_), 10);
-      LOG_INFO("ESDF sample visualization publisher initialized for drone %d", drone_id_);
-    }
   }
 
   void PolyTrajOptimizer::setFormation(const std::vector<Eigen::Vector3d>& formation_positions, int formation_size)
@@ -1435,97 +1127,4 @@ namespace ego_planner
     return max_jerk;
   }
 
-  void PolyTrajOptimizer::visualizeESDFSamples(const std::vector<Eigen::Vector3d>& sample_points)
-  {
-    if (!esdf_sample_pub_) return;
-
-    visualization_msgs::msg::MarkerArray marker_array;
-
-    for (size_t i = 0; i < sample_points.size(); ++i)
-    {
-      const auto& p = sample_points[i];
-
-      double dist;
-      grid_map_->evaluateEDT(p, dist);
-
-      int occ = grid_map_->getOccupancy(p);
-      int infl = grid_map_->getInflateOccupancy(p);
-
-      visualization_msgs::msg::Marker marker;
-      marker.header.frame_id = "map";
-      marker.header.stamp = node_->get_clock()->now();
-      marker.ns = "esdf_samples";
-      marker.id = i;
-      marker.type = visualization_msgs::msg::Marker::SPHERE;
-      marker.action = visualization_msgs::msg::Marker::ADD;
-      marker.lifetime = rclcpp::Duration::from_seconds(0.5);
-
-      marker.pose.position.x = p.x();
-      marker.pose.position.y = p.y();
-      marker.pose.position.z = p.z();
-      marker.pose.orientation.w = 1.0;
-
-      double sphere_size = std::max(0.1, std::min(0.5, dist * 0.3));
-      marker.scale.x = marker.scale.y = marker.scale.z = sphere_size;
-
-      if (occ == 1 || infl == 1)
-      {
-        marker.color.r = 0.0;
-        marker.color.g = 0.0;
-        marker.color.b = 1.0;
-        marker.color.a = 1.0;
-      }
-      else if (dist < obs_clearance_)
-      {
-        marker.color.r = 1.0;
-        marker.color.g = 0.0;
-        marker.color.b = 0.0;
-        marker.color.a = 0.9;
-      }
-      else if (dist < obs_clearance_ * 1.5)
-      {
-        marker.color.r = 1.0;
-        marker.color.g = 1.0;
-        marker.color.b = 0.0;
-        marker.color.a = 0.7;
-      }
-      else
-      {
-        marker.color.r = 0.0;
-        marker.color.g = 1.0;
-        marker.color.b = 0.0;
-        marker.color.a = 0.5;
-      }
-
-      marker_array.markers.push_back(marker);
-
-      visualization_msgs::msg::Marker text_marker;
-      text_marker.header = marker.header;
-      text_marker.ns = "esdf_values";
-      text_marker.id = i + 10000;
-      text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-      text_marker.action = visualization_msgs::msg::Marker::ADD;
-      text_marker.lifetime = rclcpp::Duration::from_seconds(0.5);
-
-      text_marker.pose.position.x = p.x();
-      text_marker.pose.position.y = p.y();
-      text_marker.pose.position.z = p.z() + 0.3;
-      text_marker.pose.orientation.w = 1.0;
-
-      text_marker.scale.z = 0.15;
-
-      text_marker.color.r = 1.0;
-      text_marker.color.g = 1.0;
-      text_marker.color.b = 1.0;
-      text_marker.color.a = 1.0;
-
-      char text_buf[64];
-      snprintf(text_buf, sizeof(text_buf), "%.2fm\nocc:%d", dist, occ);
-      text_marker.text = text_buf;
-
-      marker_array.markers.push_back(text_marker);
-    }
-
-    esdf_sample_pub_->publish(marker_array);
-  }
 }

@@ -82,23 +82,6 @@ namespace ego_planner
 
   };
 
-  struct PlanParameters
-  {
-    /* planning algorithm parameters */
-    double max_vel_, max_acc_;     // physical limits
-    double ctrl_pt_dist;           // distance between adjacient B-spline control points
-    double polyTraj_piece_length;  // distance between adjacient B-spline control points
-    double feasibility_tolerance_; // permitted ratio of vel/acc exceeding limits
-    double planning_horizen_;
-    bool use_distinctive_trajs;
-    int drone_id; // single drone: drone_id <= -1, swarm: drone_id >= 0
-
-    /* processing time */
-    double time_search_ = 0.0;
-    double time_optimize_ = 0.0;
-    double time_adjust_ = 0.0;
-  };
-
 } // namespace ego_planner
 
 #endif

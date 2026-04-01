@@ -44,12 +44,6 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   // Load obstacle parameters from obstacles.yaml
   loadObstacleParameters();
 
-  // Load threat zone parameters
-  loadThreatZones();
-
-  // Load road boundary parameters from map.yaml
-  loadRoadParameters();
-
   rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
   auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
@@ -57,9 +51,6 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   optimized_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("opt_trajectory", sensor_qos);
   global_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("global_trajectory", sensor_qos);
   simple_path_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("simple_path_trajectory", sensor_qos);
-  road_boundary_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("road_boundary", sensor_qos);
-  threat_field_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("threat_field", sensor_qos);
-
   position_pubs_.resize(num_drones_);
   position_marker_pubs_.resize(num_drones_);
   drone_data_.resize(num_drones_);
@@ -122,18 +113,6 @@ PathVisualization::PathVisualization() : Node("path_visualization")
     publishObstacles(); // Initial publish
   }
   
-  // Publish road boundaries if enabled
-  if (true)
-  {
-    publishRoadBoundaries();
-  }
-
-  // Publish threat field if enabled
-  if (enable_threat_zones_)
-  {
-    threat_field_timer_ = this->create_wall_timer(2000ms, std::bind(&PathVisualization::publishThreatField, this));
-    publishThreatField(); // Initial publish
-  }
 }
 
 void PathVisualization::simplePathCallback(const nav_msgs::msg::Path::SharedPtr msg, int drone_id)
@@ -346,10 +325,7 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
     publishObstacles();
   }
 
-  publishRoadBoundaries();
-
   Eigen::Vector3d current_pos = data.start_pt;
-  double best_t = 0.0;
   double min_dist = std::numeric_limits<double>::max();
   
   // Find closest point on trajectory
@@ -379,14 +355,12 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
     if (dist < min_dist)
     {
       min_dist = dist;
-      best_t = t;
     }
   }
   // Handle large jumps by resetting to trajectory start
   if (min_dist > 2.0)
   {
     RCLCPP_WARN(this->get_logger(), "Drone %d: Large jump detected (%.2f m), resetting to trajectory start", drone_id, min_dist);
-    best_t = 0.0;
     data.start_pt = Eigen::Vector3d(
         msg->coef_x[0], // Start point is just the first coefficient for position
         msg->coef_y[0],
@@ -633,193 +607,6 @@ void PathVisualization::publishObstacles()
   RCLCPP_DEBUG(this->get_logger(), "Published %zu obstacles", obstacle_centers_.size());
 }
 
-void PathVisualization::loadRoadParameters()
-{
-  // Load road boundary parameters from map.yaml
-  this->declare_parameter("grid_map/use_road_boundary", false);
-  this->declare_parameter("grid_map/road_width", 8.0);
-  this->declare_parameter("grid_map/road_center_x", 0.0);
-  this->declare_parameter("grid_map/road_margin", 0.5);
-  this->declare_parameter("grid_map/map_size_y", 120.0);
-  this->declare_parameter("grid_map/road_segments", std::vector<double>{});
-  
-  this->get_parameter("grid_map/use_road_boundary", use_road_boundary_);
-  this->get_parameter("grid_map/road_width", road_width_);
-  this->get_parameter("grid_map/road_center_x", road_center_x_);
-  this->get_parameter("grid_map/road_margin", road_margin_);
-  this->get_parameter("grid_map/map_size_y", map_size_y_);
-
-  std::vector<double> road_segments_flat;
-  if (this->get_parameter("grid_map/road_segments", road_segments_flat)) {
-    if (road_segments_flat.size() % 5 != 0) {
-      RCLCPP_ERROR(this->get_logger(), "Invalid road_segments format: size must be multiple of 5");
-      return;
-    }
-
-    for (size_t i = 0; i < road_segments_flat.size(); i += 5) {
-      std::vector<double> segment;
-      segment.push_back(road_segments_flat[i]);     // start_x
-      segment.push_back(road_segments_flat[i + 1]); // start_y
-      segment.push_back(road_segments_flat[i + 2]); // end_x
-      segment.push_back(road_segments_flat[i + 3]); // end_y
-      segment.push_back(road_segments_flat[i + 4]); // width
-      road_segments_.push_back(segment);
-    }
-  }
-  
-  RCLCPP_INFO(this->get_logger(), "Road boundary visualization: %s", use_road_boundary_ ? "enabled" : "disabled");
-  if (use_road_boundary_) {
-    RCLCPP_INFO(this->get_logger(), "Road center_x: %.1f m", road_center_x_);
-    RCLCPP_INFO(this->get_logger(), "Loaded %zu road segments:", road_segments_.size());
-    for (size_t i = 0; i < road_segments_.size(); ++i) {
-      const auto& seg = road_segments_[i];
-      RCLCPP_INFO(this->get_logger(), "  Segment %zu: (%.1f, %.1f) -> (%.1f, %.1f), width: %.1f m",
-                  i, seg[0], seg[1], seg[2], seg[3], seg[4]);
-    }
-  }
-}
-
-void PathVisualization::publishRoadBoundaries()
-{
-  if (!use_road_boundary_) {
-    return;
-  }
-
-  if (!road_segments_.empty()) {
-    int marker_id = 0;
-
-    for (const auto& segment : road_segments_) {
-      double start_x = segment[0];
-      double start_y = segment[1];
-      double end_x = segment[2];
-      double end_y = segment[3];
-
-      double dx = end_x - start_x;
-      double dy = end_y - start_y;
-      double length = std::sqrt(dx*dx + dy*dy);
-      if (length < 1e-6) continue;
-
-      double nx = -dy / length;
-      double ny = dx / length;
-      
-      double half_width = segment[4] / 2.0;
-
-      auto left_marker = createMarker("road_boundary", marker_id++, 
-        visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 0.0, 0.0, 0.0, 1.0);
-      geometry_msgs::msg::Point p1, p2;
-
-      p1.x = start_x + nx * half_width - dx * 0.5; 
-      p1.y = start_y + ny * half_width - dy * 0.5;
-      p1.z = 0.5;
-      left_marker.points.push_back(p1);
-
-      p1.x = start_x + nx * half_width; 
-      p1.y = start_y + ny * half_width; 
-      p1.z = 0.5;
-      p2.x = end_x + nx * half_width; 
-      p2.y = end_y + ny * half_width; 
-      p2.z = 0.5;
-      left_marker.points.push_back(p1);
-      left_marker.points.push_back(p2);
-
-      p2.x = end_x + nx * half_width + dx * 0.5;
-      p2.y = end_y + ny * half_width + dy * 0.5;
-      p2.z = 0.5;
-      left_marker.points.push_back(p2);
-      
-      road_boundary_pub_->publish(left_marker);
-
-      auto right_marker = createMarker("road_boundary", marker_id++,
-        visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 0.0, 0.0, 0.0, 1.0);
-
-      p1.x = start_x - nx * half_width - dx * 0.5;
-      p1.y = start_y - ny * half_width - dy * 0.5;
-      p1.z = 0.5;
-      right_marker.points.push_back(p1);
-
-      p1.x = start_x - nx * half_width;
-      p1.y = start_y - ny * half_width;
-      p1.z = 0.5;
-      p2.x = end_x - nx * half_width;
-      p2.y = end_y - ny * half_width;
-      p2.z = 0.5;
-      right_marker.points.push_back(p1);
-      right_marker.points.push_back(p2);
-
-      p2.x = end_x - nx * half_width + dx * 0.5;
-      p2.y = end_y - ny * half_width + dy * 0.5;
-      p2.z = 0.5;
-      right_marker.points.push_back(p2);
-      
-      road_boundary_pub_->publish(right_marker);
-    }
-  }
-
-  else {
-    double road_half_width = road_width_ / 2.0;
-    double road_left = road_center_x_ - road_half_width;
-    double road_right = road_center_x_ + road_half_width;
-
-    auto left_marker = createMarker("road_boundary", 0, 
-      visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 0.0, 0.0, 0.0, 1.0);
-    geometry_msgs::msg::Point p1, p2;
-    p1.x = road_left; p1.y = -map_size_y_/2.0; p1.z = 0.5;
-    p2.x = road_left; p2.y = map_size_y_/2.0; p2.z = 0.5;
-    left_marker.points.push_back(p1);
-    left_marker.points.push_back(p2);
-    road_boundary_pub_->publish(left_marker);
-
-    auto right_marker = createMarker("road_boundary", 1,
-      visualization_msgs::msg::Marker::LINE_STRIP, 0.3, 0.0, 0.0, 0.0, 1.0);
-    p1.x = road_right; p1.y = -map_size_y_/2.0; p1.z = 0.5;
-    p2.x = road_right; p2.y = map_size_y_/2.0; p2.z = 0.5;
-    right_marker.points.push_back(p1);
-    right_marker.points.push_back(p2);
-    road_boundary_pub_->publish(right_marker);
-
-  }
-}
-
-void PathVisualization::loadThreatZones()
-{
-  this->declare_parameter("enable_threat_zones", false);
-  this->declare_parameter("threat_visualization_resolution", 2.0);
-  this->declare_parameter("threat_zones", std::vector<double>());
-
-  this->get_parameter("enable_threat_zones", enable_threat_zones_);
-  this->get_parameter("threat_visualization_resolution", threat_visualization_resolution_);
-
-  std::vector<double> threat_zones_flat;
-  if (this->get_parameter("threat_zones", threat_zones_flat)) {
-    // Format: [center_x, center_y, center_z, detection_range, engagement_range, max_threat_level, ...]
-    if (threat_zones_flat.size() % 6 != 0) {
-      RCLCPP_ERROR(this->get_logger(), "Invalid threat_zones format: size must be multiple of 6");
-      return;
-    }
-
-    for (size_t i = 0; i < threat_zones_flat.size(); i += 6) {
-      ThreatZoneViz zone;
-      zone.center = Eigen::Vector3d(threat_zones_flat[i], threat_zones_flat[i + 1], threat_zones_flat[i + 2]);
-      zone.detection_range = threat_zones_flat[i + 3];
-      zone.engagement_range = threat_zones_flat[i + 4];
-      zone.max_threat_level = threat_zones_flat[i + 5];
-      zone.name = "ThreatZone_" + std::to_string(i / 6);
-      threat_zones_.push_back(zone);
-    }
-  }
-
-  RCLCPP_INFO(this->get_logger(), "Threat zones visualization: %s", enable_threat_zones_ ? "enabled" : "disabled");
-  if (enable_threat_zones_) {
-    RCLCPP_INFO(this->get_logger(), "Loaded %zu threat zones (resolution: %.1fm):",
-                threat_zones_.size(), threat_visualization_resolution_);
-    for (size_t i = 0; i < threat_zones_.size(); ++i) {
-      const auto& zone = threat_zones_[i];
-      RCLCPP_INFO(this->get_logger(), "  Zone %zu: center=(%.1f, %.1f, %.1f), detection=%.1fm, engagement=%.1fm, threat=%.1f",
-                  i, zone.center.x(), zone.center.y(), zone.center.z(),
-                  zone.detection_range, zone.engagement_range, zone.max_threat_level);
-    }
-  }
-}
 
 void PathVisualization::publishTraveledPaths()
 {
@@ -846,254 +633,3 @@ void PathVisualization::publishTraveledPaths()
   }
 }
 
-void PathVisualization::publishThreatField()
-{
-  if (!enable_threat_zones_ || threat_zones_.empty()) {
-    return;
-  }
-
-  // Helper function: Calculate threat level at a given position (Gaussian decay)
-  auto calculateThreat = [this](const Eigen::Vector3d& pos) -> double {
-    double total_threat = 0.0;
-    for (const auto& zone : threat_zones_) {
-      Eigen::Vector3d diff = pos - zone.center;
-      double dist = diff.norm();
-
-      // Gaussian decay within engagement range
-      if (dist < zone.engagement_range) {
-        double sigma = zone.engagement_range / 3.0;
-        double normalized_dist = dist / sigma;
-        total_threat += zone.max_threat_level * exp(-0.5 * normalized_dist * normalized_dist);
-      }
-      // Linear decay in detection range
-      else if (dist < zone.detection_range) {
-        double ratio = (dist - zone.engagement_range) /
-                      (zone.detection_range - zone.engagement_range);
-        total_threat += zone.max_threat_level * 0.3 * (1.0 - ratio);
-      }
-    }
-    return total_threat;
-  };
-
-  // Helper function: Calculate threat gradient at a given position
-  auto getThreatGradient = [this](const Eigen::Vector3d& pos) -> Eigen::Vector3d {
-    Eigen::Vector3d grad = Eigen::Vector3d::Zero();
-
-    for (const auto& zone : threat_zones_) {
-      Eigen::Vector3d diff = pos - zone.center;
-      double dist = diff.norm();
-
-      if (dist < 1e-6) continue;  // Avoid division by zero at center
-
-      Eigen::Vector3d dir = diff / dist;  // Normalized direction (pointing away from threat)
-
-      // Gradient of Gaussian decay
-      if (dist < zone.engagement_range) {
-        double sigma = zone.engagement_range / 3.0;
-        double sigma_sq = sigma * sigma;
-        double normalized_dist = dist / sigma;
-        double gaussian = exp(-0.5 * normalized_dist * normalized_dist);
-
-        // Gradient magnitude (negative because threat decreases away from center)
-        double grad_magnitude = -zone.max_threat_level * (dist / sigma_sq) * gaussian;
-        grad += dir * grad_magnitude;
-      }
-      // Gradient of linear decay
-      else if (dist < zone.detection_range) {
-        double range_diff = zone.detection_range - zone.engagement_range;
-        double grad_magnitude = -zone.max_threat_level * 0.3 / range_diff;
-        grad += dir * grad_magnitude;
-      }
-    }
-
-    return grad;
-  };
-
-  // Helper function: Convert threat level to RGB color (pure red gradient)
-  auto threatToColor = [](double threat, double max_threat) -> std::tuple<float, float, float> {
-    // Normalize threat to [0, 1]
-    double normalized = std::min(threat / max_threat, 1.0);
-
-    // Apply power function to make high threat areas more prominent
-    normalized = std::pow(normalized, 0.8);
-
-    // Pure red gradient: Light red (far from center) -> Dark red (near center)
-    // Inverted: high threat (center) = pure red, low threat (edge) = light red
-    float r, g, b;
-
-    // Pure red gradient (only red channel, no pink)
-    r = 1.0;  // Always full red
-    g = 0.0;  // No green
-    b = 0.0;  // No blue
-
-    // Vary only the intensity/brightness through alpha in the calling code
-    // Here we return pure red, and let alpha handle the gradient
-    return {r, g, b};
-  };
-
-  // Visualize threat zones with smooth gradient spheres using TRIANGLE_LIST
-  // One sphere per zone with vertex colors for seamless gradient
-
-  int marker_id = 0;
-
-  // Find max threat for color normalization
-  // Since calculateThreat() sums all zones, max possible threat is sum of all max_threat_levels
-  // This ensures consistent color mapping between single zones and overlapping zones
-  double max_threat_value = 0.0;
-  for (const auto& zone : threat_zones_) {
-    max_threat_value += zone.max_threat_level;  // Sum all zones (not just max)
-  }
-
-  // 1. Draw radar bases (small and subtle)
-  for (const auto& zone : threat_zones_) {
-    auto base_marker = createMarker("threat_field", marker_id++,
-                                    visualization_msgs::msg::Marker::CYLINDER,
-                                    1.0, 0.4, 0.4, 0.4, 0.9);
-    base_marker.lifetime = rclcpp::Duration::from_seconds(5.0);
-    base_marker.scale.x = 1.0;
-    base_marker.scale.y = 1.0;
-    base_marker.scale.z = 2.0;
-    base_marker.pose.position.x = zone.center.x();
-    base_marker.pose.position.y = zone.center.y();
-    base_marker.pose.position.z = zone.center.z();
-    threat_field_pub_->publish(base_marker);
-  }
-
-  // 2. Draw smooth gradient spheres using multiple concentric layers
-  // Create gradient from outside (blue/safe) to inside (red/dangerous)
-  int num_latitude = 24;   // Latitude divisions (vertical)
-  int num_longitude = 32;  // Longitude divisions (horizontal)
-
-  // Define concentric sphere layers (from outside to inside)
-  // More layers = smoother gradient
-  // std::vector<double> layer_ratios = {1.0, 0.85, 0.70, 0.55, 0.40, 0.25, 0.10};
-  std::vector<double> layer_ratios = {1.0, 0.70, 0.20};
-
-  for (const auto& zone : threat_zones_) {
-    // Draw each layer from outside to inside
-    for (double ratio : layer_ratios) {
-      // Create TRIANGLE_LIST marker for this layer
-      auto gradient_sphere = createMarker("threat_field", marker_id++,
-                                         visualization_msgs::msg::Marker::TRIANGLE_LIST,
-                                         1.0, 1.0, 0.0, 0.0, 1.0);  // Scale=1, default color (will be overridden per vertex)
-      gradient_sphere.lifetime = rclcpp::Duration::from_seconds(5.0);
-
-      double sphere_radius = zone.detection_range * ratio;  // Scale radius by layer ratio
-
-    // Compute max latitude index for z >= 0 clipping (ground plane)
-    int max_lat = num_latitude;
-    if (zone.center.z() < sphere_radius) {
-      double cos_max = std::clamp(-zone.center.z() / sphere_radius, -1.0, 1.0);
-      max_lat = static_cast<int>(acos(cos_max) / M_PI * num_latitude);
-    }
-
-    // Generate sphere mesh with gradient colors
-    // Use latitude/longitude parameterization
-    for (int lat = 0; lat < max_lat; ++lat) {
-      for (int lon = 0; lon < num_longitude; ++lon) {
-        // Calculate angles for this quad
-        double phi1 = M_PI * lat / num_latitude;       // Current latitude
-        double phi2 = M_PI * (lat + 1) / num_latitude; // Next latitude
-        double theta1 = 2.0 * M_PI * lon / num_longitude;       // Current longitude
-        double theta2 = 2.0 * M_PI * (lon + 1) / num_longitude; // Next longitude
-
-        // Four corners of the current quad on sphere surface
-        // Formula: (r*sin(φ)*cos(θ), r*sin(φ)*sin(θ), r*cos(φ))
-        auto spherePoint = [&](double phi, double theta) -> Eigen::Vector3d {
-          return Eigen::Vector3d(
-            sphere_radius * sin(phi) * cos(theta),
-            sphere_radius * sin(phi) * sin(theta),
-            sphere_radius * cos(phi)
-          );
-        };
-
-        Eigen::Vector3d v1 = spherePoint(phi1, theta1);
-        Eigen::Vector3d v2 = spherePoint(phi1, theta2);
-        Eigen::Vector3d v3 = spherePoint(phi2, theta2);
-        Eigen::Vector3d v4 = spherePoint(phi2, theta1);
-
-        // Calculate vertex colors based on actual threat level
-        auto getVertexColor = [&](const Eigen::Vector3d& local_pos) -> std_msgs::msg::ColorRGBA {
-          // Calculate threat from THIS ZONE ONLY (not all zones)
-          // This prevents color mixing when zones overlap
-          double dist = local_pos.norm();
-          double threat = 0.0;
-
-          // Gaussian decay within engagement range
-          if (dist < zone.engagement_range) {
-            double sigma = zone.engagement_range / 3.0;
-            double normalized_dist = dist / sigma;
-            threat = zone.max_threat_level * exp(-0.5 * normalized_dist * normalized_dist);
-          }
-          // Linear decay in detection range
-          else if (dist < zone.detection_range) {
-            double ratio = (dist - zone.engagement_range) /
-                          (zone.detection_range - zone.engagement_range);
-            threat = zone.max_threat_level * 0.3 * (1.0 - ratio);
-          }
-
-          // Get color from threat level
-          auto [r, g, b] = threatToColor(threat, max_threat_value);
-
-          std_msgs::msg::ColorRGBA color;
-          color.r = r;
-          color.g = g;
-          color.b = b;
-
-          // Calculate alpha based on threat level to create gradient effect
-          // High threat (center) = opaque, low threat (edge) = transparent
-          double normalized_threat = std::min(threat / max_threat_value, 1.0);
-
-          // Apply power function for stronger gradient from center
-          normalized_threat = std::pow(normalized_threat, 0.5);
-
-          // Layer-based alpha: each layer is semi-transparent for blending
-          double layer_alpha = 0.2 + (1.0 - ratio) * 0.5;
-
-          // Alpha increases with threat level (center is more opaque)
-          color.a = layer_alpha * (0.2 + normalized_threat * 0.8);
-
-          return color;
-        };
-
-        // Convert to ROS geometry_msgs::Point (world coordinates)
-        auto toPoint = [&](const Eigen::Vector3d& local_pos) -> geometry_msgs::msg::Point {
-          Eigen::Vector3d world_pos = zone.center + local_pos;
-          geometry_msgs::msg::Point p;
-          p.x = world_pos.x();
-          p.y = world_pos.y();
-          p.z = world_pos.z();
-          return p;
-        };
-
-        // Create two triangles for this quad
-        // Triangle 1: v1 -> v2 -> v3
-        gradient_sphere.points.push_back(toPoint(v1));
-        gradient_sphere.points.push_back(toPoint(v2));
-        gradient_sphere.points.push_back(toPoint(v3));
-
-        gradient_sphere.colors.push_back(getVertexColor(v1));
-        gradient_sphere.colors.push_back(getVertexColor(v2));
-        gradient_sphere.colors.push_back(getVertexColor(v3));
-
-        // Triangle 2: v1 -> v3 -> v4
-        gradient_sphere.points.push_back(toPoint(v1));
-        gradient_sphere.points.push_back(toPoint(v3));
-        gradient_sphere.points.push_back(toPoint(v4));
-
-        gradient_sphere.colors.push_back(getVertexColor(v1));
-        gradient_sphere.colors.push_back(getVertexColor(v3));
-        gradient_sphere.colors.push_back(getVertexColor(v4));
-      }
-    }
-
-      // Publish this layer
-      threat_field_pub_->publish(gradient_sphere);
-
-      RCLCPP_DEBUG(this->get_logger(),
-                   "Published gradient sphere layer (ratio=%.2f) for zone %s with %zu triangles",
-                   ratio, zone.name.c_str(), gradient_sphere.points.size() / 3);
-    }  // end of layer loop
-  }  // end of zone loop
-
-}

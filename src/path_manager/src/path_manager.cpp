@@ -1,5 +1,4 @@
 #include "path_manager/path_manager.h"
-#include "path_manager/uniform_bspline.h"
 #include "path_manager/polynomial_traj.h"
 
 namespace path_manager
@@ -9,10 +8,7 @@ namespace path_manager
         : node_(node),
           max_vel_(-1.0),
           max_acc_(-1.0),
-          poly_traj_piece_length_(-1.0),
-          planning_horizen_(-1.0),
           is_optimizer_initialized_(false),
-          first_call_(true),
           current_drone_id_(-1),
           current_formation_type_("")
     {
@@ -30,13 +26,9 @@ namespace path_manager
 
         node_->declare_parameter("manager/max_vel", -1.0);
         node_->declare_parameter("manager/max_acc", -1.0);
-        node_->declare_parameter("manager/polyTraj_piece_length", -1.0);
-        node_->declare_parameter("manager/planning_horizon", -1.0);
         node_->declare_parameter("manager/intermediate_waypoint_ratio", 0.3);
         node_->get_parameter("manager/max_vel", max_vel_);
         node_->get_parameter("manager/max_acc", max_acc_);
-        node_->get_parameter("manager/polyTraj_piece_length", poly_traj_piece_length_);
-        node_->get_parameter("manager/planning_horizon", planning_horizen_);
         node_->get_parameter("manager/intermediate_waypoint_ratio", intermediate_waypoint_ratio_);
 
         if (intermediate_waypoint_ratio_ < 0.0) {
@@ -48,14 +40,6 @@ namespace path_manager
                        intermediate_waypoint_ratio_);
             intermediate_waypoint_ratio_ = 0.3;
         }
-
-        grid_map_ = std::make_shared<GridMap>();
-        grid_map_->initMap(node_);
-
-        Eigen::Vector3i voxel_num = grid_map_->getVoxelNum();
-        int buffer_size = voxel_num(0) * voxel_num(1) * voxel_num(2);
-        std::vector<double> static_map(buffer_size, 0.0);
-        grid_map_->setStaticMap(static_map);
 
         node_->declare_parameter("obstacles", std::vector<double>{});
         std::vector<double> obstacle_params;
@@ -102,31 +86,12 @@ namespace path_manager
             }
         }
 
-        // Calculate inflation step from obstacles_inflation parameter (default)
-        int default_inf_step = ceil(grid_map_->getObstaclesInflation() / grid_map_->getResolution());
-        double resolution = grid_map_->getResolution();
-
-        for (const auto &obs : obstacle_centers_)
-        {
-            Eigen::Vector3i idx;
-            grid_map_->posToIndex(obs.center, idx);
-            grid_map_->setOccupancy(idx, 1.0);
-
-            // Use shape-specific inflation
-            if (obs.shape == ObstacleShape::CIRCLE)
-            {
-                int inf_step = (obs.param1 > 0) ? ceil(obs.param1 / resolution) : default_inf_step;
-                grid_map_->inflatePoint(idx, inf_step);
-            }
-            else if (obs.shape == ObstacleShape::RECTANGLE)
-            {
-                grid_map_->inflateRectangle(obs.center, obs.param1, obs.param2);
-            }
-        }
-        grid_map_->updateESDF3d();
-
         simple_path_pub_ = node_->create_publisher<nav_msgs::msg::Path>(
             "/drone_" + std::to_string(drone_id) + "/simple_path", 10);
+        sfc_corridor_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/drone_" + std::to_string(drone_id) + "/sfc_corridor", 10);
+        shortest_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
+            "/drone_" + std::to_string(drone_id) + "/shortest_path", 10);
     }
 
     void PathManager::updateRobotState(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& local_target_pt)
@@ -159,20 +124,14 @@ namespace path_manager
             if (!node_) {
                 throw std::runtime_error("Node is null");
             }
-            if (!grid_map_) {
-                throw std::runtime_error("GridMap is null");
-            }
-            
+
             poly_traj_opt_ = std::make_unique<ego_planner::PolyTrajOptimizer>();
 
             // Set LogManager for unified logging
             poly_traj_opt_->setLogManager(log_manager_);
-            
+
             // Set parameters first to ensure node_ is initialized
             poly_traj_opt_->setParam(node_);
-            
-            // Then set other components
-            poly_traj_opt_->setEnvironment(grid_map_);
             poly_traj_opt_->setDroneId(traj_.local_traj.drone_id);
 
             // Only mark as initialized after all steps succeed
@@ -191,250 +150,18 @@ namespace path_manager
         }
     }
 
-    bool PathManager::computeAndOptimizePath(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
-                                             const double trajectory_start_time, const Eigen::Vector3d &local_target_pt,
-                                             const Eigen::Vector3d &local_target_vel, const bool flag_polyInit,
-                                             const bool flag_randomPolyTraj, const bool use_formation, const bool have_local_traj)
-    {
-        // Ensure optimizer is initialized before proceeding
-        if (!isOptimizerInitialized()) {
-            RCLCPP_ERROR(node_->get_logger(), "Cannot compute trajectory: optimizer not initialized!");
-            return false;
-        }
-        
-        static int count = 0;
-        if (enable_debug_logs_) {
-            log_manager_->infof("=== DRONE %d REPLAN %d START ===", 
-                               traj_.local_traj.drone_id, count++);
-            log_manager_->infof("Start: (%.2f,%.2f,%.2f) -> Target: (%.2f,%.2f,%.2f), Distance: %.2fm",
-                               start_pt(0), start_pt(1), start_pt(2), 
-                               local_target_pt(0), local_target_pt(1), local_target_pt(2),
-                               (start_pt - local_target_pt).norm());
-        }
-
-        if ((start_pt - local_target_pt).norm() < 0.2)
-        {
-            if (enable_debug_logs_) {
-                log_manager_->info("Close to goal");
-            }
-            return false;
-        }
-        auto t_start = rclcpp::Clock(RCL_ROS_TIME).now();
-        
-        /*** STEP 1: INIT ***/
-        double ts = poly_traj_piece_length_ / max_vel_;
-        poly_traj::MinJerkOpt initMJO;
-        if (!computeInitReferenceState(start_pt, start_vel, start_acc, local_target_pt, local_target_vel, ts, initMJO, flag_polyInit))
-        {
-            log_manager_->error("Failed to compute initial reference state.");
-            return false;
-        }
-
-        auto t_init = rclcpp::Clock(RCL_ROS_TIME).now() - t_start;
-
-        Eigen::MatrixXd cstr_pts = initMJO.getInitConstrainPoints(poly_traj_opt_->get_cps_num_prePiece_());
-        poly_traj_opt_->setControlPoints(cstr_pts);
-
-        t_start = rclcpp::Clock(RCL_ROS_TIME).now();
-
-        /*** STEP 2: OPTIMIZE ***/
-        poly_traj::Trajectory initTraj = initMJO.getTraj();
-        int PN = initTraj.getPieceNum();
-        Eigen::MatrixXd all_pos = initTraj.getPositions();
-        Eigen::MatrixXd innerPts = all_pos.block(0, 1, 3, PN - 1);
-        Eigen::Matrix<double, 3, 3> headState, tailState;
-        headState << initTraj.getJuncPos(0), initTraj.getJuncVel(0), initTraj.getJuncAcc(0);
-        tailState << initTraj.getJuncPos(PN), initTraj.getJuncVel(PN), initTraj.getJuncAcc(PN);
-
-        bool flag_success = poly_traj_opt_->OptimizeTrajectory_lbfgs(headState, tailState, innerPts, initTraj.getDurations(), cstr_pts, use_formation);
-        
-        auto t_opt = rclcpp::Clock(RCL_ROS_TIME).now() - t_start;
-        
-        if (!flag_success)
-        {
-            log_manager_->error("Failed to optimize trajectory.");
-            return false;
-        }
-
-        // Performance statistics
-        static double sum_time = 0;
-        static int count_success = 0;
-        double total_time_sec = (t_init.nanoseconds() + t_opt.nanoseconds()) / 1e9;
-        sum_time += total_time_sec;
-        count_success++;
-        
-        if (enable_debug_logs_) {
-            log_manager_->infof("PERFORMANCE - Total:%.3fms, Init:%.3fms, Optimize:%.3fms, Avg:%.3fms, Success:%d",
-                               total_time_sec * 1000, t_init.nanoseconds() / 1e6, t_opt.nanoseconds() / 1e6, 
-                               (sum_time / count_success) * 1000, count_success);
-        }
-
-        if (have_local_traj && use_formation)
-        {
-            double delta_replan_time = trajectory_start_time - rclcpp::Clock(RCL_ROS_TIME).now().seconds();
-            if (enable_debug_logs_) {
-                log_manager_->infof("[TIMING] delta_replan_time=%.3f ms (trajectory_start_time=%.3f, now=%.3f)",
-                                   delta_replan_time * 1000, trajectory_start_time, rclcpp::Clock(RCL_ROS_TIME).now().seconds());
-            }
-            if (delta_replan_time > 0)
-            {
-                if (enable_debug_logs_) {
-                    log_manager_->infof("[TIMING] Sleeping for %.3f ms to sync trajectory start time", delta_replan_time * 1000);
-                }
-                rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::duration<double>(delta_replan_time)));
-            }
-            auto set_traj_start = std::chrono::high_resolution_clock::now();
-            traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(), trajectory_start_time, traj_.local_traj.drone_id);
-            auto set_traj_end = std::chrono::high_resolution_clock::now();
-            auto set_traj_duration = std::chrono::duration_cast<std::chrono::milliseconds>(set_traj_end - set_traj_start).count();
-            if (enable_debug_logs_) {
-                log_manager_->infof("[TIMING] setLocalTraj took %ld ms", set_traj_duration);
-            }
-        }
-        else
-        {
-            auto set_traj_start = std::chrono::high_resolution_clock::now();
-            traj_.setLocalTraj(poly_traj_opt_->getMinJerkOptPtr()->getTraj(), rclcpp::Clock(RCL_ROS_TIME).now().seconds(), traj_.local_traj.drone_id);
-            auto set_traj_end = std::chrono::high_resolution_clock::now();
-            auto set_traj_duration = std::chrono::duration_cast<std::chrono::milliseconds>(set_traj_end - set_traj_start).count();
-            if (enable_debug_logs_) {
-                log_manager_->infof("[TIMING] setLocalTraj took %ld ms", set_traj_duration);
-            }
-        }
-
-        if (enable_debug_logs_) {
-            log_manager_->infof("=== DRONE %d REPLAN COMPLETED SUCCESSFULLY ===", 
-                               traj_.local_traj.drone_id);
-        }
-        return true;
-    }
-
-    bool PathManager::computeInitReferenceState(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel,
-                                                const Eigen::Vector3d &start_acc, const Eigen::Vector3d &local_target_pt,
-                                                const Eigen::Vector3d &local_target_vel, const double &ts,
-                                                poly_traj::MinJerkOpt &initMJO, const bool flag_polyInit)
-    {
-        if (first_call_ || flag_polyInit) {
-        first_call_ = false;
-        Eigen::Matrix3d headState, tailState;
-        headState << start_pt, start_vel, start_acc;
-        tailState << local_target_pt, local_target_vel, Eigen::Vector3d::Zero();
-
-        Eigen::MatrixXd ctl_points;
-
-        auto t1 = rclcpp::Clock(RCL_ROS_TIME).now();
-        poly_traj_opt_->astarWithMinTraj(headState, tailState, simple_path_, ctl_points, initMJO);
-
-        auto t2 = rclcpp::Clock(RCL_ROS_TIME).now();
-        double duration_ms = (t2 - t1).nanoseconds() / 1e6;
-
-        nav_msgs::msg::Path path_msg;
-        path_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
-        path_msg.header.frame_id = "world";
-
-        for (const auto &point : simple_path_) {
-            geometry_msgs::msg::PoseStamped pose;
-            pose.header = path_msg.header;
-            pose.pose.position.x = point.x();
-            pose.pose.position.y = point.y();
-            pose.pose.position.z = point.z();
-            pose.pose.orientation.w = 1.0;
-            path_msg.poses.push_back(pose);
-        }
-
-        simple_path_pub_->publish(path_msg);
-    }
-        else
-        {
-            if (traj_.global_traj.last_glb_t_of_lc_tgt < 0.0)
-            {
-                return false;
-            }
-
-            double passed_t_on_lctraj = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - traj_.local_traj.start_time;
-            double t_to_lc_end = traj_.local_traj.duration - passed_t_on_lctraj;
-            double t_to_lc_tgt = t_to_lc_end + (traj_.global_traj.glb_t_of_lc_tgt - traj_.global_traj.last_glb_t_of_lc_tgt);\
-
-            int piece_nums = std::ceil((start_pt - local_target_pt).norm() / poly_traj_piece_length_);
-            if (piece_nums < 2)
-            {
-                piece_nums = 2;
-            }
-
-            Eigen::Matrix3d headState, tailState;
-            Eigen::MatrixXd innerPs(3, piece_nums - 1);
-            Eigen::VectorXd piece_dur_vec = Eigen::VectorXd::Constant(piece_nums, t_to_lc_tgt / piece_nums);
-            headState << start_pt, start_vel, start_acc;
-            tailState << local_target_pt, local_target_vel, Eigen::Vector3d::Zero();
-
-            double t = piece_dur_vec(0);
-            for (int i = 0; i < piece_nums - 1; ++i)
-            {
-                if (t < t_to_lc_end)
-                {
-                    innerPs.col(i) = traj_.local_traj.traj.getPos(t + passed_t_on_lctraj);
-                }
-                else if (t <= t_to_lc_tgt)
-                {
-                    double glb_t = t - t_to_lc_end + traj_.global_traj.last_glb_t_of_lc_tgt - traj_.global_traj.global_start_time;
-                    innerPs.col(i) = traj_.global_traj.traj.getPos(glb_t);
-                }
-                else
-                {
-                    RCLCPP_ERROR(node_->get_logger(), "Should not happen! x_x 0x88");
-                }
-
-                t += piece_dur_vec(i + 1);
-            }
-
-            initMJO.reset(headState, tailState, piece_nums);
-            initMJO.generate(innerPs, piece_dur_vec);
-        }
-
-        return true;
-    }
-
-    std::vector<Eigen::VectorXd> PathManager::playground_bspline(const std::vector<Eigen::VectorXd> &pts)
-    {
-        std::vector<Eigen::VectorXd> b_pts;
-
-        double interval = 1.0;
-        int num_samples = 300;
-
-        Eigen::MatrixXd ctl_pts(pts[0].size(), pts.size());
-        for (size_t i = 0; i < pts.size(); ++i)
-        {
-            ctl_pts.col(i) = pts[i];
-        }
-
-        // B Spline
-        ego_planner::UniformBspline bspline = ego_planner::UniformBspline(ctl_pts, 3, interval);
-        double ts, te;
-        bspline.getTimeSpan(ts, te);
-        double gap = (te - ts) / num_samples;
-        Eigen::VectorXd pos;
-        for (double t = ts; t < te; t += gap)
-        {
-            pos = bspline.evaluateDeBoorT(t);
-            b_pts.push_back(pos);
-        }
-
-        return b_pts;
-    }
-
     bool PathManager::planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel,
                                      const Eigen::Vector3d &start_acc, const std::vector<Eigen::Vector3d> &waypoints,
                                      const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
     {
-        log_manager_->infof("Planning global trajectory using playground B-spline with %zu waypoints", waypoints.size());
+        log_manager_->infof("Planning global trajectory using RRT* + SFC corridor with %zu waypoints", waypoints.size());
 
-        // Safety check: Need at least 1 waypoint for trajectory
         if (waypoints.empty()) {
             RCLCPP_ERROR(node_->get_logger(), "planGlobalTraj: No waypoints provided!");
             return false;
         }
 
+        // === STEP 1: Build waypoint sequence (with optional intermediate point) ===
         std::vector<Eigen::Vector3d> adjusted_waypoints = waypoints;
         std::vector<Eigen::Vector3d> waypoints_with_intermediate;
 
@@ -444,155 +171,324 @@ namespace path_manager
             double distance_to_first = (first_waypoint - start_pos).norm();
             Eigen::Vector3d intermediate_point = start_pos + direction * (distance_to_first * intermediate_waypoint_ratio_);
 
-            Eigen::Vector3d start_to_intermediate = intermediate_point - start_pos;
-            if (start_to_intermediate.dot(direction) > 0.0) {
+            if ((intermediate_point - start_pos).dot(direction) > 0.0) {
                 waypoints_with_intermediate.push_back(intermediate_point);
-
                 log_manager_->infof("Added intermediate alignment waypoint at (%.2f, %.2f, %.2f), ratio=%.2f",
                            intermediate_point.x(), intermediate_point.y(), intermediate_point.z(),
                            intermediate_waypoint_ratio_);
-            } else {
-                RCLCPP_WARN(node_->get_logger(),
-                           "Intermediate waypoint would be behind start position, skipping");
             }
-        } else if (!adjusted_waypoints.empty()) {
-            log_manager_->infof("Intermediate waypoint disabled (ratio=%.2f)", intermediate_waypoint_ratio_);
         }
 
         for (const auto& wp : adjusted_waypoints) {
             waypoints_with_intermediate.push_back(wp);
         }
+
+        // Build segment list: start -> wp1 -> wp2 -> ... -> wpN
         std::vector<Eigen::Vector3d> all_points;
         all_points.push_back(start_pos);
         for (const auto& wp : waypoints_with_intermediate) {
             all_points.push_back(wp);
         }
 
-        log_manager_->infof("Global trajectory: start + %zu waypoints (including %s intermediate alignment point)",
-                   waypoints_with_intermediate.size(),
-                   waypoints_with_intermediate.size() > adjusted_waypoints.size() ? "1" : "0");
+        // === STEP 2: RRT* path planning through waypoints ===
+        // Use direct geometry collision check (no ESDF/GridMap dependency)
+        ObstacleQueryAdapter map_adapter;
+        map_adapter.obstacles = &obstacle_centers_;
+        map_adapter.safety_margin = 0.3;
 
-        std::vector<Eigen::VectorXd> pts_vectorxd;
-        if (!all_points.empty()) {
-            for (int i = 0; i < 3; ++i) {
-                Eigen::VectorXd pt_vectorxd(3);
-                pt_vectorxd << all_points.front().x(), all_points.front().y(), all_points.front().z();
-                pts_vectorxd.push_back(pt_vectorxd);
-            }
-            for (size_t i = 1; i < all_points.size() - 1; ++i) {
-                Eigen::VectorXd pt_vectorxd(3);
-                pt_vectorxd << all_points[i].x(), all_points[i].y(), all_points[i].z();
-                pts_vectorxd.push_back(pt_vectorxd);
-            }
-            for (int i = 0; i < 3; ++i) {
-                Eigen::VectorXd pt_vectorxd(3);
-                pt_vectorxd << all_points.back().x(), all_points.back().y(), all_points.back().z();
-                pts_vectorxd.push_back(pt_vectorxd);
+        // Compute map bounds from waypoints (no GridMap dependency)
+        map_lower_bound_ = start_pos;
+        map_upper_bound_ = start_pos;
+
+        // Extend bounds to include all waypoints with margin
+        const double bound_margin = 10.0;
+        for (const auto& pt : all_points) {
+            for (int d = 0; d < 3; ++d) {
+                map_lower_bound_(d) = std::min(map_lower_bound_(d), pt(d) - bound_margin);
+                map_upper_bound_(d) = std::max(map_upper_bound_(d), pt(d) + bound_margin);
             }
         }
 
-        // Safety check: B-spline requires at least 4 control points (order=3)
-        if (pts_vectorxd.size() < 4) {
-            RCLCPP_ERROR(node_->get_logger(),
-                        "planGlobalTraj: Not enough points for B-spline (need >=4, got %zu).",
-                        pts_vectorxd.size());
+        log_manager_->infof("Map bounds: lower=(%.2f,%.2f,%.2f), upper=(%.2f,%.2f,%.2f)",
+            map_lower_bound_.x(), map_lower_bound_.y(), map_lower_bound_.z(),
+            map_upper_bound_.x(), map_upper_bound_.y(), map_upper_bound_.z());
+
+        // Debug: check obstacle query at known obstacle positions
+        for (const auto &obs : obstacle_centers_) {
+            int q = map_adapter.query(obs.center);
+            log_manager_->infof("Obstacle at (%.2f,%.2f,%.2f): query=%d (shape=%d, param1=%.2f)",
+                obs.center.x(), obs.center.y(), obs.center.z(), q,
+                (int)obs.shape, obs.param1);
+        }
+
+        std::vector<Eigen::Vector3d> full_route;
+        full_route.push_back(start_pos);
+
+        for (size_t seg = 0; seg < all_points.size() - 1; ++seg)
+        {
+            std::vector<Eigen::Vector3d> seg_path;
+            double cost = sfc_gen::planPath<ObstacleQueryAdapter>(
+                all_points[seg], all_points[seg + 1],
+                map_lower_bound_, map_upper_bound_,
+                &map_adapter, 2.0, seg_path);
+
+            log_manager_->infof("RRT* segment %zu: cost=%.3f, path_size=%zu",
+                seg, cost, seg_path.size());
+
+            if (std::isinf(cost) || seg_path.empty())
+            {
+                RCLCPP_ERROR(node_->get_logger(),
+                    "RRT* failed for segment %zu: (%.2f,%.2f,%.2f) -> (%.2f,%.2f,%.2f)",
+                    seg, all_points[seg].x(), all_points[seg].y(), all_points[seg].z(),
+                    all_points[seg+1].x(), all_points[seg+1].y(), all_points[seg+1].z());
+                return false;
+            }
+
+            // Append path (skip first point of subsequent segments to avoid duplicates)
+            for (size_t i = (seg == 0 ? 0 : 1); i < seg_path.size(); ++i)
+            {
+                full_route.push_back(seg_path[i]);
+            }
+        }
+
+        log_manager_->infof("RRT* route: %zu waypoints", full_route.size());
+
+        // Publish simple path for visualization
+        nav_msgs::msg::Path path_msg;
+        path_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
+        path_msg.header.frame_id = "world";
+        for (const auto &point : full_route) {
+            geometry_msgs::msg::PoseStamped pose;
+            pose.header = path_msg.header;
+            pose.pose.position.x = point.x();
+            pose.pose.position.y = point.y();
+            pose.pose.position.z = point.z();
+            pose.pose.orientation.w = 1.0;
+            path_msg.poses.push_back(pose);
+        }
+        simple_path_pub_->publish(path_msg);
+
+        // === STEP 3: Generate SFC corridor around RRT* path ===
+        // Generate obstacle surface points from obstacle geometry (no GridMap/ESDF dependency)
+        obstacle_points_.clear();
+        const double point_spacing = 0.2;  // Surface point spacing
+        const double z_range = 2.0;        // Z range for 2.5D obstacles
+        const double z_step = 0.5;
+
+        for (const auto &obs : obstacle_centers_) {
+            if (obs.shape == ObstacleShape::CIRCLE) {
+                double radius = (obs.param1 > 0) ? obs.param1 : 0.5;
+                double circumference = 2.0 * M_PI * radius;
+                int num_angular = std::max(12, (int)(circumference / point_spacing));
+
+                for (int ai = 0; ai < num_angular; ++ai) {
+                    double angle = 2.0 * M_PI * ai / num_angular;
+                    // Surface points at radius
+                    for (double z = obs.center.z() - z_range; z <= obs.center.z() + z_range; z += z_step) {
+                        obstacle_points_.push_back(Eigen::Vector3d(
+                            obs.center.x() + radius * cos(angle),
+                            obs.center.y() + radius * sin(angle),
+                            z));
+                    }
+                    // Interior points for solid obstacle representation
+                    for (double r = point_spacing; r < radius; r += point_spacing) {
+                        obstacle_points_.push_back(Eigen::Vector3d(
+                            obs.center.x() + r * cos(angle),
+                            obs.center.y() + r * sin(angle),
+                            obs.center.z()));
+                    }
+                }
+                // Center point
+                obstacle_points_.push_back(obs.center);
+
+            } else if (obs.shape == ObstacleShape::RECTANGLE) {
+                double half_w = obs.param1 / 2.0;
+                double half_h = obs.param2 / 2.0;
+
+                // Edge points
+                for (double z = obs.center.z() - z_range; z <= obs.center.z() + z_range; z += z_step) {
+                    // Top and bottom edges
+                    for (double dx = -half_w; dx <= half_w; dx += point_spacing) {
+                        obstacle_points_.push_back(Eigen::Vector3d(obs.center.x() + dx, obs.center.y() - half_h, z));
+                        obstacle_points_.push_back(Eigen::Vector3d(obs.center.x() + dx, obs.center.y() + half_h, z));
+                    }
+                    // Left and right edges
+                    for (double dy = -half_h; dy <= half_h; dy += point_spacing) {
+                        obstacle_points_.push_back(Eigen::Vector3d(obs.center.x() - half_w, obs.center.y() + dy, z));
+                        obstacle_points_.push_back(Eigen::Vector3d(obs.center.x() + half_w, obs.center.y() + dy, z));
+                    }
+                }
+                // Interior fill at center z
+                for (double dx = -half_w; dx <= half_w; dx += point_spacing) {
+                    for (double dy = -half_h; dy <= half_h; dy += point_spacing) {
+                        obstacle_points_.push_back(Eigen::Vector3d(
+                            obs.center.x() + dx, obs.center.y() + dy, obs.center.z()));
+                    }
+                }
+            }
+        }
+
+        log_manager_->infof("Collected %zu obstacle points for SFC generation", obstacle_points_.size());
+
+        // Generate SFC corridors using FIRI
+        double sfc_progress = 7.0;
+        double sfc_range = 3.0;
+
+        if (obstacle_points_.empty()) {
+            // No obstacles: create a single large corridor (bounding box)
+            // Add dummy far-away points so FIRI has something to work with
+            obstacle_points_.push_back(map_lower_bound_ - Eigen::Vector3d(1, 1, 1));
+            obstacle_points_.push_back(map_upper_bound_ + Eigen::Vector3d(1, 1, 1));
+        }
+
+        global_hpolys_.clear();
+        sfc_gen::convexCover(full_route, obstacle_points_,
+                             map_lower_bound_, map_upper_bound_,
+                             sfc_progress, sfc_range, global_hpolys_);
+        sfc_gen::shortCut(global_hpolys_);
+
+        log_manager_->infof("Generated %zu SFC corridor polytopes", global_hpolys_.size());
+
+        if (global_hpolys_.empty()) {
+            RCLCPP_ERROR(node_->get_logger(), "SFC corridor generation failed!");
             return false;
         }
 
-        // Step 5: Generate B-spline trajectory using playground_bspline
-        std::vector<Eigen::VectorXd> b_pts = playground_bspline(pts_vectorxd);
-
-        log_manager_->infof("Generated %zu B-spline points", b_pts.size());
-
-        // Step 6: Convert back to Vector3d for trajectory generation
-        std::vector<Eigen::Vector3d> sampled_points;
-        for (const auto& b_pt : b_pts) {
-            sampled_points.push_back(Eigen::Vector3d(b_pt.x(), b_pt.y(), b_pt.z()));
+        // === STEP 4: GCOPTER-style initial trajectory through corridor ===
+        // 4a. Normalize H-polytope normals (GCOPTER requirement)
+        PolyhedraH normHpolys = global_hpolys_;
+        for (size_t i = 0; i < normHpolys.size(); i++)
+        {
+            const Eigen::ArrayXd norms =
+                normHpolys[i].leftCols<3>().rowwise().norm();
+            normHpolys[i].array().colwise() /= norms;
         }
 
-        poly_traj::MinJerkOpt globalMJO;
+        // 4b. Convert H-polytopes to V-polytopes and compute corridor overlaps
+        PolyhedraV vPolytopes;
+        if (!processCorridor(normHpolys, vPolytopes))
+        {
+            RCLCPP_ERROR(node_->get_logger(), "processCorridor failed! Using fallback linear path.");
+            // Fallback: simple 2-piece trajectory
+            poly_traj::MinJerkOpt globalMJO;
+            Eigen::Matrix<double, 3, 3> headState, tailState;
+            headState << start_pos, start_vel, start_acc;
+            tailState << adjusted_waypoints.back(), end_vel, end_acc;
+            int piece_num = 2;
+            Eigen::MatrixXd innerPts(3, 1);
+            innerPts.col(0) = (start_pos + adjusted_waypoints.back()) * 0.5;
+            globalMJO.reset(headState, tailState, piece_num);
+            Eigen::VectorXd time_vec(piece_num);
+            double dist = (adjusted_waypoints.back() - start_pos).norm();
+            time_vec.setConstant(std::max(0.1, dist / 2.0 / max_vel_));
+            globalMJO.generate(innerPts, time_vec);
+            auto time_now = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
+            traj_.setGlobalTraj(globalMJO.getTraj(), time_now);
+            traj_.setLocalTraj(globalMJO.getTraj(), time_now, traj_.local_traj.drone_id);
+            simple_path_ = full_route;
+            return true;
+        }
 
+        // 4c. Find shortest path through corridor overlaps (L-BFGS optimized)
+        const double smoothEps = 0.01;
+        Eigen::Matrix3Xd shortPath;
+        getShortestPath(start_pos, adjusted_waypoints.back(), vPolytopes, smoothEps, shortPath);
+
+        log_manager_->infof("Shortest path through %d corridor overlaps computed", (int)(vPolytopes.size() / 2));
+
+        // Publish SFC corridor and shortest path for visualization
+        publishSFCCorridor(normHpolys);
+        publishShortestPath(shortPath);
+
+        // 4d. Determine piece count per polytope (GCOPTER-style: based on segment length)
+        const int polyN = global_hpolys_.size();
+        const double lengthPerPiece = 2.0;  // GCOPTER default: finer pieces for smoother trajectory
+        const Eigen::Matrix3Xd deltas = shortPath.rightCols(polyN) - shortPath.leftCols(polyN);
+        Eigen::VectorXi pieceIdx = (deltas.colwise().norm() / lengthPerPiece).cast<int>().transpose();
+        pieceIdx.array() += 1;  // At least 1 piece per polytope
+        int piece_num = pieceIdx.sum();
+
+        log_manager_->infof("Piece allocation: %d total pieces across %d polytopes", piece_num, polyN);
+
+        // 4e. Generate initial inner points and time allocation from shortest path
+        const double allocSpeed = max_vel_ * 3.0;  // GCOPTER: 3x max_vel for initial allocation
+        Eigen::Matrix3Xd innerPts;
+        Eigen::VectorXd time_vec;
+        setInitialFromPath(shortPath, allocSpeed, pieceIdx, innerPts, time_vec);
+
+        // 4f. Build MINCO trajectory
+        poly_traj::MinJerkOpt globalMJO;
         Eigen::Matrix<double, 3, 3> headState, tailState;
         headState << start_pos, start_vel, start_acc;
         tailState << adjusted_waypoints.back(), end_vel, end_acc;
-        
-        Eigen::MatrixXd innerPts;
-        if (sampled_points.size() > 2) {
-            innerPts.resize(3, sampled_points.size() - 2);
-            for (size_t i = 1; i < sampled_points.size() - 1; ++i) {
-                innerPts.col(i-1) = sampled_points[i];
-            }
-        }
-        
-        globalMJO.reset(headState, tailState, sampled_points.size() - 1);
-        
-        // Optimize time allocation to ensure velocity constraints
-        double des_vel = max_vel_;
-        Eigen::VectorXd optimized_time_vec(sampled_points.size() - 1);
-        int try_num = 0;
-        
-        do {
-            for (size_t i = 0; i < sampled_points.size() - 1; ++i) {
-                double segment_length = (sampled_points[i+1] - sampled_points[i]).norm();
-                optimized_time_vec(i) = std::max(0.1, segment_length / des_vel);
-            }
-            
-            globalMJO.generate(innerPts, optimized_time_vec);
-            
-            des_vel /= 1.2;
-            try_num++;
-        } while (globalMJO.getTraj().getMaxVelRate() > max_vel_ && try_num <= 5);
-        
+
+        globalMJO.reset(headState, tailState, piece_num);
+        globalMJO.generate(innerPts, time_vec);
+
         auto time_now = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
         traj_.setGlobalTraj(globalMJO.getTraj(), time_now);
-        
-        log_manager_->infof("Successfully generated global trajectory with B-spline -> MINCO conversion");
-        log_manager_->infof("Final trajectory: %d segments, duration: %.3f, max_vel: %.3f",
+
+        // Store the route for local planning
+        simple_path_ = full_route;
+
+        log_manager_->infof("Global trajectory (GCOPTER-style): SFC(%zu) -> ShortestPath -> MINCO(%d pieces)",
+                   global_hpolys_.size(), piece_num);
+        log_manager_->infof("Initial trajectory: %d segments, duration: %.3f, max_vel: %.3f",
                    globalMJO.getTraj().getPieceNum(), globalMJO.getTraj().getTotalDuration(),
                    globalMJO.getTraj().getMaxVelRate());
-        
-        return true;
-    }
 
-    void PathManager::getLocalTarget(const Eigen::Vector3d &start_pt,
-                                     const Eigen::Vector3d &global_end_pt, Eigen::Vector3d &local_target_pos,
-                                     Eigen::Vector3d &local_target_vel, double &t_to_target)
-    {
-        double t;
-
-        traj_.global_traj.last_glb_t_of_lc_tgt = traj_.global_traj.glb_t_of_lc_tgt;
-
-        double t_step = planning_horizen_ / 20 / max_vel_;
-        // double dist_min = 9999, dist_min_t = 0.0;
-        for (t = traj_.global_traj.glb_t_of_lc_tgt;
-             t < (traj_.global_traj.global_start_time + traj_.global_traj.duration);
-             t += t_step)
+        // === STEP 5: L-BFGS optimization within SFC corridor (single-shot) ===
+        if (isOptimizerInitialized() && !global_hpolys_.empty())
         {
-            Eigen::Vector3d pos_t = traj_.global_traj.traj.getPos(t - traj_.global_traj.global_start_time);
-            double dist = (pos_t - start_pt).norm();
+            // Pass SFC corridor to optimizer
+            poly_traj_opt_->setSFCCorridor(global_hpolys_);
 
-            if (dist >= planning_horizen_)
+            // Set control points from initial trajectory
+            poly_traj::Trajectory initTraj = globalMJO.getTraj();
+            Eigen::MatrixXd cps = globalMJO.getInitConstrainPoints(poly_traj_opt_->get_cps_num_prePiece_());
+            poly_traj_opt_->setControlPoints(cps);
+
+            // Prepare optimization inputs
+            int PN = initTraj.getPieceNum();
+            Eigen::MatrixXd all_pos = initTraj.getPositions();
+            Eigen::MatrixXd optInnerPts = all_pos.block(0, 1, 3, PN - 1);
+
+            // Run L-BFGS optimization (single shot, no replan)
+            Eigen::MatrixXd optimal_points;
+            bool use_formation = true;
+            bool opt_success = poly_traj_opt_->OptimizeTrajectory_lbfgs(
+                headState, tailState, optInnerPts, initTraj.getDurations(),
+                optimal_points, use_formation);
+
+            if (opt_success)
             {
-                local_target_pos = pos_t;
-                traj_.global_traj.glb_t_of_lc_tgt = t;
-                break;
+                // Set optimized trajectory as local trajectory
+                poly_traj::Trajectory optTraj = poly_traj_opt_->getMinJerkOptPtr()->getTraj();
+                double start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
+                traj_.setLocalTraj(optTraj, start_time, traj_.local_traj.drone_id);
+
+                log_manager_->infof("L-BFGS optimization SUCCESS: duration=%.3f, max_vel=%.3f",
+                    optTraj.getTotalDuration(), optTraj.getMaxVelRate());
             }
-        }
-
-        if ((t - traj_.global_traj.global_start_time) >= traj_.global_traj.duration) // Last global point
-        {
-            local_target_pos = global_end_pt;
-            traj_.global_traj.glb_t_of_lc_tgt = traj_.global_traj.global_start_time + traj_.global_traj.duration;
-        }
-
-        if ((global_end_pt - local_target_pos).norm() < (max_vel_ * max_vel_) / (2 * max_acc_))
-        {
-            local_target_vel = Eigen::Vector3d::Zero();
+            else
+            {
+                // Fallback: use initial MINCO trajectory as local trajectory
+                log_manager_->warnf("L-BFGS optimization failed, using initial MINCO trajectory");
+                double start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
+                traj_.setLocalTraj(globalMJO.getTraj(), start_time, traj_.local_traj.drone_id);
+            }
         }
         else
         {
-            local_target_vel = traj_.global_traj.traj.getVel(t - traj_.global_traj.global_start_time);
+            // No optimizer or no corridor: use initial MINCO trajectory directly
+            log_manager_->warnf("No optimizer or SFC corridor, using initial MINCO trajectory");
+            double start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
+            traj_.setLocalTraj(globalMJO.getTraj(), start_time, traj_.local_traj.drone_id);
         }
+
+        log_manager_->infof("Final optimized trajectory set as local_traj (single-shot, no replan)");
+
+        return true;
     }
 
 bool PathManager::checkCollision(int drone_id)
@@ -603,9 +499,9 @@ bool PathManager::checkCollision(int drone_id)
     double my_traj_start_time = traj_.local_traj.start_time;
     double other_traj_start_time = traj_.swarm_traj[drone_id].start_time;
 
-    double t_start = max(my_traj_start_time, other_traj_start_time);
-    double t_end = min(my_traj_start_time + traj_.local_traj.duration * 2 / 3,
-                       other_traj_start_time + traj_.swarm_traj[drone_id].duration);
+    double t_start = std::max(my_traj_start_time, other_traj_start_time);
+    double t_end = std::min(my_traj_start_time + traj_.local_traj.duration * 2 / 3,
+                            other_traj_start_time + traj_.swarm_traj[drone_id].duration);
 
     for (double t = t_start; t < t_end; t += 0.03)
     {
@@ -621,30 +517,13 @@ bool PathManager::checkCollision(int drone_id)
 }
 
 bool PathManager::isMapReady(const Eigen::Vector3d& start_pos) const {
-    if (!grid_map_) {
-        return false;
+    // If SFC corridor is available, check if start position is within corridor
+    if (!global_hpolys_.empty()) {
+        return true;  // SFC corridor available, map is ready
     }
 
-    if (!grid_map_->isInMap(start_pos)) {
-        return false;
-    }
-
-    Eigen::Vector3i start_idx;
-    grid_map_->posToIndex(start_pos, start_idx);
-
-    int check_radius = 1;
-    for (int dx = -check_radius; dx <= check_radius; dx++) {
-        for (int dy = -check_radius; dy <= check_radius; dy++) {
-            Eigen::Vector3i check_idx = start_idx + Eigen::Vector3i(dx, dy, 0);
-            if (grid_map_->isInMap(check_idx)) {
-                if (grid_map_->isUnknown(check_idx)) {
-                    return false;
-                }
-            }
-        }
-    }
-
-    return true;
+    // No SFC corridor yet — map is ready once obstacles are parsed
+    return !obstacle_centers_.empty() || true;  // Always ready (obstacles are geometry-based)
 }
 
 void PathManager::setFormationInfo(int drone_id, const std::string& formation_type,
@@ -887,6 +766,312 @@ std::vector<Eigen::Vector3d> PathManager::adjustWaypointsWithCurvature(
                 adjusted_waypoints.size());
 
     return adjusted_waypoints;
+}
+
+// ============================================================
+// GCOPTER-style shortest path through SFC corridor overlaps
+// Ported from gcopter/gcopter.hpp (Zhepei Wang, MIT License)
+// ============================================================
+
+bool PathManager::processCorridor(const PolyhedraH &hPs, PolyhedraV &vPs)
+{
+    const int sizeCorridor = hPs.size() - 1;
+    vPs.clear();
+    vPs.reserve(2 * sizeCorridor + 1);
+
+    int nv;
+    PolyhedronH curIH;
+    PolyhedronV curIV, curIOB;
+    for (int i = 0; i < sizeCorridor; i++)
+    {
+        if (!geo_utils::enumerateVs(hPs[i], curIV))
+        {
+            return false;
+        }
+        nv = curIV.cols();
+        curIOB.resize(3, nv);
+        curIOB.col(0) = curIV.col(0);
+        curIOB.rightCols(nv - 1) = curIV.rightCols(nv - 1).colwise() - curIV.col(0);
+        vPs.push_back(curIOB);
+
+        curIH.resize(hPs[i].rows() + hPs[i + 1].rows(), 4);
+        curIH.topRows(hPs[i].rows()) = hPs[i];
+        curIH.bottomRows(hPs[i + 1].rows()) = hPs[i + 1];
+        if (!geo_utils::enumerateVs(curIH, curIV))
+        {
+            return false;
+        }
+        nv = curIV.cols();
+        curIOB.resize(3, nv);
+        curIOB.col(0) = curIV.col(0);
+        curIOB.rightCols(nv - 1) = curIV.rightCols(nv - 1).colwise() - curIV.col(0);
+        vPs.push_back(curIOB);
+    }
+
+    if (!geo_utils::enumerateVs(hPs.back(), curIV))
+    {
+        return false;
+    }
+    nv = curIV.cols();
+    curIOB.resize(3, nv);
+    curIOB.col(0) = curIV.col(0);
+    curIOB.rightCols(nv - 1) = curIV.rightCols(nv - 1).colwise() - curIV.col(0);
+    vPs.push_back(curIOB);
+
+    return true;
+}
+
+double PathManager::costDistance(void *ptr,
+                                 const Eigen::VectorXd &xi,
+                                 Eigen::VectorXd &gradXi)
+{
+    void **dataPtrs = (void **)ptr;
+    const double &dEps = *((const double *)(dataPtrs[0]));
+    const Eigen::Vector3d &ini = *((const Eigen::Vector3d *)(dataPtrs[1]));
+    const Eigen::Vector3d &fin = *((const Eigen::Vector3d *)(dataPtrs[2]));
+    const PolyhedraV &vPolys = *((PolyhedraV *)(dataPtrs[3]));
+
+    double cost = 0.0;
+    const int overlaps = vPolys.size() / 2;
+
+    Eigen::Matrix3Xd gradP = Eigen::Matrix3Xd::Zero(3, overlaps);
+    Eigen::Vector3d a, b, d;
+    Eigen::VectorXd r;
+    double smoothedDistance;
+    for (int i = 0, j = 0, k = 0; i <= overlaps; i++, j += k)
+    {
+        a = i == 0 ? ini : b;
+        if (i < overlaps)
+        {
+            k = vPolys[2 * i + 1].cols();
+            Eigen::Map<const Eigen::VectorXd> q(xi.data() + j, k);
+            r = q.normalized().head(k - 1);
+            b = vPolys[2 * i + 1].rightCols(k - 1) * r.cwiseProduct(r) +
+                vPolys[2 * i + 1].col(0);
+        }
+        else
+        {
+            b = fin;
+        }
+
+        d = b - a;
+        smoothedDistance = sqrt(d.squaredNorm() + dEps);
+        cost += smoothedDistance;
+
+        if (i < overlaps)
+        {
+            gradP.col(i) += d / smoothedDistance;
+        }
+        if (i > 0)
+        {
+            gradP.col(i - 1) -= d / smoothedDistance;
+        }
+    }
+
+    Eigen::VectorXd unitQ;
+    double sqrNormQ, invNormQ, sqrNormViolation, c, dc;
+    for (int i = 0, j = 0, k; i < overlaps; i++, j += k)
+    {
+        k = vPolys[2 * i + 1].cols();
+        Eigen::Map<const Eigen::VectorXd> q(xi.data() + j, k);
+        Eigen::Map<Eigen::VectorXd> gradQ(gradXi.data() + j, k);
+        sqrNormQ = q.squaredNorm();
+        invNormQ = 1.0 / sqrt(sqrNormQ);
+        unitQ = q * invNormQ;
+        gradQ.head(k - 1) = (vPolys[2 * i + 1].rightCols(k - 1).transpose() * gradP.col(i)).array() *
+                             unitQ.head(k - 1).array() * 2.0;
+        gradQ(k - 1) = 0.0;
+        gradQ = (gradQ - unitQ * unitQ.dot(gradQ)).eval() * invNormQ;
+
+        sqrNormViolation = sqrNormQ - 1.0;
+        if (sqrNormViolation > 0.0)
+        {
+            c = sqrNormViolation * sqrNormViolation;
+            dc = 3.0 * c;
+            c *= sqrNormViolation;
+            cost += c;
+            gradQ += dc * 2.0 * q;
+        }
+    }
+
+    return cost;
+}
+
+void PathManager::getShortestPath(const Eigen::Vector3d &ini,
+                                   const Eigen::Vector3d &fin,
+                                   const PolyhedraV &vPolys,
+                                   const double &smoothD,
+                                   Eigen::Matrix3Xd &path)
+{
+    const int overlaps = vPolys.size() / 2;
+    Eigen::VectorXi vSizes(overlaps);
+    for (int i = 0; i < overlaps; i++)
+    {
+        vSizes(i) = vPolys[2 * i + 1].cols();
+    }
+    Eigen::VectorXd xi(vSizes.sum());
+    for (int i = 0, j = 0; i < overlaps; i++)
+    {
+        xi.segment(j, vSizes(i)).setConstant(sqrt(1.0 / vSizes(i)));
+        j += vSizes(i);
+    }
+
+    double minDistance;
+    void *dataPtrs[4];
+    dataPtrs[0] = (void *)(&smoothD);
+    dataPtrs[1] = (void *)(&ini);
+    dataPtrs[2] = (void *)(&fin);
+    dataPtrs[3] = (void *)(&vPolys);
+    lbfgs::lbfgs_parameter_t shortest_path_params;
+    shortest_path_params.past = 3;
+    shortest_path_params.delta = 1.0e-3;
+    shortest_path_params.g_epsilon = 1.0e-5;
+
+    lbfgs::lbfgs_optimize(xi,
+                           minDistance,
+                           &PathManager::costDistance,
+                           nullptr,
+                           nullptr,
+                           dataPtrs,
+                           shortest_path_params);
+
+    path.resize(3, overlaps + 2);
+    path.leftCols<1>() = ini;
+    path.rightCols<1>() = fin;
+    Eigen::VectorXd r;
+    for (int i = 0, j = 0, k; i < overlaps; i++, j += k)
+    {
+        k = vPolys[2 * i + 1].cols();
+        Eigen::Map<const Eigen::VectorXd> q(xi.data() + j, k);
+        r = q.normalized().head(k - 1);
+        path.col(i + 1) = vPolys[2 * i + 1].rightCols(k - 1) * r.cwiseProduct(r) +
+                           vPolys[2 * i + 1].col(0);
+    }
+}
+
+void PathManager::setInitialFromPath(const Eigen::Matrix3Xd &path,
+                                      const double &speed,
+                                      const Eigen::VectorXi &intervalNs,
+                                      Eigen::Matrix3Xd &innerPoints,
+                                      Eigen::VectorXd &timeAlloc)
+{
+    const int sizeM = intervalNs.size();
+    const int sizeN = intervalNs.sum();
+    innerPoints.resize(3, sizeN - 1);
+    timeAlloc.resize(sizeN);
+
+    Eigen::Vector3d a, b, c;
+    for (int i = 0, j = 0, k = 0, l; i < sizeM; i++)
+    {
+        l = intervalNs(i);
+        a = path.col(i);
+        b = path.col(i + 1);
+        c = (b - a) / l;
+        timeAlloc.segment(j, l).setConstant(c.norm() / speed);
+        j += l;
+        for (int m = 0; m < l; m++)
+        {
+            if (i > 0 || m > 0)
+            {
+                innerPoints.col(k++) = a + c * m;
+            }
+        }
+    }
+}
+
+void PathManager::publishSFCCorridor(const PolyhedraH &hPolys)
+{
+    visualization_msgs::msg::MarkerArray marker_array;
+
+    // First, delete all previous markers
+    visualization_msgs::msg::Marker delete_marker;
+    delete_marker.action = visualization_msgs::msg::Marker::DELETEALL;
+    delete_marker.header.frame_id = "map";
+    delete_marker.header.stamp = node_->get_clock()->now();
+    marker_array.markers.push_back(delete_marker);
+
+    for (size_t i = 0; i < hPolys.size(); i++)
+    {
+        // Convert H-polytope to V-polytope for visualization
+        Eigen::Matrix3Xd vPoly;
+        if (!geo_utils::enumerateVs(hPolys[i], vPoly))
+            continue;
+
+        // Create wireframe from vertices using LINE_LIST
+        visualization_msgs::msg::Marker marker;
+        marker.header.frame_id = "map";
+        marker.header.stamp = node_->get_clock()->now();
+        marker.ns = "sfc_corridor";
+        marker.id = i + 1;  // +1 because id=0 is delete_marker
+        marker.type = visualization_msgs::msg::Marker::LINE_LIST;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+        marker.scale.x = 0.03;  // Line width
+
+        // Color: semi-transparent, different hue per polytope
+        float hue = (float)i / std::max((int)hPolys.size(), 1);
+        marker.color.r = 0.2f + 0.8f * std::max(0.0f, std::min(1.0f, std::abs(hue * 6.0f - 3.0f) - 1.0f));
+        marker.color.g = 0.2f + 0.8f * std::max(0.0f, std::min(1.0f, 2.0f - std::abs(hue * 6.0f - 2.0f)));
+        marker.color.b = 0.2f + 0.8f * std::max(0.0f, std::min(1.0f, 2.0f - std::abs(hue * 6.0f - 4.0f)));
+        marker.color.a = 0.4f;
+
+        marker.pose.orientation.w = 1.0;
+
+        // Connect all vertex pairs as edges (convex hull wireframe)
+        int nv = vPoly.cols();
+        for (int a = 0; a < nv; a++)
+        {
+            for (int b = a + 1; b < nv; b++)
+            {
+                // Only draw edges shorter than a threshold (skip long diagonals)
+                double edge_len = (vPoly.col(a) - vPoly.col(b)).norm();
+                if (edge_len > 50.0) continue;  // Skip very long edges
+
+                geometry_msgs::msg::Point p1, p2;
+                p1.x = vPoly(0, a); p1.y = vPoly(1, a); p1.z = vPoly(2, a);
+                p2.x = vPoly(0, b); p2.y = vPoly(1, b); p2.z = vPoly(2, b);
+                marker.points.push_back(p1);
+                marker.points.push_back(p2);
+            }
+        }
+
+        if (!marker.points.empty())
+            marker_array.markers.push_back(marker);
+    }
+
+    sfc_corridor_pub_->publish(marker_array);
+    log_manager_->infof("Published SFC corridor visualization (%zu polytopes)", hPolys.size());
+}
+
+void PathManager::publishShortestPath(const Eigen::Matrix3Xd &path)
+{
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = "map";
+    marker.header.stamp = node_->get_clock()->now();
+    marker.ns = "shortest_path";
+    marker.id = 0;
+    marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.scale.x = 0.08;  // Line width
+
+    // Bright cyan color
+    marker.color.r = 0.0f;
+    marker.color.g = 1.0f;
+    marker.color.b = 1.0f;
+    marker.color.a = 1.0f;
+
+    marker.pose.orientation.w = 1.0;
+
+    for (int i = 0; i < path.cols(); i++)
+    {
+        geometry_msgs::msg::Point p;
+        p.x = path(0, i);
+        p.y = path(1, i);
+        p.z = path(2, i);
+        marker.points.push_back(p);
+    }
+
+    shortest_path_pub_->publish(marker);
+    log_manager_->infof("Published shortest path visualization (%d points)", (int)path.cols());
 }
 
 } // namespace path_manager

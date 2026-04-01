@@ -15,13 +15,8 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
       have_new_target_(false),
       have_local_traj_(false),
       have_recv_pre_agent_(false),
-      flag_replan_astar_(false),
       drone_id_(0),
-      replan_thresh_(-1.0),
-      no_replan_thresh_(-1.0),
-      replan_trajectory_time_(-1.0),
       last_start_time_(0.0),
-      n_seconds_ahead_(0.0),
       rviz_simulation_ (false),
       flag_escape_emergency_(false),
       num_drones_(4),
@@ -85,29 +80,12 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     node_->get_parameter("formation_z_spacing", formation_z_spacing_);
     FSM_LOG_INFO("3D formation z_spacing: %.2f", formation_z_spacing_);
 
-    node_->declare_parameter("fsm/thresh_replan_time", -1.0);
-    node_->declare_parameter("fsm/thresh_no_replan_meter", -1.0);
-    node_->declare_parameter("fsm/replan_trajectory_time", -1.0);
-    node_->declare_parameter("fsm/n_seconds_ahead", -1.0);
     node_->declare_parameter("fsm/hungarian_distance_weight", 1.0);
     node_->declare_parameter("fsm/hungarian_crossing_penalty", 50.0);
-    node_->get_parameter("fsm/thresh_replan_time", replan_thresh_);
-    node_->get_parameter("fsm/thresh_no_replan_meter", no_replan_thresh_);
-    node_->get_parameter("fsm/replan_trajectory_time", replan_trajectory_time_);
-    node_->get_parameter("fsm/n_seconds_ahead", n_seconds_ahead_);
     node_->get_parameter("fsm/hungarian_distance_weight", hungarian_distance_weight_);
     node_->get_parameter("fsm/hungarian_crossing_penalty", hungarian_crossing_penalty_);
     FSM_LOG_INFO("Hungarian assignment weights - distance: %.1f, crossing penalty: %.1f",
                  hungarian_distance_weight_, hungarian_crossing_penalty_);
-
-    // Read nonholonomic weight from config (will be used for formation changes)
-    if (!node_->has_parameter("optimization/weight_nonholonomic")) {
-        node_->declare_parameter("optimization/weight_nonholonomic", 10000.0);
-    }
-    node_->get_parameter("optimization/weight_nonholonomic", weight_nonholonomic_);
-    pending_weight_nonholonomic_ = weight_nonholonomic_;  // Default: use config value
-    FSM_LOG_INFO("Nonholonomic weight from config: %.1f (will be 0 for line formations, this value for others)",
-                 weight_nonholonomic_);
 
     // Start position will be received from TrajectoryCommand message
     // Initialize with zero until we receive the command
@@ -264,7 +242,7 @@ void ReplanFSM::init()
             if (exec_state_ == WAIT_POSITION)
                 changeFSMExecState(GEN_NEW_TRAJ, "TRIG");
             else if (exec_state_ == EXEC_TRAJ)
-                changeFSMExecState(REPLAN_TRAJ, "TRIG");
+                changeFSMExecState(SEQUENTIAL_START, "TRIG");
                 
             if (enable_global_trajectory_pub_) {
                 path_manager::msg::PolyTraj msg;
@@ -355,36 +333,6 @@ void ReplanFSM::computeAndPublishPaths() {
             break;
         }
 
-        case REPLAN_TRAJ:
-        {
-            // FSM_LOG_INFO("[DEBUG REPLAN] Starting REPLAN_TRAJ at time %.3f",
-            //              rclcpp::Clock(RCL_ROS_TIME).now().seconds());
-            auto replan_start = std::chrono::high_resolution_clock::now();
-
-            bool success;
-            if (flag_replan_astar_)
-                success = planFromLocalTraj(true, false);
-            else
-                success = planFromLocalTraj(false, true);
-
-            auto replan_end = std::chrono::high_resolution_clock::now();
-            auto replan_duration = std::chrono::duration_cast<std::chrono::milliseconds>(replan_end - replan_start).count();
-            // FSM_LOG_INFO("[DEBUG REPLAN] planFromLocalTraj took %ld ms, success=%d",
-            //              replan_duration, success);
-
-            if (success)
-            {
-                flag_replan_astar_ = false;
-                changeFSMExecState(EXEC_TRAJ, "FSM");
-            }
-            else
-            {
-                flag_replan_astar_ = true;
-                changeFSMExecState(REPLAN_TRAJ, "FSM");
-            }
-            break;
-        }
-
         case EXEC_TRAJ:
         {
             if (!path_manager_) {
@@ -397,29 +345,15 @@ void ReplanFSM::computeAndPublishPaths() {
             double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - local_traj->start_time;
             t_cur = std::min(local_traj->duration, t_cur);
 
-	        //RCLCPP_INFO(node_->get_logger(), "t_cur: %.2f, duration: %.2f", t_cur, local_traj->duration);
-            Eigen::Vector3d pos = local_traj->traj.getPos(t_cur);
-
-            if ((local_target_pt_ - end_pt_).norm() < 0.1)
+            // Single-shot execution: no replan, just check if trajectory completed
+            if (t_cur > local_traj->duration - 0.2)
             {
-                if (t_cur > local_traj->duration - 0.2)
-                {
-                    have_target_ = false;
-                    have_local_traj_ = false;
-                    changeFSMExecState(WAIT_POSITION, "FSM");
-                    RCLCPP_INFO(node_->get_logger(), "[drone %d reached goal]", drone_id_);
-                    log_manager_->infof("[drone %d reached goal]", drone_id_);
-                    return;
-                }
-                else if ((end_pt_ - pos).norm() > no_replan_thresh_ && t_cur > replan_thresh_)
-                {
-                    log_manager_->errorf("No Replan Thresh");
-                    changeFSMExecState(REPLAN_TRAJ, "FSM");
-                }
-            }
-            else if (t_cur > replan_thresh_)
-            {
-                changeFSMExecState(REPLAN_TRAJ, "FSM");
+                have_target_ = false;
+                have_local_traj_ = false;
+                changeFSMExecState(WAIT_POSITION, "FSM");
+                RCLCPP_INFO(node_->get_logger(), "[drone %d reached goal]", drone_id_);
+                log_manager_->infof("[drone %d reached goal]", drone_id_);
+                return;
             }
             break;
         }
@@ -561,7 +495,7 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
     }
 
     if (path_manager_->checkCollision(recv_id)) {
-        changeFSMExecState(REPLAN_TRAJ, "SWARM_CHECK");
+        changeFSMExecState(SEQUENTIAL_START, "SWARM_CHECK");
     }
 
     /* Check if receive agents have lower drone id */
@@ -658,139 +592,43 @@ void ReplanFSM::globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
     }
 }
 
-bool ReplanFSM::callPathManager(bool flag_use_poly_init, bool flag_randomPolyTraj, bool use_formation) {
-    auto replan_start = std::chrono::high_resolution_clock::now();
+bool ReplanFSM::planFromGlobalTraj(int trial_times) {
+    // In SFC single-shot mode, planGlobalTraj() already optimized and set local_traj.
+    // Just verify local_traj exists and publish it.
+    auto local_traj = &path_manager_->traj_.local_traj;
+    if (local_traj->duration > 0 && local_traj->start_time > 0)
+    {
+        // local_traj was already set by planGlobalTraj() — publish and go
+        log_manager_->infof("[planFromGlobalTraj] Using pre-optimized trajectory (duration=%.3f)", local_traj->duration);
 
-    log_manager_->infof("[callPathManager] ENTER: start=(%.2f,%.2f,%.2f), end=(%.2f,%.2f,%.2f), use_formation=%d, have_local_traj=%d",
-                 start_pt_(0), start_pt_(1), start_pt_(2),
-                 end_pt_(0), end_pt_(1), end_pt_(2),
-                 use_formation, have_local_traj_);
+        // Set local_target to end_pt since the whole trajectory is already optimized
+        local_target_pt_ = end_pt_;
+        local_target_vel_.setZero();
 
-    path_manager_->getLocalTarget(start_pt_, end_pt_, local_target_pt_, local_target_vel_, t_to_target_);
-
-    log_manager_->infof("[callPathManager] After getLocalTarget: local_target=(%.2f,%.2f,%.2f), local_vel=(%.2f,%.2f,%.2f)",
-                 local_target_pt_(0), local_target_pt_(1), local_target_pt_(2),
-                 local_target_vel_(0), local_target_vel_(1), local_target_vel_(2));
-
-    Eigen::Vector3d desired_start_pt, desired_start_vel, desired_start_acc;
-    double desired_start_time;
-
-    if (have_local_traj_ && use_formation) {
-        desired_start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds() + replan_trajectory_time_;
-        double t_adj = desired_start_time - path_manager_->traj_.local_traj.start_time;
-        desired_start_pt = path_manager_->traj_.local_traj.traj.getPos(t_adj);
-        desired_start_vel = path_manager_->traj_.local_traj.traj.getVel(t_adj);
-        desired_start_acc = path_manager_->traj_.local_traj.traj.getAcc(t_adj);
-    } else {
-        desired_start_pt = start_pt_;
-        desired_start_vel = start_vel_;
-        desired_start_acc = start_acc_;
-    }
-
-    auto optimize_start = std::chrono::high_resolution_clock::now();
-    FSM_LOG_DEBUG("[TIMING] Starting computeAndOptimizePath (use_formation=%d)", use_formation);
-
-    bool plan_success = path_manager_-> computeAndOptimizePath(
-        desired_start_pt, desired_start_vel, desired_start_acc,
-        desired_start_time, local_target_pt_, local_target_vel_,
-        (have_new_target_ || flag_use_poly_init),
-        flag_randomPolyTraj, use_formation, have_local_traj_);
-
-    auto optimize_end = std::chrono::high_resolution_clock::now();
-    auto optimize_duration = std::chrono::duration_cast<std::chrono::milliseconds>(optimize_end - optimize_start).count();
-    FSM_LOG_DEBUG("[TIMING] computeAndOptimizePath took %ld ms", optimize_duration);
-
-    have_new_target_ = false;
-
-    if (enable_global_trajectory_pub_) {
-        FSM_LOG_DEBUG("Publishing global trajectory...");
-        path_manager::msg::PolyTraj msg2;
-        globalTraj2ROSMsg(msg2);
-        global_path_pub_->publish(msg2);
-        FSM_LOG_DEBUG("Global trajectory published");
-    }
-
-    if (plan_success) {
-        FSM_LOG_DEBUG("Publishing local trajectories...");
+        // Publish trajectory
         path_manager::msg::PolyTraj msg;
         polyTraj2ROSMsg(msg);
-
-        FSM_LOG_DEBUG("Publishing to planning/trajectory...");
-        auto pub_start_1 = std::chrono::high_resolution_clock::now();
         optimized_path_pub_->publish(msg);
-        auto pub_end_1 = std::chrono::high_resolution_clock::now();
-        auto pub_duration_1 = std::chrono::duration_cast<std::chrono::microseconds>(pub_end_1 - pub_start_1).count();
-        FSM_LOG_DEBUG("Published to planning/trajectory (took %ld us)", pub_duration_1);
-
-        FSM_LOG_DEBUG("Publishing to broadcast_traj_send...");
-        auto pub_start_2 = std::chrono::high_resolution_clock::now();
         broadcast_traj_pub_->publish(msg);
         if (verified_traj_pub_) {
-            verified_traj_pub_->publish(msg);  // Also publish to formation_commander (own trajectory, FSM1 only)
-        }
-        auto pub_end_2 = std::chrono::high_resolution_clock::now();
-        auto pub_duration_2 = std::chrono::duration_cast<std::chrono::microseconds>(pub_end_2 - pub_start_2).count();
-        FSM_LOG_DEBUG("Published to broadcast_traj_send (took %ld us)", pub_duration_2);
-
-        // Warn if publishing took too long (potential blocking issue)
-        if (pub_duration_2 > 1000) { // > 1ms
-            FSM_LOG_WARN("[PUBLISH DELAY] broadcast_traj_send publish took %ld us", pub_duration_2);
+            verified_traj_pub_->publish(msg);
         }
 
         have_local_traj_ = true;
-    }
+        have_new_target_ = false;
 
-    FSM_LOG_DEBUG("callPathManager returning %s", plan_success ? "SUCCESS" : "FAILURE");
-    return plan_success;
-}
-
-bool ReplanFSM::planFromGlobalTraj(int trial_times) {
-    start_pt_ = current_pos_;
-    start_vel_.setZero();
-    start_acc_.setZero();
-
-    for (int i = 0; i < trial_times; i++) {
-        try {
-            if (callPathManager(true, false, true)) {
-                return true;
-            }
-        } catch (const std::exception& e) {
-            RCLCPP_ERROR(node_->get_logger(), "Exception in planFromGlobalTraj trial %d: %s", i, e.what());
-            log_manager_->errorf("Exception in planFromGlobalTraj trial %d: %s", i, e.what());
+        if (enable_global_trajectory_pub_) {
+            path_manager::msg::PolyTraj msg2;
+            globalTraj2ROSMsg(msg2);
+            global_path_pub_->publish(msg2);
         }
+
+        return true;
     }
+
+    // local_traj not set (shouldn't happen in normal flow)
+    log_manager_->errorf("[planFromGlobalTraj] local_traj not ready — planGlobalTraj() may have failed");
     return false;
-}
-
-bool ReplanFSM::planFromLocalTraj(bool flag_use_poly_init, bool use_formation) {
-    LocalTrajData *info = &path_manager_->traj_.local_traj;
-    double t_cur = rclcpp::Clock(RCL_ROS_TIME).now().seconds() - path_manager_->traj_.local_traj.start_time;
-
-    // Always use trajectory position for consistency and continuity
-    // If trajectory expired, clamp to duration to get the hover endpoint
-    // This avoids race conditions with current_pos_ (updated by different callback group)
-    // and ensures smooth velocity/acceleration continuity
-    double t_clamped = std::min(t_cur, info->duration);
-
-    start_pt_ = info->traj.getPos(t_clamped);
-    start_vel_ = info->traj.getVel(t_clamped);
-    start_acc_ = info->traj.getAcc(t_clamped);
-
-    // Log if trajectory expired (indicates timer was delayed)
-    if (t_cur > info->duration) {
-        FSM_LOG_WARN("Trajectory expired! t_cur=%.2fs > duration=%.2fs, using trajectory endpoint (clamped)",
-                     t_cur, info->duration);
-        FSM_LOG_DEBUG("  Trajectory endpoint: (%.2f, %.2f, %.2f), Current pos: (%.2f, %.2f, %.2f), Error: %.2fm",
-                     start_pt_(0), start_pt_(1), start_pt_(2),
-                     current_pos_(0), current_pos_(1), current_pos_(2),
-                     (start_pt_ - current_pos_).norm());
-    }
-
-    double t_ahead = std::min(t_cur + n_seconds_ahead_, info->duration);
-    Eigen::Vector3d desired_start_pt = info->traj.getPos(std::min(t_cur, info->duration));
-
-    bool success = callPathManager(flag_use_poly_init, false, use_formation);
-    return success;
 }
 
 void ReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_call) {
@@ -800,9 +638,9 @@ void ReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_cal
         continously_called_times_ = 1;
     }
 
-    static std::string state_str[7] = {"INIT", "WAIT_POSITION", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START"};
+    static std::string state_str[6] = {"INIT", "WAIT_POSITION", "GEN_NEW_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START"};
 
-    // Throttle frequent state transitions (EXEC_TRAJ <-> REPLAN_TRAJ)
+    // Throttle frequent state transitions
     static auto last_log_time = std::chrono::steady_clock::now();
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_log_time).count();
@@ -864,9 +702,6 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
             log_manager_->infof("Optimizer initialized successfully for drone %d", drone_id_);
             FSM_LOG_INFO("[TIMING] Optimizer initialization took %ld ms", opt_init_duration);
 
-            // Apply pending nonholonomic weight (set by formation command)
-            path_manager_->setNonholonomicWeight(pending_weight_nonholonomic_);
-            FSM_LOG_INFO("Applied pending nonholonomic weight: %.1f", pending_weight_nonholonomic_);
         } catch (const std::exception& e) {
             RCLCPP_ERROR(node_->get_logger(), "Failed to initialize optimizer for drone %d: %s", drone_id_, e.what());
             log_manager_->errorf("Failed to initialize optimizer for drone %d: %s", drone_id_, e.what());
@@ -1023,7 +858,7 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         if (exec_state_ == WAIT_POSITION)
             changeFSMExecState(SEQUENTIAL_START, "formationTargetCallback");
         else if (exec_state_ == EXEC_TRAJ)
-            changeFSMExecState(REPLAN_TRAJ, "formationTargetCallback");
+            changeFSMExecState(SEQUENTIAL_START, "formationTargetCallback");  // Single-shot: new global plan already has local_traj
 
         // NOTE: Global trajectory publish removed from formationTargetCallback to prevent blocking
         // The global trajectory will be published in computeAndPublishPaths instead
@@ -1164,26 +999,6 @@ void ReplanFSM::trajectoryCommandCallback(const formation_msgs::msg::TrajectoryC
     // Update formation parameters (for compatibility with existing code)
     current_formation_type_ = msg->formation_type;
     current_formation_scale_ = msg->formation_scale;
-
-    // Set nonholonomic weight based on formation type
-    bool is_none_mode = (msg->formation_type == "none" || msg->formation_type == "NONE");
-    bool is_line_formation = (msg->formation_type.find("line") != std::string::npos);
-
-    if (is_none_mode || is_line_formation) {
-        pending_weight_nonholonomic_ = 0.0;
-        FSM_LOG_INFO("Formation mode %s - nonholonomic constraints DISABLED (weight=0)",
-                     msg->formation_type.c_str());
-        if (path_manager_ && path_manager_->isOptimizerInitialized()) {
-            path_manager_->setNonholonomicWeight(0.0);
-        }
-    } else {
-        pending_weight_nonholonomic_ = weight_nonholonomic_;
-        FSM_LOG_INFO("Formation mode %s - nonholonomic constraints ENABLED (weight=%.1f)",
-                     msg->formation_type.c_str(), weight_nonholonomic_);
-        if (path_manager_ && path_manager_->isOptimizerInitialized()) {
-            path_manager_->setNonholonomicWeight(weight_nonholonomic_);
-        }
-    }
 
     has_formation_command_ = true;
 

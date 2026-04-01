@@ -1,8 +1,7 @@
 /**:
   ros__parameters:
-    # Complex scenario - multiple obstacles + threat zones
-    # Dense environment with mixed threats
-    # Tests multi-obstacle avoidance with overlapping threat coverage
+    # Complex scenario - multiple obstacles
+    # Dense environment for multi-obstacle avoidance testing
 
     # Obstacle Format: [x, y, z] in meters
     obstacles: [
@@ -10,29 +9,4 @@
       -1.29, -17.08, 0.0,    # Obstacle #2
       -3.54, -23.30, 0.0,    # Obstacle #3
       -5.46, -29.95, 0.0,    # Obstacle #4
-    ]
-
-    # Threat Zone Format: [center_x, center_y, center_z, detection_range, engagement_range, max_threat_level]
-    # - center (x,y,z): Position in meters
-    # - detection_range: Radar detection radius (m)
-    # - engagement_range: Weapon effective range (m)
-    # - max_threat_level: Threat intensity (SAM≈100-200, AAA≈50-90)
-    threat_zones: [
-      # SAM Site 1 - blocking direct path
-      25.0, 0.0, 0.0,      # center_x, center_y, center_z
-      7.0,                 # detection_range (m)
-      8.0,                 # engagement_range (m)
-      100.0,               # max_threat_level
-
-      # SAM Site 2 - overlapping coverage
-      40.0, -5.0, 0.0,     # center_x, center_y, center_z
-      15.0,                # detection_range (m)
-      8.0,                 # engagement_range (m)
-      200.0,               # max_threat_level
-
-      # AAA Site 1 - medium threat
-      40.0, 10.0, 0.0,     # center_x, center_y, center_z
-      15.0,                # detection_range (m)
-      6.0,                 # engagement_range (m)
-      90.0,                # max_threat_level
     ]

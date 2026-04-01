@@ -59,7 +59,6 @@ public:
         INIT,
         WAIT_POSITION,
         GEN_NEW_TRAJ,
-        REPLAN_TRAJ,
         EXEC_TRAJ,
         EMERGENCY_STOP,
         SEQUENTIAL_START
@@ -90,9 +89,7 @@ public:
 
 private:
     rclcpp::Node::SharedPtr node_;
-    bool callPathManager(bool flag_use_poly_init, bool flag_randomPolyTraj, bool use_formation);
     bool planFromGlobalTraj(int trial_times = 1);
-    bool planFromLocalTraj(bool flag_use_poly_init, bool use_formation);
     void changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_call);
     bool isMapReady(const Eigen::Vector3d& start_pos);
     bool callEmergencyStop(const Eigen::Vector3d& stop_pos);
@@ -125,13 +122,9 @@ private:
     bool have_new_target_;
     bool have_local_traj_;
     bool have_recv_pre_agent_;
-    bool flag_replan_astar_;
     bool start_position_received_;  // Track if we received start position from TrajectoryCommand
     int drone_id_;      // Internal index (0,1,2,3...)
     int mavlink_id_;    // MAVLink system ID for PX4 communication
-    double replan_thresh_;
-    double no_replan_thresh_;
-    double replan_trajectory_time_;
     Eigen::Vector3d current_pos_;
     Eigen::Vector3d current_vel_;
     Eigen::Vector3d start_pt_, start_vel_, start_acc_;
@@ -142,7 +135,6 @@ private:
     double t_to_target_;
     double current_time_;
     double last_start_time_;
-    double n_seconds_ahead_;
     bool rviz_simulation_;
     bool flag_escape_emergency_;
     bool enable_debug_logs_;
@@ -151,8 +143,6 @@ private:
     double formation_z_spacing_;  // Vertical spacing for 3D formations
     double hungarian_distance_weight_;   // Weight for distance cost in Hungarian assignment
     double hungarian_crossing_penalty_;  // Penalty weight for path crossings in Hungarian assignment
-    double weight_nonholonomic_;         // Nonholonomic constraint weight from config (used for formation changes)
-    double pending_weight_nonholonomic_; // Pending weight to apply when optimizer is initialized
 
     // Formation manager variables
     int num_drones_;

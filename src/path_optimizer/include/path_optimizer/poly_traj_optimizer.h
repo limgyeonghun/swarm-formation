@@ -6,9 +6,7 @@
 #include <chrono>
 #include <fstream>
 #include <rclcpp/rclcpp.hpp>
-#include <visualization_msgs/msg/marker_array.hpp>
-#include <path_planner/dyn_a_star.h>
-#include <path_planner/grid_map.h>
+#include <path_planner/gcopter/geo_utils.hpp>
 #include <swarm_graph/swarm_graph.hpp>
 #include "../../common/log_manager.hpp"
 
@@ -72,8 +70,6 @@ namespace ego_planner
   {
   private:
     double dbg_cost_formation_{0.0};
-    GridMap::Ptr grid_map_;
-    AStar::Ptr a_star_;
     poly_traj::MinJerkOpt jerkOpt_;
     SwarmTrajData *swarm_trajs_{nullptr};
     ConstrainPoints cps_;
@@ -107,18 +103,9 @@ namespace ego_planner
     double wei_time_;
     double wei_formation_;
     double wei_formation_base_;  // Base formation weight (from config)
-    double wei_nonholo_;  // Weight for nonholonomic constraint cost (rover-specific)
-    double wei_threat_;   // Weight for threat zone cost (air defense penetration)
 
-    double obs_clearance_;
     double swarm_clearance_;
     double max_vel_, max_acc_;
-
-    // Nonholonomic constraint parameters (rover dynamics)
-    double min_forward_vel_;    // Minimum forward velocity (prevent backward motion)
-    double max_brake_decel_;    // Maximum braking deceleration
-    double max_curvature_;      // Maximum curvature (1/min_turn_radius)
-    double max_lateral_accel_;  // Maximum lateral acceleration (centripetal)
 
     int formation_size_ = 4;  // Default to 4 drones
     bool use_formation_ = true;
@@ -131,20 +118,12 @@ namespace ego_planner
     bool enable_debug_logs_;
     bool enable_lbfgs_detail_logs_;
 
-    // Nonholonomic constraint violation tracking (for debugging and analysis)
-    int dbg_curv_violations_;        // Number of curvature violations
-    int dbg_brake_violations_;       // Number of braking violations
-    int dbg_fwd_vel_violations_;     // Number of forward velocity violations
-    int dbg_lat_accel_violations_;   // Number of lateral acceleration violations
-    double dbg_max_curvature_;       // Maximum curvature observed in trajectory
-    double dbg_max_brake_decel_;     // Maximum braking deceleration observed
-    double dbg_cost_curvature_;      // Total curvature violation cost
-    double dbg_cost_braking_;        // Total braking violation cost
-    double dbg_cost_fwd_vel_;        // Total forward velocity violation cost
-    double dbg_cost_lat_accel_;      // Total lateral acceleration violation cost
-
     rclcpp::Node::SharedPtr node_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr esdf_sample_pub_;
+
+    // SFC corridor data (GCOPTER-style piece-to-polytope mapping)
+    std::vector<Eigen::MatrixX4d> sfc_hpolys_;  // H-polytope corridor
+    Eigen::VectorXi hpoly_piece_idx_;            // hpoly index for each trajectory piece
+    double smoothing_eps_;                        // smoothedL1 smoothing factor
 
   public:
     PolyTrajOptimizer() {}
@@ -153,12 +132,12 @@ namespace ego_planner
 
     void setParam(const rclcpp::Node::SharedPtr &node);
     void setLogManager(swarm_formation::LogManager::Ptr log_manager);
-    void setEnvironment(const GridMap::Ptr &map);
+    void setSFCCorridor(const std::vector<Eigen::MatrixX4d> &hpolys) { sfc_hpolys_ = hpolys; }
+    void buildPiecePolytopeMapping(int piece_num);
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
     void setDroneId(const int drone_id);
     void setFormation(const std::vector<Eigen::Vector3d>& formation_positions, int formation_size);
-    void setNonholonomicWeight(double weight) { wei_nonholo_ = weight; }
 
     inline ConstrainPoints getControlPoints() { return cps_; }
     inline const ConstrainPoints *getControlPointsPtr(void) { return &cps_; }
@@ -170,12 +149,6 @@ namespace ego_planner
     bool OptimizeTrajectory_lbfgs(const Eigen::MatrixXd &iniState, const Eigen::MatrixXd &finState,
                                   const Eigen::MatrixXd &initInnerPts, const Eigen::VectorXd &initT,
                                   Eigen::MatrixXd &optimal_points, const bool use_formation);
-
-    void astarWithMinTraj(const Eigen::MatrixXd &iniState,
-                          const Eigen::MatrixXd &finState,
-                          std::vector<Eigen::Vector3d> &simple_path,
-                          Eigen::MatrixXd &ctl_points,
-                          poly_traj::MinJerkOpt &frontendMJ);
 
     void showFormationInformation(bool is_show, Eigen::Vector3d pos);
     void setDesiredFormation(int type);
@@ -204,15 +177,10 @@ namespace ego_planner
     template <typename EIGENVEC>
     void addPVAGradCost2CT(EIGENVEC &gdT, Eigen::VectorXd &costs, const int &K);
 
-    bool obstacleGradCostP(const int i_dp,
+    bool corridorGradCostP(const int piece_idx,
                            const Eigen::Vector3d &p,
                            Eigen::Vector3d &gradp,
                            double &costp);
-
-    bool threatGradCostP(const int i_dp,
-                         const Eigen::Vector3d &p,
-                         Eigen::Vector3d &gradp,
-                         double &costp);
 
     bool swarmGradCostP(const int i_dp,
                         const double t,
@@ -232,6 +200,31 @@ namespace ego_planner
                              double &grad_prev_t,
                              double &costp);
 
+    // GCOPTER-style smoothed L1 penalty (smooth at 0, linear for large violations)
+    static inline bool smoothedL1(const double &x, const double &mu,
+                                  double &f, double &df)
+    {
+      if (x < 0.0)
+      {
+        return false;
+      }
+      else if (x > mu)
+      {
+        f = x - 0.5 * mu;
+        df = 1.0;
+        return true;
+      }
+      else
+      {
+        const double xdmu = x / mu;
+        const double sqrxdmu = xdmu * xdmu;
+        const double mumxd2 = mu - 0.5 * x;
+        f = mumxd2 * sqrxdmu * xdmu;
+        df = sqrxdmu * ((-0.5) * xdmu + 3.0 * mumxd2 / mu);
+        return true;
+      }
+    }
+
     bool feasibilityGradCostV(const Eigen::Vector3d &v,
                               Eigen::Vector3d &gradv,
                               double &costv);
@@ -239,12 +232,6 @@ namespace ego_planner
     bool feasibilityGradCostA(const Eigen::Vector3d &a,
                               Eigen::Vector3d &grada,
                               double &costa);
-
-    bool nonholonomicGradCost(const Eigen::Vector3d &vel,
-                              const Eigen::Vector3d &acc,
-                              Eigen::Vector3d &grad_vel,
-                              Eigen::Vector3d &grad_acc,
-                              double &cost_nonholo);
 
     void distanceSqrVarianceWithGradCost2p(const Eigen::MatrixXd &ps,
                                            Eigen::MatrixXd &gdp,
@@ -255,9 +242,6 @@ namespace ego_planner
     // Jerk metric calculation functions
     double computeTotalJerk(const poly_traj::Trajectory &traj);
     double computeMaxJerk(const poly_traj::Trajectory &traj);
-
-    // ESDF visualization
-    void visualizeESDFSamples(const std::vector<Eigen::Vector3d>& sample_points);
 
   public:
     typedef std::unique_ptr<PolyTrajOptimizer> Ptr;

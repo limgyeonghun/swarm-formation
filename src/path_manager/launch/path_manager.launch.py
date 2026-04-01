@@ -81,16 +81,7 @@ def create_drone_nodes(context, *args, **kwargs):
     pkg_share = FindPackageShare('path_manager')
     optimizer_file  = PathJoinSubstitution([pkg_share, 'config', 'optimizer_params.yaml'])
 
-    # Map config selection (default or scenario-specific)
-    map_config = context.perform_substitution(LaunchConfiguration('map_config'))
-    if map_config and map_config != 'map':
-        map_file = PathJoinSubstitution([pkg_share, 'config', f'{map_config}.yaml'])
-        print(f"Using custom map config: {map_config}.yaml")
-    else:
-        map_file = PathJoinSubstitution([pkg_share, 'config', 'map.yaml'])
-        print("Using default map config: map.yaml")
-
-    # Scenario config (obstacles + threat zones)
+    # Scenario config (obstacles)
     scenario_config = context.perform_substitution(LaunchConfiguration('scenario'))
     if scenario_config:
         scenario_file = PathJoinSubstitution([pkg_share, 'config', 'scenarios', f'{scenario_config}.yaml'])
@@ -190,7 +181,7 @@ def create_drone_nodes(context, *args, **kwargs):
         all_remaps = remaps
 
         # Build parameter list with scenario config
-        replan_params = [params, scenario_file, optimizer_file, drones_file, map_file]
+        replan_params = [params, scenario_file, optimizer_file, drones_file]
 
         replan_nodes.append(
             Node(
@@ -281,7 +272,6 @@ def create_drone_nodes(context, *args, **kwargs):
         drones_file,  # Base drone hardware
         scenario_file,
         optimizer_file,
-        map_file,
     ]
     # Note: Start positions are now provided by formation_manager via TrajectoryCommand
 
@@ -370,14 +360,9 @@ def generate_launch_description():
             description='Target drone ID to run (0-5)'
         ),
         DeclareLaunchArgument(
-            'map_config',
-            default_value='map',
-            description='Map configuration file (default: map, or map_threat_zones, etc.)'
-        ),
-        DeclareLaunchArgument(
             'scenario',
             default_value='',
-            description='Scenario configuration file containing obstacles and threat zones (e.g., scenario_basic, scenario_sam_defense, scenario_complex)'
+            description='Scenario configuration file containing obstacles (e.g., scenario_basic, scenario_complex)'
         ),
         DeclareLaunchArgument(
             'jfi_port',

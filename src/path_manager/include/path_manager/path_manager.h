@@ -2,8 +2,8 @@
 #define PATH_MANAGER_H
 
 #include <rclcpp/rclcpp.hpp>
-#include "path_planner/grid_map.h"
-#include "path_planner/dyn_a_star.h"
+#include "path_planner/gcopter/sfc_gen.hpp"
+#include "path_planner/gcopter/geo_utils.hpp"
 #include "path_optimizer/poly_traj_optimizer.h"
 #include "path_optimizer/plan_container.hpp"
 #include "../../common/log_manager.hpp"
@@ -14,6 +14,8 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 #include <sys/resource.h>
 #include <sys/time.h>
 
@@ -38,6 +40,31 @@ namespace path_manager
     Obstacle(const Eigen::Vector3d& c, double width, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(height) {}
   };
 
+  // Direct geometry-based collision check (no GridMap/ESDF dependency)
+  struct ObstacleQueryAdapter {
+    const std::vector<Obstacle> *obstacles = nullptr;
+    double safety_margin = 0.3;  // Extra clearance around obstacles
+
+    int query(const Eigen::Vector3d &pos) const {
+      if (!obstacles) return 0;
+      for (const auto &obs : *obstacles) {
+        Eigen::Vector2d diff_2d(pos.x() - obs.center.x(), pos.y() - obs.center.y());
+        double dist_2d = diff_2d.norm();
+
+        if (obs.shape == ObstacleShape::CIRCLE) {
+          double radius = (obs.param1 > 0) ? obs.param1 : 0.5;
+          if (dist_2d < radius + safety_margin) return 1;
+        } else if (obs.shape == ObstacleShape::RECTANGLE) {
+          double half_w = obs.param1 / 2.0 + safety_margin;
+          double half_h = obs.param2 / 2.0 + safety_margin;
+          if (std::abs(pos.x() - obs.center.x()) < half_w &&
+              std::abs(pos.y() - obs.center.y()) < half_h) return 1;
+        }
+      }
+      return 0;
+    }
+  };
+
   class PathManager
   {
   public:
@@ -45,17 +72,9 @@ namespace path_manager
 
     void initOptimizer(bool force_reinit = false);
     bool isOptimizerInitialized() const { return is_optimizer_initialized_ && poly_traj_opt_ != nullptr; }
-    void getLocalTarget(const Eigen::Vector3d &start_pt,
-                        const Eigen::Vector3d &global_end_pt, Eigen::Vector3d &local_target_pos,
-                        Eigen::Vector3d &local_target_vel, double &t_to_target);
-    bool computeAndOptimizePath(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
-                                const double trajectory_start_time, const Eigen::Vector3d &local_target_pt,
-                                const Eigen::Vector3d &local_target_vel, const bool flag_polyInit, const bool flag_randomPolyTraj,
-                                const bool use_formation, const bool have_local_traj);
     bool planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel,
                         const Eigen::Vector3d &start_acc, const std::vector<Eigen::Vector3d> &waypoints,
                         const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
-    std::vector<Eigen::VectorXd> playground_bspline(const std::vector<Eigen::VectorXd> &pts);
     bool checkCollision(int drone_id);
 
     void deliverTrajToOptimizer(void) { 
@@ -79,18 +98,6 @@ namespace path_manager
 
         RCLCPP_INFO(node_->get_logger(), "Setting formation with %zu positions to optimizer", formation_positions.size());
         poly_traj_opt_->setFormation(formation_positions, formation_size);
-
-        // Reset first_call_ to true when formation changes
-        first_call_ = true;
-        RCLCPP_INFO(node_->get_logger(), "Reset first_call_ to true due to formation change");
-    }
-
-    void setNonholonomicWeight(double weight) {
-        if (!isOptimizerInitialized()) {
-            RCLCPP_ERROR(node_->get_logger(), "Cannot set nonholonomic weight: optimizer not initialized!");
-            return;
-        }
-        poly_traj_opt_->setNonholonomicWeight(weight);
     }
 
     TrajContainer traj_;
@@ -106,11 +113,6 @@ namespace path_manager
     bool EmergencyStop(const Eigen::Vector3d& stop_pos);
 
   private:
-    bool computeInitReferenceState(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel,
-                                   const Eigen::Vector3d &start_acc, const Eigen::Vector3d &local_target_pt,
-                                   const Eigen::Vector3d &local_target_vel, const double &ts,
-                                   poly_traj::MinJerkOpt &initMJO, const bool flag_polyInit);
-
     // Helper functions for outer/inner line calculation
     std::vector<Eigen::Vector3d> adjustWaypointsForFormation(
         const std::vector<Eigen::Vector3d>& waypoints,
@@ -136,22 +138,25 @@ namespace path_manager
                                         double offset_distance);
 
     std::shared_ptr<rclcpp::Node> node_;
-    GridMap::Ptr grid_map_;
-    AStar astar_;
     std::vector<Eigen::Vector3d> simple_path_;
     std::vector<Obstacle> obstacle_centers_;
+
+    // SFC corridor data
+    std::vector<Eigen::MatrixX4d> global_hpolys_;     // Global SFC corridor (H-polytopes)
+    std::vector<Eigen::Vector3d> obstacle_points_;      // Obstacle point cloud for SFC generation
+    Eigen::Vector3d map_lower_bound_;                   // Map bounds
+    Eigen::Vector3d map_upper_bound_;
     std::vector<LocalTrajData> swarm_traj_;
     double max_vel_;
     double max_acc_;
-    double poly_traj_piece_length_;
-    double planning_horizen_;
     ego_planner::PolyTrajOptimizer::Ptr poly_traj_opt_;
     bool is_optimizer_initialized_;
-    bool first_call_;
     Eigen::Vector3d current_start_pt_, current_target_pt_;
     bool has_valid_state_;
 
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr simple_path_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr sfc_corridor_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr shortest_path_pub_;
 
     std::shared_ptr<swarm_formation::LogManager> log_manager_;
     bool enable_debug_logs_;
@@ -163,6 +168,33 @@ namespace path_manager
 
     // Intermediate waypoint parameter
     double intermediate_waypoint_ratio_;
+
+    // GCOPTER-style shortest path through corridor overlaps
+    typedef Eigen::Matrix3Xd PolyhedronV;
+    typedef Eigen::MatrixX4d PolyhedronH;
+    typedef std::vector<PolyhedronV> PolyhedraV;
+    typedef std::vector<PolyhedronH> PolyhedraH;
+
+    void publishSFCCorridor(const PolyhedraH &hPolys);
+    void publishShortestPath(const Eigen::Matrix3Xd &path);
+
+    bool processCorridor(const PolyhedraH &hPs, PolyhedraV &vPs);
+
+    static double costDistance(void *ptr,
+                               const Eigen::VectorXd &xi,
+                               Eigen::VectorXd &gradXi);
+
+    void getShortestPath(const Eigen::Vector3d &ini,
+                         const Eigen::Vector3d &fin,
+                         const PolyhedraV &vPolys,
+                         const double &smoothD,
+                         Eigen::Matrix3Xd &path);
+
+    void setInitialFromPath(const Eigen::Matrix3Xd &path,
+                            const double &speed,
+                            const Eigen::VectorXi &intervalNs,
+                            Eigen::Matrix3Xd &innerPoints,
+                            Eigen::VectorXd &timeAlloc);
 
   };
 
