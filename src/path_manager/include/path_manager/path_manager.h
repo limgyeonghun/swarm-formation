@@ -149,6 +149,9 @@ namespace path_manager
     std::vector<LocalTrajData> swarm_traj_;
     double max_vel_;
     double max_acc_;
+    double sfc_progress_;
+    double sfc_range_;
+    double z_min_;
     ego_planner::PolyTrajOptimizer::Ptr poly_traj_opt_;
     bool is_optimizer_initialized_;
     Eigen::Vector3d current_start_pt_, current_target_pt_;

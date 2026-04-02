@@ -26,8 +26,14 @@ namespace path_manager
 
         node_->declare_parameter("manager/max_vel", -1.0);
         node_->declare_parameter("manager/max_acc", -1.0);
+        node_->declare_parameter("manager/sfc_progress", 7.0);
+        node_->declare_parameter("manager/sfc_range", 3.0);
+        node_->declare_parameter("manager/z_min", 0.0);
         node_->get_parameter("manager/max_vel", max_vel_);
         node_->get_parameter("manager/max_acc", max_acc_);
+        node_->get_parameter("manager/sfc_progress", sfc_progress_);
+        node_->get_parameter("manager/sfc_range", sfc_range_);
+        node_->get_parameter("manager/z_min", z_min_);
 
         node_->declare_parameter("obstacles", std::vector<double>{});
         std::vector<double> obstacle_params;
@@ -176,6 +182,9 @@ namespace path_manager
             }
         }
 
+        // Enforce ground limit
+        map_lower_bound_.z() = std::max(map_lower_bound_.z(), z_min_);
+
         log_manager_->infof("Map bounds: lower=(%.2f,%.2f,%.2f), upper=(%.2f,%.2f,%.2f)",
             map_lower_bound_.x(), map_lower_bound_.y(), map_lower_bound_.z(),
             map_upper_bound_.x(), map_upper_bound_.y(), map_upper_bound_.z());
@@ -298,8 +307,8 @@ namespace path_manager
         log_manager_->infof("Collected %zu obstacle points for SFC generation", obstacle_points_.size());
 
         // Generate SFC corridors using FIRI
-        double sfc_progress = 7.0;
-        double sfc_range = 3.0;
+        double sfc_progress = sfc_progress_;
+        double sfc_range = sfc_range_;
 
         if (obstacle_points_.empty()) {
             // No obstacles: create a single large corridor (bounding box)
@@ -387,7 +396,7 @@ namespace path_manager
         poly_traj::MinJerkOpt globalMJO;
         Eigen::Matrix<double, 3, 3> headState, tailState;
         headState << start_pos, start_vel, start_acc;
-        tailState << adjusted_waypoints.back(), end_vel, end_acc;
+        tailState << waypoints.back(), end_vel, end_acc;
 
         globalMJO.reset(headState, tailState, piece_num);
         globalMJO.generate(innerPts, time_vec);
