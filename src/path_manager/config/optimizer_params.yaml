@@ -39,8 +39,6 @@
     # Path Manager Parameters
     manager/max_vel: 3.0                       # Max velocity for path manager (m/s)
     manager/max_acc: 5.0                       # Max acceleration for path manager (m/s²)
-    manager/intermediate_waypoint_ratio: -1.0  # Intermediate waypoint (-1: disabled)
-
     # Hungarian Assignment Parameters
     fsm/hungarian_distance_weight: 1.0
     fsm/hungarian_crossing_penalty: 0.0

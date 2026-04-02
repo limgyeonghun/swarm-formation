@@ -166,8 +166,6 @@ namespace path_manager
     std::string current_formation_type_;
     std::vector<Eigen::Vector3d> current_formation_pattern_;
 
-    // Intermediate waypoint parameter
-    double intermediate_waypoint_ratio_;
 
     // GCOPTER-style shortest path through corridor overlaps
     typedef Eigen::Matrix3Xd PolyhedronV;

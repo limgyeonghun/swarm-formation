@@ -26,20 +26,8 @@ namespace path_manager
 
         node_->declare_parameter("manager/max_vel", -1.0);
         node_->declare_parameter("manager/max_acc", -1.0);
-        node_->declare_parameter("manager/intermediate_waypoint_ratio", 0.3);
         node_->get_parameter("manager/max_vel", max_vel_);
         node_->get_parameter("manager/max_acc", max_acc_);
-        node_->get_parameter("manager/intermediate_waypoint_ratio", intermediate_waypoint_ratio_);
-
-        if (intermediate_waypoint_ratio_ < 0.0) {
-            RCLCPP_INFO(node_->get_logger(),
-                       "Intermediate waypoint disabled (ratio=%.2f)", intermediate_waypoint_ratio_);
-        } else if (intermediate_waypoint_ratio_ == 0.0 || intermediate_waypoint_ratio_ >= 1.0) {
-            RCLCPP_WARN(node_->get_logger(),
-                       "Invalid intermediate_waypoint_ratio: %.2f. Using default 0.3",
-                       intermediate_waypoint_ratio_);
-            intermediate_waypoint_ratio_ = 0.3;
-        }
 
         node_->declare_parameter("obstacles", std::vector<double>{});
         std::vector<double> obstacle_params;
@@ -161,32 +149,11 @@ namespace path_manager
             return false;
         }
 
-        // === STEP 1: Build waypoint sequence (with optional intermediate point) ===
-        std::vector<Eigen::Vector3d> adjusted_waypoints = waypoints;
-        std::vector<Eigen::Vector3d> waypoints_with_intermediate;
-
-        if (!adjusted_waypoints.empty() && intermediate_waypoint_ratio_ > 0.0 && intermediate_waypoint_ratio_ < 1.0) {
-            Eigen::Vector3d first_waypoint = adjusted_waypoints.front();
-            Eigen::Vector3d direction = (first_waypoint - start_pos).normalized();
-            double distance_to_first = (first_waypoint - start_pos).norm();
-            Eigen::Vector3d intermediate_point = start_pos + direction * (distance_to_first * intermediate_waypoint_ratio_);
-
-            if ((intermediate_point - start_pos).dot(direction) > 0.0) {
-                waypoints_with_intermediate.push_back(intermediate_point);
-                log_manager_->infof("Added intermediate alignment waypoint at (%.2f, %.2f, %.2f), ratio=%.2f",
-                           intermediate_point.x(), intermediate_point.y(), intermediate_point.z(),
-                           intermediate_waypoint_ratio_);
-            }
-        }
-
-        for (const auto& wp : adjusted_waypoints) {
-            waypoints_with_intermediate.push_back(wp);
-        }
-
+        // === STEP 1: Build waypoint sequence ===
         // Build segment list: start -> wp1 -> wp2 -> ... -> wpN
         std::vector<Eigen::Vector3d> all_points;
         all_points.push_back(start_pos);
-        for (const auto& wp : waypoints_with_intermediate) {
+        for (const auto& wp : waypoints) {
             all_points.push_back(wp);
         }
 
@@ -373,13 +340,13 @@ namespace path_manager
             poly_traj::MinJerkOpt globalMJO;
             Eigen::Matrix<double, 3, 3> headState, tailState;
             headState << start_pos, start_vel, start_acc;
-            tailState << adjusted_waypoints.back(), end_vel, end_acc;
+            tailState << waypoints.back(), end_vel, end_acc;
             int piece_num = 2;
             Eigen::MatrixXd innerPts(3, 1);
-            innerPts.col(0) = (start_pos + adjusted_waypoints.back()) * 0.5;
+            innerPts.col(0) = (start_pos + waypoints.back()) * 0.5;
             globalMJO.reset(headState, tailState, piece_num);
             Eigen::VectorXd time_vec(piece_num);
-            double dist = (adjusted_waypoints.back() - start_pos).norm();
+            double dist = (waypoints.back() - start_pos).norm();
             time_vec.setConstant(std::max(0.1, dist / 2.0 / max_vel_));
             globalMJO.generate(innerPts, time_vec);
             auto time_now = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
@@ -392,7 +359,7 @@ namespace path_manager
         // 4c. Find shortest path through corridor overlaps (L-BFGS optimized)
         const double smoothEps = 0.01;
         Eigen::Matrix3Xd shortPath;
-        getShortestPath(start_pos, adjusted_waypoints.back(), vPolytopes, smoothEps, shortPath);
+        getShortestPath(start_pos, waypoints.back(), vPolytopes, smoothEps, shortPath);
 
         log_manager_->infof("Shortest path through %d corridor overlaps computed", (int)(vPolytopes.size() / 2));
 
