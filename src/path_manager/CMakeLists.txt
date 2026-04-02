@@ -30,6 +30,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(formation_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(grid_map_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 
@@ -70,6 +71,7 @@ set(PATH_MANAGER_DEPENDENCIES
   formation_msgs
   rosidl_default_runtime
   visualization_msgs
+  grid_map_msgs
 )
 
 if(HAVE_PX4_MSGS)
@@ -151,7 +153,7 @@ install(DIRECTORY config launch
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 
-set(EXPORT_DEPS rclcpp std_msgs nav_msgs Eigen3 path_optimizer geometry_msgs path_planner formation_msgs rosidl_default_generators visualization_msgs)
+set(EXPORT_DEPS rclcpp std_msgs nav_msgs Eigen3 path_optimizer geometry_msgs path_planner formation_msgs rosidl_default_generators visualization_msgs grid_map_msgs)
 if(HAVE_PX4_MSGS)
   list(APPEND EXPORT_DEPS px4_msgs)
 endif()

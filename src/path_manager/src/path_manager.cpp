@@ -29,11 +29,15 @@ namespace path_manager
         node_->declare_parameter("manager/sfc_progress", 7.0);
         node_->declare_parameter("manager/sfc_range", 3.0);
         node_->declare_parameter("manager/z_min", 0.0);
+        node_->declare_parameter("manager/terrain_clearance", 1.0);
+        node_->declare_parameter("manager/terrain_sample_spacing", 1.0);
         node_->get_parameter("manager/max_vel", max_vel_);
         node_->get_parameter("manager/max_acc", max_acc_);
         node_->get_parameter("manager/sfc_progress", sfc_progress_);
         node_->get_parameter("manager/sfc_range", sfc_range_);
         node_->get_parameter("manager/z_min", z_min_);
+        node_->get_parameter("manager/terrain_clearance", terrain_clearance_);
+        node_->get_parameter("manager/terrain_sample_spacing", terrain_sample_spacing_);
 
         node_->declare_parameter("obstacles", std::vector<double>{});
         std::vector<double> obstacle_params;
@@ -86,6 +90,8 @@ namespace path_manager
             "/drone_" + std::to_string(drone_id) + "/sfc_corridor", 10);
         shortest_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
             "/drone_" + std::to_string(drone_id) + "/shortest_path", 10);
+        obstacle_points_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/drone_" + std::to_string(drone_id) + "/obstacle_points", 10);
     }
 
     void PathManager::updateRobotState(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& local_target_pt)
@@ -164,12 +170,13 @@ namespace path_manager
         }
 
         // === STEP 2: RRT* path planning through waypoints ===
-        // Use direct geometry collision check (no ESDF/GridMap dependency)
         ObstacleQueryAdapter map_adapter;
         map_adapter.obstacles = &obstacle_centers_;
+        map_adapter.terrain = terrain_data_.valid ? &terrain_data_ : nullptr;
         map_adapter.safety_margin = 0.3;
+        map_adapter.terrain_clearance = terrain_clearance_;
 
-        // Compute map bounds from waypoints (no GridMap dependency)
+        // Compute map bounds from waypoints
         map_lower_bound_ = start_pos;
         map_upper_bound_ = start_pos;
 
@@ -232,7 +239,7 @@ namespace path_manager
         // Publish simple path for visualization
         nav_msgs::msg::Path path_msg;
         path_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
-        path_msg.header.frame_id = "world";
+        path_msg.header.frame_id = "map";
         for (const auto &point : full_route) {
             geometry_msgs::msg::PoseStamped pose;
             pose.header = path_msg.header;
@@ -245,7 +252,7 @@ namespace path_manager
         simple_path_pub_->publish(path_msg);
 
         // === STEP 3: Generate SFC corridor around RRT* path ===
-        // Generate obstacle surface points from obstacle geometry (no GridMap/ESDF dependency)
+        // Generate obstacle surface points from obstacle geometry
         obstacle_points_.clear();
         const double point_spacing = 0.2;  // Surface point spacing
         const double z_range = 2.0;        // Z range for 2.5D obstacles
@@ -304,7 +311,105 @@ namespace path_manager
             }
         }
 
-        log_manager_->infof("Collected %zu obstacle points for SFC generation", obstacle_points_.size());
+        const size_t num_geometry_pts = obstacle_points_.size();
+        log_manager_->infof("Collected %zu geometry obstacle points", num_geometry_pts);
+
+        // Add terrain surface points around the RRT* route
+        if (terrain_data_.valid) {
+            const double sample_spacing = terrain_sample_spacing_;
+            const double route_margin = sfc_range_ + 2.0;  // Slightly wider than SFC range
+            size_t terrain_pts_before = obstacle_points_.size();
+
+            for (size_t ri = 0; ri < full_route.size(); ++ri) {
+                const auto &rp = full_route[ri];
+                // Sample terrain grid around each route point
+                for (double dx = -route_margin; dx <= route_margin; dx += sample_spacing) {
+                    for (double dy = -route_margin; dy <= route_margin; dy += sample_spacing) {
+                        double sx = rp.x() + dx;
+                        double sy = rp.y() + dy;
+                        float elev = terrain_data_.getElevation(sx, sy);
+                        if (elev > -1e10) {
+                            obstacle_points_.push_back(Eigen::Vector3d(sx, sy, elev));
+                        }
+                    }
+                }
+            }
+
+            log_manager_->infof("Added %zu terrain surface points (total: %zu)",
+                obstacle_points_.size() - terrain_pts_before, obstacle_points_.size());
+        }
+
+        // Publish obstacle points as MarkerArray for visualization
+        // Geometry obstacles: red, Terrain: green
+        {
+            visualization_msgs::msg::MarkerArray markers;
+
+            // Delete old markers
+            visualization_msgs::msg::Marker del;
+            del.action = visualization_msgs::msg::Marker::DELETEALL;
+            del.header.frame_id = "map";
+            del.header.stamp = node_->get_clock()->now();
+            del.ns = "obstacle_points";
+            markers.markers.push_back(del);
+
+            // Geometry obstacle points (red)
+            if (num_geometry_pts > 0) {
+                visualization_msgs::msg::Marker geo_marker;
+                geo_marker.header.frame_id = "map";
+                geo_marker.header.stamp = node_->get_clock()->now();
+                geo_marker.ns = "obstacle_points";
+                geo_marker.id = 1;
+                geo_marker.type = visualization_msgs::msg::Marker::POINTS;
+                geo_marker.action = visualization_msgs::msg::Marker::ADD;
+                geo_marker.scale.x = 0.3;
+                geo_marker.scale.y = 0.3;
+                geo_marker.color.r = 1.0f;
+                geo_marker.color.g = 0.0f;
+                geo_marker.color.b = 0.0f;
+                geo_marker.color.a = 0.8f;
+                geo_marker.pose.orientation.w = 1.0;
+
+                for (size_t i = 0; i < num_geometry_pts; ++i) {
+                    geometry_msgs::msg::Point p;
+                    p.x = obstacle_points_[i].x();
+                    p.y = obstacle_points_[i].y();
+                    p.z = obstacle_points_[i].z();
+                    geo_marker.points.push_back(p);
+                }
+                markers.markers.push_back(geo_marker);
+            }
+
+            // Terrain points (green)
+            if (obstacle_points_.size() > num_geometry_pts) {
+                visualization_msgs::msg::Marker terrain_marker;
+                terrain_marker.header.frame_id = "map";
+                terrain_marker.header.stamp = node_->get_clock()->now();
+                terrain_marker.ns = "obstacle_points";
+                terrain_marker.id = 2;
+                terrain_marker.type = visualization_msgs::msg::Marker::POINTS;
+                terrain_marker.action = visualization_msgs::msg::Marker::ADD;
+                terrain_marker.scale.x = 0.3;
+                terrain_marker.scale.y = 0.3;
+                terrain_marker.color.r = 0.0f;
+                terrain_marker.color.g = 1.0f;
+                terrain_marker.color.b = 0.0f;
+                terrain_marker.color.a = 0.8f;
+                terrain_marker.pose.orientation.w = 1.0;
+
+                for (size_t i = num_geometry_pts; i < obstacle_points_.size(); ++i) {
+                    geometry_msgs::msg::Point p;
+                    p.x = obstacle_points_[i].x();
+                    p.y = obstacle_points_[i].y();
+                    p.z = obstacle_points_[i].z();
+                    terrain_marker.points.push_back(p);
+                }
+                markers.markers.push_back(terrain_marker);
+            }
+
+            obstacle_points_pub_->publish(markers);
+            log_manager_->infof("Published obstacle points: %zu geometry (red) + %zu terrain (green)",
+                num_geometry_pts, obstacle_points_.size() - num_geometry_pts);
+        }
 
         // Generate SFC corridors using FIRI
         double sfc_progress = sfc_progress_;
@@ -532,6 +637,49 @@ bool PathManager::EmergencyStop(const Eigen::Vector3d& stop_pos) {
     }
 
     return true;
+}
+
+void PathManager::setTerrainData(const grid_map_msgs::msg::GridMap::SharedPtr &msg) {
+    if (!msg || msg->layers.empty()) {
+        log_manager_->warnf("Received empty terrain GridMap");
+        return;
+    }
+
+    // Find elevation layer
+    int elev_idx = -1;
+    for (size_t i = 0; i < msg->layers.size(); ++i) {
+        if (msg->layers[i] == "elevation") {
+            elev_idx = static_cast<int>(i);
+            break;
+        }
+    }
+    if (elev_idx < 0) {
+        log_manager_->warnf("Elevation layer not found in terrain GridMap");
+        return;
+    }
+
+    const auto& elev_data = msg->data[elev_idx];
+    if (elev_data.layout.dim.size() < 2) {
+        log_manager_->warnf("Invalid terrain GridMap data layout");
+        return;
+    }
+
+    terrain_data_.cols = elev_data.layout.dim[0].size;
+    terrain_data_.rows = elev_data.layout.dim[1].size;
+    terrain_data_.resolution = msg->info.resolution;
+    terrain_data_.length_x = msg->info.length_x;
+    terrain_data_.length_y = msg->info.length_y;
+    terrain_data_.origin_x = msg->info.pose.position.x - msg->info.length_x / 2.0;
+    terrain_data_.origin_y = msg->info.pose.position.y - msg->info.length_y / 2.0;
+    terrain_data_.center_x = msg->info.pose.position.x;
+    terrain_data_.center_y = msg->info.pose.position.y;
+    terrain_data_.elevation = elev_data.data;
+    terrain_data_.valid = true;
+
+    log_manager_->infof("Terrain data loaded: %dx%d, resolution=%.3f, origin=(%.2f,%.2f), center=(%.2f,%.2f)",
+        terrain_data_.cols, terrain_data_.rows, terrain_data_.resolution,
+        terrain_data_.origin_x, terrain_data_.origin_y,
+        terrain_data_.center_x, terrain_data_.center_y);
 }
 
 double PathManager::computePathCurvature(const Eigen::Vector3d& p1,

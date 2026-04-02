@@ -44,8 +44,10 @@
     manager/sfc_progress: 7.0                  # Step size along path for polytope generation (m), smaller = denser corridor
     manager/sfc_range: 3.0                     # Obstacle search radius per segment (m), larger = wider coverage
 
-    # Ground Limit
+    # Ground / Terrain Limits
     manager/z_min: 0.0                         # Minimum flight altitude (m), trajectory cannot go below this
+    manager/terrain_clearance: 1.0             # Min height above terrain surface (m) for collision check
+    manager/terrain_sample_spacing: 1.0        # Terrain surface point sampling interval (m) for SFC generation
 
     # Hungarian Assignment Parameters
     fsm/hungarian_distance_weight: 1.0

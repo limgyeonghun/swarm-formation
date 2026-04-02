@@ -208,6 +208,14 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     waypoint_marker_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
         "waypoint_markers", 10);
 
+    // Terrain GridMap subscription (TRANSIENT_LOCAL to receive latched message)
+    rclcpp::QoS terrain_qos(1);
+    terrain_qos.reliability(rclcpp::ReliabilityPolicy::Reliable);
+    terrain_qos.durability(rclcpp::DurabilityPolicy::TransientLocal);
+    terrain_sub_ = node_->create_subscription<grid_map_msgs::msg::GridMap>(
+        "/terrain/grid_map", terrain_qos,
+        std::bind(&ReplanFSM::terrainCallback, this, std::placeholders::_1));
+
     timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this), timer_callback_group_);
     FSM_LOG_INFO("FSM timer created with dedicated callback group (10ms period)");
 }
@@ -1073,5 +1081,12 @@ void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std:
 
 }
 
+
+void ReplanFSM::terrainCallback(const grid_map_msgs::msg::GridMap::SharedPtr msg) {
+    if (path_manager_) {
+        path_manager_->setTerrainData(msg);
+        FSM_LOG_INFO("Terrain data received and forwarded to PathManager");
+    }
+}
 
 }  // namespace path_manager

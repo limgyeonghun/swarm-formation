@@ -4,6 +4,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <visualization_msgs/msg/marker.hpp>
+#include <grid_map_msgs/msg/grid_map.hpp>
 #include <Eigen/Dense>
 #include <mutex>
 #include <map>
@@ -76,6 +77,7 @@ public:
     void recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg);
     void formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg);
     void trajectoryCommandCallback(const formation_msgs::msg::TrajectoryCommand::SharedPtr msg);
+    void terrainCallback(const grid_map_msgs::msg::GridMap::SharedPtr msg);
     void polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     void globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     // Callback groups:
@@ -110,6 +112,7 @@ private:
 #endif
     rclcpp::Subscription<path_manager::msg::FormationTarget>::SharedPtr formation_target_sub_;
     rclcpp::Subscription<formation_msgs::msg::TrajectoryCommand>::SharedPtr trajectory_cmd_sub_;
+    rclcpp::Subscription<grid_map_msgs::msg::GridMap>::SharedPtr terrain_sub_;
     rclcpp::Publisher<path_manager::msg::FormationTarget>::SharedPtr formation_target_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr waypoint_marker_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
