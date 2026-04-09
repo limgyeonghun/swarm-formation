@@ -112,7 +112,7 @@ namespace path_manager
   struct ObstacleQueryAdapter {
     const std::vector<Obstacle> *obstacles = nullptr;
     const TerrainData *terrain = nullptr;
-    double safety_margin = 0.3;  // Extra clearance around obstacles
+    double safety_margin = 0.5;  // Extra clearance around obstacles
     double terrain_clearance = 0.0;  // Min height above terrain
 
     int query(const Eigen::Vector3d &pos) const {
@@ -186,6 +186,10 @@ namespace path_manager
     void setFormationInfo(int drone_id, const std::string& formation_type,
                          const std::vector<Eigen::Vector3d>& formation_pattern);
 
+    void setLengthPerPiece(double val) { length_per_piece_ = val; }
+    void setObstacleClearance(double val) { obstacle_clearance_ = val; }
+    void setTerrainClearance(double val) { terrain_clearance_ = val; }
+
     // Emergency stop: generate hovering trajectory at current position
     bool EmergencyStop(const Eigen::Vector3d& stop_pos);
 
@@ -230,6 +234,8 @@ namespace path_manager
     std::vector<LocalTrajData> swarm_traj_;
     double max_vel_;
     double max_acc_;
+    double length_per_piece_ = 2.0;
+    double obstacle_clearance_ = 0.5;
     double sfc_progress_;
     double sfc_range_;
     double z_min_;

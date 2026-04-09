@@ -33,3 +33,22 @@ geometry_msgs/Vector3 formation_offset
 # Full formation pattern (relative positions for all drones)
 # Used by optimizer for formation cost calculation
 geometry_msgs/Point[] formation_pattern
+
+# Trajectory resolution: length per polynomial piece (m)
+# Lower = smoother terrain following, Higher = simpler/coarser trajectory
+# Default: 2.0, Typical range: 2.0 ~ 20.0
+float64 length_per_piece
+
+# Minimum horizontal clearance from obstacles (m)
+# Default: 0.5, Typical range: 0.5 ~ 5.0
+float64 obstacle_clearance
+
+# Minimum flight altitude above terrain (m)
+# Applied to start/goal height AND route-wide terrain clearance
+# Default: 5.0, Typical range: 1.0 ~ 50.0
+float64 min_flight_altitude
+
+# Initial speed at trajectory start (m/s)
+# Direction is auto-calculated as start→goal
+# 0 = start from rest. Default: 0.0
+float64 initial_speed

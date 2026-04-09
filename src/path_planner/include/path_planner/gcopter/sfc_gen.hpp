@@ -252,6 +252,30 @@ namespace sfc_gen
         }
         std::reverse(p.begin(), p.end());
 
+        // Shortcutting: remove redundant waypoints where direct connection is free
+        if (p.size() > 2)
+        {
+            std::vector<Eigen::Vector3d> shortened;
+            shortened.push_back(p.front());
+            size_t i = 0;
+            while (i < p.size() - 1)
+            {
+                // Find the farthest point directly reachable from p[i]
+                size_t farthest = i + 1;
+                for (size_t j = p.size() - 1; j > i + 1; --j)
+                {
+                    if (isSegmentFree(p[i], p[j], mapPtr, step_size * 0.5))
+                    {
+                        farthest = j;
+                        break;
+                    }
+                }
+                shortened.push_back(p[farthest]);
+                i = farthest;
+            }
+            p = shortened;
+        }
+
         return best_cost;
     }
 

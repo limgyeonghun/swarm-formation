@@ -155,6 +155,7 @@ namespace path_manager
                                      const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
     {
         log_manager_->infof("Planning global trajectory using RRT* + SFC corridor with %zu waypoints", waypoints.size());
+        auto t_total_start = std::chrono::steady_clock::now();
 
         if (waypoints.empty()) {
             RCLCPP_ERROR(node_->get_logger(), "planGlobalTraj: No waypoints provided!");
@@ -170,10 +171,11 @@ namespace path_manager
         }
 
         // === STEP 2: RRT* path planning through waypoints ===
+        auto t_rrt_start = std::chrono::steady_clock::now();
         ObstacleQueryAdapter map_adapter;
         map_adapter.obstacles = &obstacle_centers_;
         map_adapter.terrain = terrain_data_.valid ? &terrain_data_ : nullptr;
-        map_adapter.safety_margin = 0.3;
+        map_adapter.safety_margin = obstacle_clearance_;
         map_adapter.terrain_clearance = terrain_clearance_;
 
         // Compute map bounds from waypoints
@@ -181,16 +183,36 @@ namespace path_manager
         map_upper_bound_ = start_pos;
 
         // Extend bounds to include all waypoints with margin
-        const double bound_margin = 10.0;
+        const double bound_margin_xy = 10.0;
         for (const auto& pt : all_points) {
-            for (int d = 0; d < 3; ++d) {
-                map_lower_bound_(d) = std::min(map_lower_bound_(d), pt(d) - bound_margin);
-                map_upper_bound_(d) = std::max(map_upper_bound_(d), pt(d) + bound_margin);
-            }
+            map_lower_bound_.x() = std::min(map_lower_bound_.x(), pt.x() - bound_margin_xy);
+            map_lower_bound_.y() = std::min(map_lower_bound_.y(), pt.y() - bound_margin_xy);
+            map_upper_bound_.x() = std::max(map_upper_bound_.x(), pt.x() + bound_margin_xy);
+            map_upper_bound_.y() = std::max(map_upper_bound_.y(), pt.y() + bound_margin_xy);
         }
 
-        // Enforce ground limit
-        map_lower_bound_.z() = std::max(map_lower_bound_.z(), z_min_);
+        // Z bounds: sample terrain along route to find max elevation
+        double max_terrain_z = 0.0;
+        if (terrain_data_.valid) {
+            for (size_t i = 0; i < all_points.size() - 1; ++i) {
+                Eigen::Vector3d dir = all_points[i+1] - all_points[i];
+                double dist = dir.head<2>().norm();
+                int n_samples = std::max(2, (int)(dist / 2.0));
+                for (int s = 0; s <= n_samples; ++s) {
+                    double t = (double)s / n_samples;
+                    Eigen::Vector3d p = all_points[i] + t * dir;
+                    // Also sample laterally
+                    for (double offset : {-bound_margin_xy, 0.0, bound_margin_xy}) {
+                        float elev = terrain_data_.getElevation(p.x() + offset, p.y());
+                        if (elev > -1e10) max_terrain_z = std::max(max_terrain_z, (double)elev);
+                        elev = terrain_data_.getElevation(p.x(), p.y() + offset);
+                        if (elev > -1e10) max_terrain_z = std::max(max_terrain_z, (double)elev);
+                    }
+                }
+            }
+        }
+        map_lower_bound_.z() = std::max(z_min_, map_lower_bound_.z());
+        map_upper_bound_.z() = max_terrain_z + terrain_clearance_ + 20.0;  // terrain peak + clearance + margin
 
         log_manager_->infof("Map bounds: lower=(%.2f,%.2f,%.2f), upper=(%.2f,%.2f,%.2f)",
             map_lower_bound_.x(), map_lower_bound_.y(), map_lower_bound_.z(),
@@ -234,7 +256,10 @@ namespace path_manager
             }
         }
 
-        log_manager_->infof("RRT* route: %zu waypoints", full_route.size());
+        auto t_rrt_end = std::chrono::steady_clock::now();
+        log_manager_->infof("RRT* route: %zu waypoints (%.1f ms)",
+            full_route.size(),
+            std::chrono::duration<double, std::milli>(t_rrt_end - t_rrt_start).count());
 
         // Publish simple path for visualization
         nav_msgs::msg::Path path_msg;
@@ -252,6 +277,7 @@ namespace path_manager
         simple_path_pub_->publish(path_msg);
 
         // === STEP 3: Generate SFC corridor around RRT* path ===
+        auto t_obs_start = std::chrono::steady_clock::now();
         // Generate obstacle surface points from obstacle geometry
         obstacle_points_.clear();
         const double point_spacing = 0.2;  // Surface point spacing
@@ -411,7 +437,12 @@ namespace path_manager
                 num_geometry_pts, obstacle_points_.size() - num_geometry_pts);
         }
 
+        auto t_obs_end = std::chrono::steady_clock::now();
+        log_manager_->infof("[TIMING] Obstacle point collection: %.1f ms",
+            std::chrono::duration<double, std::milli>(t_obs_end - t_obs_start).count());
+
         // Generate SFC corridors using FIRI
+        auto t_sfc_start = std::chrono::steady_clock::now();
         double sfc_progress = sfc_progress_;
         double sfc_range = sfc_range_;
 
@@ -428,7 +459,10 @@ namespace path_manager
                              sfc_progress, sfc_range, global_hpolys_);
         sfc_gen::shortCut(global_hpolys_);
 
-        log_manager_->infof("Generated %zu SFC corridor polytopes", global_hpolys_.size());
+        auto t_sfc_end = std::chrono::steady_clock::now();
+        log_manager_->infof("Generated %zu SFC corridor polytopes (%.1f ms)",
+            global_hpolys_.size(),
+            std::chrono::duration<double, std::milli>(t_sfc_end - t_sfc_start).count());
 
         if (global_hpolys_.empty()) {
             RCLCPP_ERROR(node_->get_logger(), "SFC corridor generation failed!");
@@ -436,6 +470,7 @@ namespace path_manager
         }
 
         // === STEP 4: GCOPTER-style initial trajectory through corridor ===
+        auto t_corridor_start = std::chrono::steady_clock::now();
         // 4a. Normalize H-polytope normals (GCOPTER requirement)
         PolyhedraH normHpolys = global_hpolys_;
         for (size_t i = 0; i < normHpolys.size(); i++)
@@ -481,15 +516,23 @@ namespace path_manager
         publishSFCCorridor(normHpolys);
         publishShortestPath(shortPath);
 
-        // 4d. Determine piece count per polytope (GCOPTER-style: based on segment length)
+        auto t_corridor_end = std::chrono::steady_clock::now();
+        log_manager_->infof("[TIMING] Corridor processing + shortest path: %.1f ms",
+            std::chrono::duration<double, std::milli>(t_corridor_end - t_corridor_start).count());
+
+        // 4d. Determine piece count per polytope (corridor count * detail multiplier)
         const int polyN = global_hpolys_.size();
-        const double lengthPerPiece = 2.0;  // GCOPTER default: finer pieces for smoother trajectory
         const Eigen::Matrix3Xd deltas = shortPath.rightCols(polyN) - shortPath.leftCols(polyN);
+        double total_path_length = deltas.colwise().norm().sum();
+        double detail_multiplier = std::max(1.0, length_per_piece_);  // UI sends multiplier (1.0~3.0)
+        int target_pieces = std::max(polyN, (int)(polyN * detail_multiplier));
+        const double lengthPerPiece = total_path_length / target_pieces;
         Eigen::VectorXi pieceIdx = (deltas.colwise().norm() / lengthPerPiece).cast<int>().transpose();
         pieceIdx.array() += 1;  // At least 1 piece per polytope
         int piece_num = pieceIdx.sum();
 
-        log_manager_->infof("Piece allocation: %d total pieces across %d polytopes", piece_num, polyN);
+        log_manager_->infof("Piece allocation: %d pieces across %d polytopes (path=%.1fm, multiplier=%.1fx, lpp=%.1fm)",
+            piece_num, polyN, total_path_length, detail_multiplier, lengthPerPiece);
 
         // 4e. Generate initial inner points and time allocation from shortest path
         const double allocSpeed = max_vel_ * 3.0;  // GCOPTER: 3x max_vel for initial allocation
@@ -518,7 +561,12 @@ namespace path_manager
                    globalMJO.getTraj().getPieceNum(), globalMJO.getTraj().getTotalDuration(),
                    globalMJO.getTraj().getMaxVelRate());
 
+        auto t_minco_end = std::chrono::steady_clock::now();
+        log_manager_->infof("[TIMING] MINCO trajectory generation: %.1f ms",
+            std::chrono::duration<double, std::milli>(t_minco_end - t_corridor_end).count());
+
         // === STEP 5: L-BFGS optimization within SFC corridor (single-shot) ===
+        auto t_opt_start = std::chrono::steady_clock::now();
         if (isOptimizerInitialized() && !global_hpolys_.empty())
         {
             // Pass SFC corridor to optimizer
@@ -550,6 +598,35 @@ namespace path_manager
 
                 log_manager_->infof("L-BFGS optimization SUCCESS: duration=%.3f, max_vel=%.3f",
                     optTraj.getTotalDuration(), optTraj.getMaxVelRate());
+
+                // Post-optimization terrain collision check
+                if (terrain_data_.valid) {
+                    double dt = 0.5;
+                    double total_dur = optTraj.getTotalDuration();
+                    int collision_count = 0;
+                    double worst_penetration = 0.0;
+                    double worst_t = 0.0;
+                    for (double t = 0.0; t < total_dur; t += dt) {
+                        Eigen::Vector3d pos = optTraj.getPos(t);
+                        float elev = terrain_data_.getElevation(pos.x(), pos.y());
+                        if (elev > -1e10) {
+                            double penetration = (elev + terrain_clearance_) - pos.z();
+                            if (penetration > 0.0) {
+                                collision_count++;
+                                if (penetration > worst_penetration) {
+                                    worst_penetration = penetration;
+                                    worst_t = t;
+                                }
+                            }
+                        }
+                    }
+                    if (collision_count > 0) {
+                        log_manager_->warnf("[TERRAIN CHECK] %d collision points detected! Worst: %.2f m penetration at t=%.1f s",
+                            collision_count, worst_penetration, worst_t);
+                    } else {
+                        log_manager_->infof("[TERRAIN CHECK] No terrain collision detected (checked %.0f points)", total_dur / dt);
+                    }
+                }
             }
             else
             {
@@ -566,6 +643,14 @@ namespace path_manager
             double start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
             traj_.setLocalTraj(globalMJO.getTraj(), start_time, traj_.local_traj.drone_id);
         }
+
+        auto t_opt_end = std::chrono::steady_clock::now();
+        log_manager_->infof("[TIMING] L-BFGS optimization: %.1f ms",
+            std::chrono::duration<double, std::milli>(t_opt_end - t_opt_start).count());
+
+        auto t_total_end = std::chrono::steady_clock::now();
+        log_manager_->infof("[TIMING] === TOTAL planGlobalTraj: %.1f ms ===",
+            std::chrono::duration<double, std::milli>(t_total_end - t_total_start).count());
 
         log_manager_->infof("Final optimized trajectory set as local_traj (single-shot, no replan)");
 

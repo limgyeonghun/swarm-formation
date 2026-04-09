@@ -1010,6 +1010,16 @@ void ReplanFSM::trajectoryCommandCallback(const formation_msgs::msg::TrajectoryC
 
     has_formation_command_ = true;
 
+    // Pass trajectory parameters to PathManager
+    if (msg->length_per_piece > 0.0) {
+        path_manager_->setLengthPerPiece(msg->length_per_piece);
+    }
+    if (msg->obstacle_clearance > 0.0) {
+        path_manager_->setObstacleClearance(msg->obstacle_clearance);
+    }
+    if (msg->min_flight_altitude > 0.0) {
+        path_manager_->setTerrainClearance(msg->min_flight_altitude);
+    }
     FSM_LOG_INFO("Drone %d: target=(%.2f, %.2f, %.2f), offset=(%.2f, %.2f, %.2f), %zu waypoints",
                 drone_id_,
                 target_position.x(), target_position.y(), target_position.z(),

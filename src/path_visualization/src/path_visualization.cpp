@@ -360,7 +360,7 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
   // Handle large jumps by resetting to trajectory start
   if (min_dist > 2.0)
   {
-    RCLCPP_WARN(this->get_logger(), "Drone %d: Large jump detected (%.2f m), resetting to trajectory start", drone_id, min_dist);
+    // RCLCPP_WARN(this->get_logger(), "Drone %d: Large jump detected (%.2f m), resetting to trajectory start", drone_id, min_dist);
     data.start_pt = Eigen::Vector3d(
         msg->coef_x[0], // Start point is just the first coefficient for position
         msg->coef_y[0],
