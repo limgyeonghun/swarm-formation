@@ -135,23 +135,35 @@ private:
 
             RCLCPP_INFO(this->get_logger(), "Loading scenario: %s", yaml_file.c_str());
             YAML::Node config = YAML::LoadFile(yaml_file);
+            YAML::Node params = YAML::Clone(config);
+            if (config["/**"] && config["/**"]["ros__parameters"]) {
+                params = config["/**"]["ros__parameters"];
+            }
 
             // Load start positions for each drone
             std::vector<Eigen::Vector3d> start_positions(num_drones_, Eigen::Vector3d::Zero());
             for (int i = 0; i < num_drones_; ++i) {
                 std::string drone_key = "drone_" + std::to_string(i);
-                if (config[drone_key]) {
-                    double x = config[drone_key]["start_point_x"].as<double>(0.0);
-                    double y = config[drone_key]["start_point_y"].as<double>(0.0);
-                    double z = config[drone_key]["start_point_z"].as<double>(0.0);
+                if (params[drone_key]) {
+                    double x = params[drone_key]["start_point_x"].as<double>(0.0);
+                    double y = params[drone_key]["start_point_y"].as<double>(0.0);
+                    double z = params[drone_key]["start_point_z"].as<double>(0.0);
                     start_positions[i] = Eigen::Vector3d(x, y, z);
                     RCLCPP_INFO(this->get_logger(), "Loaded start position for drone_%d: (%.2f, %.2f, %.2f)",
                                 i, x, y, z);
                 }
             }
 
-            if (config["scenario"] && config["scenario"]["mission"] && config["scenario"]["mission"]["commands"]) {
-                YAML::Node commands = config["scenario"]["mission"]["commands"];
+            // scenario key may be under ros__parameters or at top level
+            YAML::Node scenario_node;
+            if (params["scenario"] && params["scenario"]["mission"]) {
+                scenario_node = params["scenario"];
+            } else if (config["scenario"] && config["scenario"]["mission"]) {
+                scenario_node = config["scenario"];
+            }
+
+            if (scenario_node && scenario_node["mission"] && scenario_node["mission"]["commands"]) {
+                YAML::Node commands = scenario_node["mission"]["commands"];
 
                 for (const auto& cmd_node : commands) {
                     MissionCommand cmd;
