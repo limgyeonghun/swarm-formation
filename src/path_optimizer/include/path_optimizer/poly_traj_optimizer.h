@@ -125,6 +125,14 @@ namespace ego_planner
     Eigen::VectorXi hpoly_piece_idx_;            // hpoly index for each trajectory piece
     double smoothing_eps_;                        // smoothedL1 smoothing factor
 
+    // V-polytope parameterization (GCOPTER-style: points guaranteed inside corridor)
+    typedef Eigen::Matrix3Xd PolyhedronV;
+    typedef std::vector<PolyhedronV> PolyhedraV;
+    PolyhedraV sfc_vpolys_;           // V-polytope corridor (from processCorridor)
+    Eigen::VectorXi vpoly_idx_;       // Maps each inner point to its V-polytope index
+    int spatial_dim_{0};              // Total xi dimension = sum of V-polytope vertex counts
+    bool use_vpoly_param_{true};      // V-polytope parameterization enabled
+
   public:
     PolyTrajOptimizer() {}
     // ~PolyTrajOptimizer() { }
@@ -133,6 +141,7 @@ namespace ego_planner
     void setParam(const rclcpp::Node::SharedPtr &node);
     void setLogManager(swarm_formation::LogManager::Ptr log_manager);
     void setSFCCorridor(const std::vector<Eigen::MatrixX4d> &hpolys) { sfc_hpolys_ = hpolys; }
+    void setSFCVPolytopes(const std::vector<Eigen::Matrix3Xd> &vpolys) { sfc_vpolys_ = vpolys; }
     void buildPiecePolytopeMapping(int piece_num);
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
@@ -243,6 +252,36 @@ namespace ego_planner
     // Jerk metric calculation functions
     double computeTotalJerk(const poly_traj::Trajectory &traj);
     double computeMaxJerk(const poly_traj::Trajectory &traj);
+
+    // GCOPTER V-polytope parameterization functions
+    static void forwardP(const double *xi_data,
+                         const Eigen::VectorXi &vIdx,
+                         const PolyhedraV &vPolys,
+                         Eigen::Matrix3Xd &P);
+
+    static void backwardGradP(const double *xi_data,
+                              const Eigen::VectorXi &vIdx,
+                              const PolyhedraV &vPolys,
+                              const Eigen::Matrix3Xd &gradP,
+                              double *gradXi_data);
+
+    static void normRestrictionLayer(const double *xi_data,
+                                     const Eigen::VectorXi &vIdx,
+                                     const PolyhedraV &vPolys,
+                                     double &cost,
+                                     double *gradXi_data);
+
+    static double costTinyNLS(void *ptr,
+                              const double *x, double *grad, const int n);
+
+    void backwardP(const Eigen::Matrix3Xd &P,
+                   const Eigen::VectorXi &vIdx,
+                   const PolyhedraV &vPolys,
+                   double *xi_data);
+
+    void buildVPolyMapping(int piece_num);
+
+    static double costFunctionCallbackVPoly(void *func_data, const double *x, double *grad, const int n);
 
   public:
     typedef std::unique_ptr<PolyTrajOptimizer> Ptr;

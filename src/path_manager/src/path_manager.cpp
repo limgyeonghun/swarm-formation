@@ -505,6 +505,9 @@ namespace path_manager
             return true;
         }
 
+        // Store V-polytopes for optimizer (V-polytope parameterization)
+        global_vpolys_ = vPolytopes;
+
         // 4c. Find shortest path through corridor overlaps (L-BFGS optimized)
         const double smoothEps = 0.01;
         Eigen::Matrix3Xd shortPath;
@@ -520,19 +523,20 @@ namespace path_manager
         log_manager_->infof("[TIMING] Corridor processing + shortest path: %.1f ms",
             std::chrono::duration<double, std::milli>(t_corridor_end - t_corridor_start).count());
 
-        // 4d. Determine piece count per polytope (corridor count * detail multiplier)
+        // 4d. Determine piece count per polytope
+        // GCOPTER uses lengthPerPiece=INFINITY → exactly 1 piece per polytope.
+        // This is optimal for V-polytope parameterization: each inner point maps
+        // to one polytope overlap, avoiding over-parameterization that causes oscillation.
         const int polyN = global_hpolys_.size();
         const Eigen::Matrix3Xd deltas = shortPath.rightCols(polyN) - shortPath.leftCols(polyN);
         double total_path_length = deltas.colwise().norm().sum();
-        double detail_multiplier = std::max(1.0, length_per_piece_);  // UI sends multiplier (1.0~3.0)
-        int target_pieces = std::max(polyN, (int)(polyN * detail_multiplier));
-        const double lengthPerPiece = total_path_length / target_pieces;
-        Eigen::VectorXi pieceIdx = (deltas.colwise().norm() / lengthPerPiece).cast<int>().transpose();
-        pieceIdx.array() += 1;  // At least 1 piece per polytope
-        int piece_num = pieceIdx.sum();
 
-        log_manager_->infof("Piece allocation: %d pieces across %d polytopes (path=%.1fm, multiplier=%.1fx, lpp=%.1fm)",
-            piece_num, polyN, total_path_length, detail_multiplier, lengthPerPiece);
+        // GCOPTER-style: 1 piece per polytope (lengthPerPiece = INFINITY)
+        Eigen::VectorXi pieceIdx = Eigen::VectorXi::Ones(polyN);
+        int piece_num = polyN;
+
+        log_manager_->infof("Piece allocation: %d pieces across %d polytopes (path=%.1fm, 1 piece/polytope)",
+            piece_num, polyN, total_path_length);
 
         // 4e. Generate initial inner points and time allocation from shortest path
         const double allocSpeed = max_vel_ * 3.0;  // GCOPTER: 3x max_vel for initial allocation
@@ -569,8 +573,9 @@ namespace path_manager
         auto t_opt_start = std::chrono::steady_clock::now();
         if (isOptimizerInitialized() && !global_hpolys_.empty())
         {
-            // Pass SFC corridor to optimizer
+            // Pass SFC corridor to optimizer (both H and V representations)
             poly_traj_opt_->setSFCCorridor(global_hpolys_);
+            poly_traj_opt_->setSFCVPolytopes(global_vpolys_);
 
             // Set control points from initial trajectory
             poly_traj::Trajectory initTraj = globalMJO.getTraj();

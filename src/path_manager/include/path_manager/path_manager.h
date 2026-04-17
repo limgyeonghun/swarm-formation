@@ -228,6 +228,7 @@ namespace path_manager
 
     // SFC corridor data
     std::vector<Eigen::MatrixX4d> global_hpolys_;     // Global SFC corridor (H-polytopes)
+    std::vector<Eigen::Matrix3Xd> global_vpolys_;    // Global SFC corridor (V-polytopes, for optimizer)
     std::vector<Eigen::Vector3d> obstacle_points_;      // Obstacle point cloud for SFC generation
     Eigen::Vector3d map_lower_bound_;                   // Map bounds
     Eigen::Vector3d map_upper_bound_;
