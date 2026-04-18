@@ -640,7 +640,7 @@ namespace ego_planner
                                               double &grad_prev_t,
                                               double &costp)
   {
-    if (i_dp <= 0 || i_dp >= cps_.cp_size * 2 / 3)
+    if (i_dp <= 0 || i_dp >= cps_.cp_size)
       return false;
 
     if (!swarm_trajs_) {
@@ -821,7 +821,7 @@ namespace ego_planner
                                          double &grad_prev_t,
                                          double &costp)
   {
-    if (i_dp <= 0 || i_dp >= cps_.cp_size * 2 / 3)
+    if (i_dp <= 0 || i_dp >= cps_.cp_size)
       return false;
 
     // Check for nullptr before accessing swarm_trajs_
@@ -960,8 +960,7 @@ namespace ego_planner
                                            Eigen::Vector3d &gradp,
                                            double &costp)
   {
-    // Skip endpoints (start/end are fixed)
-    if (i_dp <= 0 || i_dp >= cps_.cp_size * 2 / 3)
+    if (i_dp <= 0 || i_dp >= cps_.cp_size)
       return false;
 
     double threat = getThreatLevel(p);
