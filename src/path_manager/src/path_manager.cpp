@@ -31,6 +31,7 @@ namespace path_manager
         node_->declare_parameter("manager/z_min", 0.0);
         node_->declare_parameter("manager/terrain_clearance", 1.0);
         node_->declare_parameter("manager/terrain_sample_spacing", 1.0);
+        node_->declare_parameter("manager/threat_weight", 10.0);
         node_->get_parameter("manager/max_vel", max_vel_);
         node_->get_parameter("manager/max_acc", max_acc_);
         node_->get_parameter("manager/sfc_progress", sfc_progress_);
@@ -38,6 +39,31 @@ namespace path_manager
         node_->get_parameter("manager/z_min", z_min_);
         node_->get_parameter("manager/terrain_clearance", terrain_clearance_);
         node_->get_parameter("manager/terrain_sample_spacing", terrain_sample_spacing_);
+        node_->get_parameter("manager/threat_weight", threat_weight_);
+
+        // Parse threat zones: [cx, cy, cz, detection_range, engagement_range, max_threat_level, ...]
+        node_->declare_parameter("threat_zones", std::vector<double>{});
+        std::vector<double> tz_params;
+        node_->get_parameter("threat_zones", tz_params);
+        log_manager_->infof("Threat zone params size: %zu", tz_params.size());
+        if (tz_params.size() >= 6 && tz_params.size() % 6 == 0) {
+            for (size_t ti = 0; ti < tz_params.size(); ti += 6) {
+                ThreatZone tz;
+                tz.center = Eigen::Vector3d(tz_params[ti], tz_params[ti+1], tz_params[ti+2]);
+                tz.detection_range = tz_params[ti+3];
+                tz.engagement_range = tz_params[ti+4];
+                tz.max_threat_level = tz_params[ti+5];
+                threat_zones_.push_back(tz);
+                log_manager_->infof("  ThreatZone #%zu: center=(%.1f,%.1f,%.1f) detect=%.1f engage=%.1f threat=%.1f",
+                    threat_zones_.size()-1, tz.center.x(), tz.center.y(), tz.center.z(),
+                    tz.detection_range, tz.engagement_range, tz.max_threat_level);
+            }
+            log_manager_->infof("Loaded %zu threat zones (threat_weight=%.1f)", threat_zones_.size(), threat_weight_);
+        } else if (tz_params.empty()) {
+            log_manager_->infof("No threat zones configured");
+        } else {
+            log_manager_->warnf("Invalid threat_zones param size: %zu (must be multiple of 6)", tz_params.size());
+        }
 
         node_->declare_parameter("obstacles", std::vector<double>{});
         std::vector<double> obstacle_params;
@@ -90,6 +116,8 @@ namespace path_manager
             "/drone_" + std::to_string(drone_id) + "/sfc_corridor", 10);
         shortest_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
             "/drone_" + std::to_string(drone_id) + "/shortest_path", 10);
+        rrt_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
+            "/drone_" + std::to_string(drone_id) + "/rrt_path", 10);
         obstacle_points_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/drone_" + std::to_string(drone_id) + "/obstacle_points", 10);
     }
@@ -134,6 +162,21 @@ namespace path_manager
             poly_traj_opt_->setParam(node_);
             poly_traj_opt_->setDroneId(traj_.local_traj.drone_id);
 
+            // Pass threat zones to optimizer for trajectory fine-tuning (2nd stage)
+            if (!threat_zones_.empty()) {
+                std::vector<ego_planner::ThreatZone> opt_zones;
+                for (const auto &tz : threat_zones_) {
+                    ego_planner::ThreatZone oz;
+                    oz.center = tz.center;
+                    oz.detection_range = tz.detection_range;
+                    oz.engagement_range = tz.engagement_range;
+                    oz.max_threat_level = tz.max_threat_level;
+                    opt_zones.push_back(oz);
+                }
+                poly_traj_opt_->setThreatZones(opt_zones);
+                log_manager_->infof("Passed %zu threat zones to optimizer", opt_zones.size());
+            }
+
             // Only mark as initialized after all steps succeed
             is_optimizer_initialized_ = true;
             RCLCPP_INFO(node_->get_logger(), "Optimizer initialized successfully for drone %d", traj_.local_traj.drone_id);
@@ -175,20 +218,37 @@ namespace path_manager
         ObstacleQueryAdapter map_adapter;
         map_adapter.obstacles = &obstacle_centers_;
         map_adapter.terrain = terrain_data_.valid ? &terrain_data_ : nullptr;
+        map_adapter.threat_zones = threat_zones_.empty() ? nullptr : &threat_zones_;
         map_adapter.safety_margin = obstacle_clearance_;
         map_adapter.terrain_clearance = terrain_clearance_;
+        map_adapter.threat_weight = threat_weight_;
 
         // Compute map bounds from waypoints
         map_lower_bound_ = start_pos;
         map_upper_bound_ = start_pos;
 
         // Extend bounds to include all waypoints with margin
-        const double bound_margin_xy = 10.0;
+        double bound_margin_xy = 10.0;
+
+        // If threat zones exist, expand margin to allow routing around them
+        for (const auto &tz : threat_zones_) {
+            bound_margin_xy = std::max(bound_margin_xy, tz.detection_range + 5.0);
+        }
+
         for (const auto& pt : all_points) {
             map_lower_bound_.x() = std::min(map_lower_bound_.x(), pt.x() - bound_margin_xy);
             map_lower_bound_.y() = std::min(map_lower_bound_.y(), pt.y() - bound_margin_xy);
             map_upper_bound_.x() = std::max(map_upper_bound_.x(), pt.x() + bound_margin_xy);
             map_upper_bound_.y() = std::max(map_upper_bound_.y(), pt.y() + bound_margin_xy);
+        }
+
+        // Also extend bounds to include threat zone coverage areas
+        for (const auto &tz : threat_zones_) {
+            double r = tz.detection_range + 5.0;
+            map_lower_bound_.x() = std::min(map_lower_bound_.x(), tz.center.x() - r);
+            map_lower_bound_.y() = std::min(map_lower_bound_.y(), tz.center.y() - r);
+            map_upper_bound_.x() = std::max(map_upper_bound_.x(), tz.center.x() + r);
+            map_upper_bound_.y() = std::max(map_upper_bound_.y(), tz.center.y() + r);
         }
 
         // Z bounds: sample terrain along route to find max elevation
@@ -232,10 +292,11 @@ namespace path_manager
         for (size_t seg = 0; seg < all_points.size() - 1; ++seg)
         {
             std::vector<Eigen::Vector3d> seg_path;
+            double rrt_timeout = threat_zones_.empty() ? 2.0 : 5.0;
             double cost = sfc_gen::planPath<ObstacleQueryAdapter>(
                 all_points[seg], all_points[seg + 1],
                 map_lower_bound_, map_upper_bound_,
-                &map_adapter, 2.0, seg_path);
+                &map_adapter, rrt_timeout, seg_path);
 
             log_manager_->infof("RRT* segment %zu: cost=%.3f, path_size=%zu",
                 seg, cost, seg_path.size());
@@ -275,6 +336,44 @@ namespace path_manager
             path_msg.poses.push_back(pose);
         }
         simple_path_pub_->publish(path_msg);
+
+        // Publish RRT* path as LINE_STRIP + SPHERE_LIST for debugging (cyan)
+        {
+            visualization_msgs::msg::Marker line;
+            line.header.frame_id = "map";
+            line.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
+            line.ns = "rrt_path_line";
+            line.id = 0;
+            line.type = visualization_msgs::msg::Marker::LINE_STRIP;
+            line.action = visualization_msgs::msg::Marker::ADD;
+            line.pose.orientation.w = 1.0;
+            line.scale.x = 0.25;
+            line.color.r = 0.0; line.color.g = 1.0; line.color.b = 1.0; line.color.a = 1.0;
+            line.lifetime = rclcpp::Duration(0, 0);
+            for (const auto &p : full_route) {
+                geometry_msgs::msg::Point pt;
+                pt.x = p.x(); pt.y = p.y(); pt.z = p.z();
+                line.points.push_back(pt);
+            }
+            rrt_path_pub_->publish(line);
+
+            visualization_msgs::msg::Marker dots;
+            dots.header = line.header;
+            dots.ns = "rrt_path_dots";
+            dots.id = 1;
+            dots.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+            dots.action = visualization_msgs::msg::Marker::ADD;
+            dots.pose.orientation.w = 1.0;
+            dots.scale.x = 0.6; dots.scale.y = 0.6; dots.scale.z = 0.6;
+            dots.color.r = 0.0; dots.color.g = 0.8; dots.color.b = 1.0; dots.color.a = 1.0;
+            dots.lifetime = rclcpp::Duration(0, 0);
+            for (const auto &p : full_route) {
+                geometry_msgs::msg::Point pt;
+                pt.x = p.x(); pt.y = p.y(); pt.z = p.z();
+                dots.points.push_back(pt);
+            }
+            rrt_path_pub_->publish(dots);
+        }
 
         // === STEP 3: Generate SFC corridor around RRT* path ===
         auto t_obs_start = std::chrono::steady_clock::now();
@@ -363,6 +462,91 @@ namespace path_manager
 
             log_manager_->infof("Added %zu terrain surface points (total: %zu)",
                 obstacle_points_.size() - terrain_pts_before, obstacle_points_.size());
+        }
+
+        // === Threat-aware SFC (blocker points along RRT* route) ===
+        // Problem: FIRI considers only points inside an sfc_range bounding box
+        // around each RRT* segment. Simply adding threat surface points far from
+        // the route has no effect — they fall outside the box.
+        //
+        // Solution: for each RRT* route point, find nearby threat zones and place
+        // a line of "blocker" points between the route point and the threat center,
+        // INSIDE the SFC bounding box. These blockers force FIRI to cut the SFC
+        // along the route-side surface of the threat, so the corridor hugs the
+        // RRT* path instead of ballooning into the threat region.
+        //
+        // For breakthrough segments (route point inside a detection range),
+        // no blocker is placed for that zone → narrow SFC corridor through the
+        // weakest overlap that RRT* already selected.
+        if (!threat_zones_.empty()) {
+            size_t before = obstacle_points_.size();
+            const double blocker_spacing = 0.4;
+            const double blocker_z_range = 3.0;
+            const double blocker_z_step = 1.0;
+            // How far inside the bounding box to place the blocker wall.
+            // Must be < sfc_range_ so the point lands inside FIRI's bd box.
+            const double blocker_offset_from_route = sfc_range_ * 0.7;
+
+            // Densify the RRT* route so blockers are placed at regular spacing
+            // (not just at the sparse RRT* waypoints). Gaps between waypoints
+            // could let SFC overlaps extend into threat regions.
+            std::vector<Eigen::Vector3d> dense_route;
+            const double route_sample_step = std::max(0.5, sfc_range_ * 0.5);
+            for (size_t ri = 0; ri + 1 < full_route.size(); ++ri) {
+                const Eigen::Vector3d &a = full_route[ri];
+                const Eigen::Vector3d &b = full_route[ri + 1];
+                Eigen::Vector3d ab = b - a;
+                double seg_len = ab.norm();
+                int n_samples = std::max(1, (int)std::ceil(seg_len / route_sample_step));
+                for (int si = 0; si < n_samples; ++si) {
+                    double t = (double)si / (double)n_samples;
+                    dense_route.push_back(a + t * ab);
+                }
+            }
+            dense_route.push_back(full_route.back());
+
+            size_t blockers_added = 0, skipped_breakthrough = 0;
+            for (const auto &rp : dense_route) {
+                for (const auto &tz : threat_zones_) {
+                    Eigen::Vector2d to_tz(tz.center.x() - rp.x(), tz.center.y() - rp.y());
+                    double dist_to_tz = to_tz.norm();
+
+                    // Route point inside threat detection range → breakthrough,
+                    // do not place blocker (leave corridor open)
+                    if (dist_to_tz < tz.detection_range) {
+                        skipped_breakthrough++;
+                        continue;
+                    }
+                    // Route far from this threat (beyond sfc influence) → skip too
+                    if (dist_to_tz > tz.detection_range + sfc_range_ + 2.0) {
+                        continue;
+                    }
+
+                    // Unit direction from route toward threat center
+                    Eigen::Vector2d dir = to_tz / dist_to_tz;
+
+                    // Place a short wall of blockers perpendicular to `dir`,
+                    // offset from route toward the threat, but still inside
+                    // the RRT* segment's bounding box (offset < sfc_range_)
+                    Eigen::Vector2d wall_center(
+                        rp.x() + dir.x() * blocker_offset_from_route,
+                        rp.y() + dir.y() * blocker_offset_from_route);
+                    Eigen::Vector2d perp(-dir.y(), dir.x());
+
+                    double wall_half_len = sfc_range_ * 0.9;
+                    for (double s = -wall_half_len; s <= wall_half_len; s += blocker_spacing) {
+                        double wx = wall_center.x() + perp.x() * s;
+                        double wy = wall_center.y() + perp.y() * s;
+                        for (double z = rp.z() - blocker_z_range; z <= rp.z() + blocker_z_range; z += blocker_z_step) {
+                            obstacle_points_.push_back(Eigen::Vector3d(wx, wy, z));
+                            blockers_added++;
+                        }
+                    }
+                }
+            }
+            log_manager_->infof("Threat-aware SFC blockers: %zu points added, %zu breakthrough skips (total obstacle pts: %zu)",
+                blockers_added, skipped_breakthrough, obstacle_points_.size());
+            (void)before;
         }
 
         // Publish obstacle points as MarkerArray for visualization
@@ -1044,6 +1228,9 @@ double PathManager::costDistance(void *ptr,
     const Eigen::Vector3d &ini = *((const Eigen::Vector3d *)(dataPtrs[1]));
     const Eigen::Vector3d &fin = *((const Eigen::Vector3d *)(dataPtrs[2]));
     const PolyhedraV &vPolys = *((PolyhedraV *)(dataPtrs[3]));
+    const std::vector<ThreatZone> &threat_zones =
+        *((const std::vector<ThreatZone> *)(dataPtrs[4]));
+    const double &threat_weight = *((const double *)(dataPtrs[5]));
 
     double cost = 0.0;
     const int overlaps = vPolys.size() / 2;
@@ -1079,6 +1266,25 @@ double PathManager::costDistance(void *ptr,
         if (i > 0)
         {
             gradP.col(i - 1) -= d / smoothedDistance;
+        }
+
+        // Threat-aware: add Gaussian threat cost at the waypoint b (only for
+        // intermediate points, not start/goal). Pushes waypoint away from
+        // threat centers when an overlap region extends into a threat zone.
+        if (i < overlaps && !threat_zones.empty()) {
+            for (const auto &tz : threat_zones) {
+                Eigen::Vector3d diff = b - tz.center;
+                double dist = diff.norm();
+                if (dist < tz.detection_range && dist > 1e-6) {
+                    double sigma = tz.detection_range / 3.0;
+                    double sigma2 = sigma * sigma;
+                    double gauss = tz.max_threat_level *
+                        std::exp(-0.5 * (dist / sigma) * (dist / sigma));
+                    cost += threat_weight * gauss;
+                    // ∇(w·gauss) wrt b = w · gauss · (-1/σ²) · diff
+                    gradP.col(i) += threat_weight * gauss * (-1.0 / sigma2) * diff;
+                }
+            }
         }
     }
 
@@ -1131,11 +1337,16 @@ void PathManager::getShortestPath(const Eigen::Vector3d &ini,
     }
 
     double minDistance;
-    void *dataPtrs[4];
+    void *dataPtrs[6];
     dataPtrs[0] = (void *)(&smoothD);
     dataPtrs[1] = (void *)(&ini);
     dataPtrs[2] = (void *)(&fin);
     dataPtrs[3] = (void *)(&vPolys);
+    // Threat-aware shortest path: pass threat zones and weight.
+    // When a corridor overlap extends into a threat region, the gaussian threat
+    // cost pushes the waypoint toward the safer side of the overlap.
+    dataPtrs[4] = (void *)(&threat_zones_);
+    dataPtrs[5] = (void *)(&threat_weight_);
     lbfgs::lbfgs_parameter_t shortest_path_params;
     shortest_path_params.past = 3;
     shortest_path_params.delta = 1.0e-3;

@@ -41,6 +41,14 @@ namespace path_manager
     Obstacle(const Eigen::Vector3d& c, double width, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(height) {}
   };
 
+  // Air defense threat zone (방공망)
+  struct ThreatZone {
+    Eigen::Vector3d center;
+    double detection_range;    // Outer range: detected but low threat
+    double engagement_range;   // Inner range: high threat (missile engagement)
+    double max_threat_level;   // Peak threat at center (0~)
+  };
+
   // Terrain elevation data extracted from GridMap
   // Coordinate transform: terrain_publisher uses a different axis convention.
   // terrain → world: X-mirror, then -90° rotation around center.
@@ -108,13 +116,16 @@ namespace path_manager
     }
   };
 
-  // Collision check: geometry obstacles + terrain elevation
+  // Collision check: geometry obstacles + terrain elevation + threat cost
   struct ObstacleQueryAdapter {
     const std::vector<Obstacle> *obstacles = nullptr;
     const TerrainData *terrain = nullptr;
+    const std::vector<ThreatZone> *threat_zones = nullptr;
     double safety_margin = 0.5;  // Extra clearance around obstacles
     double terrain_clearance = 0.0;  // Min height above terrain
+    double threat_weight = 10.0;  // α: threat cost multiplier for RRT* edge cost
 
+    // Hard collision check (physical obstacles + terrain only)
     int query(const Eigen::Vector3d &pos) const {
       // Check geometry obstacles
       if (obstacles) {
@@ -139,6 +150,32 @@ namespace path_manager
         if (elev > -1e10 && pos.z() < elev + terrain_clearance) return 1;
       }
       return 0;
+    }
+
+    // Threat level at a position (soft cost, not a hard obstacle)
+    // Returns 0.0 if no threat, higher values for more dangerous positions
+    // Threat level at a position: continuous Gaussian over detection range.
+    // No engagement/detection split — detection itself is hazardous
+    // (survivability-first). Threat decays smoothly from center to zero at
+    // detection_range, so RRT* naturally routes through weakest overlap when
+    // penetration is unavoidable.
+    double getThreatLevel(const Eigen::Vector3d &pos) const {
+      if (!threat_zones || threat_zones->empty()) return 0.0;
+      double total_threat = 0.0;
+      for (const auto &tz : *threat_zones) {
+        double dist = (pos - tz.center).norm();
+        if (dist < tz.detection_range) {
+          double sigma = tz.detection_range / 3.0;
+          total_threat += tz.max_threat_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
+        }
+      }
+      return total_threat;
+    }
+
+    // Threat cost multiplier for RRT* edge cost: cost = dist * getThreatCostMultiplier(pos)
+    double getThreatCostMultiplier(const Eigen::Vector3d &pos) const {
+      double threat = getThreatLevel(pos);
+      return 1.0 + threat_weight * threat;
     }
   };
 
@@ -225,6 +262,8 @@ namespace path_manager
     std::shared_ptr<rclcpp::Node> node_;
     std::vector<Eigen::Vector3d> simple_path_;
     std::vector<Obstacle> obstacle_centers_;
+    std::vector<ThreatZone> threat_zones_;
+    double threat_weight_;  // α for RRT* cost: edge_cost = dist * (1 + α * threat)
 
     // SFC corridor data
     std::vector<Eigen::MatrixX4d> global_hpolys_;     // Global SFC corridor (H-polytopes)
@@ -251,6 +290,7 @@ namespace path_manager
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr simple_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr sfc_corridor_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr shortest_path_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr rrt_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr obstacle_points_pub_;
 
     std::shared_ptr<swarm_formation::LogManager> log_manager_;

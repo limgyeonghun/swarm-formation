@@ -318,6 +318,7 @@ namespace ego_planner
         opt->log_manager_->infof("  obstacle_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(0), opt->wei_obs_);
         opt->log_manager_->infof("  swarm_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(1), opt->wei_swarm_);
         opt->log_manager_->infof("  formation_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(2), opt->wei_formation_);
+        opt->log_manager_->infof("  threat_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(3), opt->wei_threat_);
         opt->log_manager_->infof("  feasibility_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(4), opt->wei_feas_);
         opt->log_manager_->infof("  time_cost=%.6f (weight=%.3f)", time_cost, opt->wei_time_);
 
@@ -392,10 +393,10 @@ namespace ego_planner
     // Debug logging
     if (opt->enable_lbfgs_detail_logs_ && opt->log_manager_ && opt->iter_num_ % 10 == 0) {
         double final_cost = total_cost + time_cost;
-        opt->log_manager_->infof("[V-POLY L-BFGS] iter=%d, total=%.6f, smooth=%.6f, feas=%.6f, swarm=%.6f, form=%.6f, time=%.6f",
+        opt->log_manager_->infof("[V-POLY L-BFGS] iter=%d, total=%.6f, smooth=%.6f, feas=%.6f, swarm=%.6f, form=%.6f, threat=%.6f, time=%.6f",
             opt->iter_num_, final_cost, smoo_cost,
             obs_swarm_feas_qvar_costs(4), obs_swarm_feas_qvar_costs(1),
-            obs_swarm_feas_qvar_costs(2), time_cost);
+            obs_swarm_feas_qvar_costs(2), obs_swarm_feas_qvar_costs(3), time_cost);
     }
 
     if (opt->use_formation_) {
@@ -557,6 +558,15 @@ namespace ego_planner
                 }
                 costs(2) += omg * step * costp;
             }
+        }
+
+        // Threat zone cost calculation (soft constraint for air defense penetration)
+        if (use_threat_zones_ && threatGradCostP(i_dp, pos, gradp, costp)) {
+            gradViolaPc = beta0 * gradp.transpose();
+            gradViolaPt = alpha * gradp.transpose() * vel;
+            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+            gdT(i) += omg * (costp / K + step * gradViolaPt);
+            costs(3) += omg * step * costp;
         }
 
         // Feasibility cost calculation
@@ -912,6 +922,59 @@ namespace ego_planner
     return false;
   }
 
+  // Continuous Gaussian threat over detection range (no engagement/detection split).
+  // Matches ObstacleQueryAdapter::getThreatLevel in path_manager.h.
+  double PolyTrajOptimizer::getThreatLevel(const Eigen::Vector3d &pos) const
+  {
+    double total_threat = 0.0;
+    for (const auto &tz : threat_zones_) {
+      double dist = (pos - tz.center).norm();
+      if (dist < tz.detection_range) {
+        double sigma = tz.detection_range / 3.0;
+        total_threat += tz.max_threat_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
+      }
+    }
+    return total_threat;
+  }
+
+  Eigen::Vector3d PolyTrajOptimizer::getThreatGradient(const Eigen::Vector3d &pos) const
+  {
+    Eigen::Vector3d grad = Eigen::Vector3d::Zero();
+    for (const auto &tz : threat_zones_) {
+      Eigen::Vector3d diff = pos - tz.center;
+      double dist = diff.norm();
+      if (dist < 1e-6) continue;
+      if (dist < tz.detection_range) {
+        double sigma = tz.detection_range / 3.0;
+        double sigma2 = sigma * sigma;
+        double gauss = tz.max_threat_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
+        // ∇threat = gauss × (−dist/σ²) × (diff/dist) = gauss × (−1/σ²) × diff
+        grad += gauss * (-1.0 / sigma2) * diff;
+      }
+    }
+    return grad;
+  }
+
+  bool PolyTrajOptimizer::threatGradCostP(const int i_dp,
+                                           const Eigen::Vector3d &p,
+                                           Eigen::Vector3d &gradp,
+                                           double &costp)
+  {
+    // Skip endpoints (start/end are fixed)
+    if (i_dp <= 0 || i_dp >= cps_.cp_size * 2 / 3)
+      return false;
+
+    double threat = getThreatLevel(p);
+    if (threat > 0.01) {
+      Eigen::Vector3d threat_grad = getThreatGradient(p);
+      // Quadratic cost: smooth penalty proportional to threat^2
+      costp = wei_threat_ * threat * threat;
+      gradp = wei_threat_ * 2.0 * threat * threat_grad;
+      return true;
+    }
+    return false;
+  }
+
   void PolyTrajOptimizer::distanceSqrVarianceWithGradCost2p(const Eigen::MatrixXd &ps,
                                                             Eigen::MatrixXd &gdp,
                                                             double &var)
@@ -1042,6 +1105,9 @@ namespace ego_planner
     node_->declare_parameter("optimization/weight_formation", 0.0);
     node_->get_parameter("optimization/weight_formation", wei_formation_);
     wei_formation_base_ = wei_formation_;  // Store base weight for adaptive adjustment
+
+    node_->declare_parameter("optimization/weight_threat", 0.0);
+    node_->get_parameter("optimization/weight_threat", wei_threat_);
 
     node_->declare_parameter("optimization/swarm_clearance", 0.5);
     node_->get_parameter("optimization/swarm_clearance", swarm_clearance_);

@@ -1,0 +1,20 @@
+/**:
+  ros__parameters:
+    # ============================================================
+    # Threat Zone (Air Defense) Configuration
+    # Format: [center_x, center_y, center_z, detection_range, engagement_range, max_threat_level]
+    # - detection_range: outer range where UAV is detected (linear threat decay)
+    # - engagement_range: inner range where missiles can engage (Gaussian threat decay)
+    # - max_threat_level: peak threat at center (higher = more dangerous)
+    # ============================================================
+
+    threat_zones: [
+      # SAM Site 1: center=(25, 0, 0), detection=15m, engagement=8m, threat=100
+      25.0, 0.0, 0.0, 15.0, 8.0, 100.0,
+
+      # SAM Site 2: center=(40, -5, 0), detection=20m, engagement=10m, threat=150
+      40.0, -5.0, 0.0, 20.0, 10.0, 150.0,
+
+      # AAA Site 1: center=(40, 10, 10), detection=10m, engagement=6m, threat=80
+      40.0, 10.0, 10.0, 10.0, 6.0, 80.0
+    ]

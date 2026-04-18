@@ -43,6 +43,14 @@ using LogManager = swarm_formation::LogManager;
 
 namespace ego_planner
 {
+  // Air defense threat zone (shared definition with path_manager)
+  struct ThreatZone {
+    Eigen::Vector3d center;
+    double detection_range;
+    double engagement_range;
+    double max_threat_level;
+  };
+
   enum FORMATION_TYPE
   {
     NONE_FORMATION = 0,
@@ -103,6 +111,7 @@ namespace ego_planner
     double wei_time_;
     double wei_formation_;
     double wei_formation_base_;  // Base formation weight (from config)
+    double wei_threat_;          // Threat zone cost weight for trajectory optimization
 
     double swarm_clearance_;
     double max_vel_, max_acc_;
@@ -133,6 +142,10 @@ namespace ego_planner
     int spatial_dim_{0};              // Total xi dimension = sum of V-polytope vertex counts
     bool use_vpoly_param_{true};      // V-polytope parameterization enabled
 
+    // Threat zone data for trajectory optimization (2nd stage: fine-tuning within SFC)
+    std::vector<ThreatZone> threat_zones_;
+    bool use_threat_zones_{false};
+
   public:
     PolyTrajOptimizer() {}
     // ~PolyTrajOptimizer() { }
@@ -148,6 +161,10 @@ namespace ego_planner
     void setDroneId(const int drone_id);
     void setFormation(const std::vector<Eigen::Vector3d>& formation_positions, int formation_size);
     void setMaxVel(double vel) { max_vel_ = vel; }
+    void setThreatZones(const std::vector<ThreatZone> &zones) {
+        threat_zones_ = zones;
+        use_threat_zones_ = !zones.empty();
+    }
 
     inline ConstrainPoints getControlPoints() { return cps_; }
     inline const ConstrainPoints *getControlPointsPtr(void) { return &cps_; }
@@ -234,6 +251,14 @@ namespace ego_planner
         return true;
       }
     }
+
+    bool threatGradCostP(const int i_dp,
+                         const Eigen::Vector3d &p,
+                         Eigen::Vector3d &gradp,
+                         double &costp);
+
+    double getThreatLevel(const Eigen::Vector3d &pos) const;
+    Eigen::Vector3d getThreatGradient(const Eigen::Vector3d &pos) const;
 
     bool feasibilityGradCostV(const Eigen::Vector3d &v,
                               Eigen::Vector3d &gradv,

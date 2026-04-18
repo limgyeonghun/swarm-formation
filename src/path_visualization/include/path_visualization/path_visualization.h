@@ -31,6 +31,13 @@ struct Obstacle {
   Obstacle(const Eigen::Vector3d& c, double width, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(height) {}
 };
 
+struct VisThreatZone {
+  Eigen::Vector3d center;
+  double detection_range;
+  double engagement_range;
+  double max_threat_level;
+};
+
 class PathVisualization : public rclcpp::Node {
 public:
   PathVisualization();
@@ -60,10 +67,15 @@ private:
   void publishObstacles();
   void simplePathCallback(const nav_msgs::msg::Path::SharedPtr msg, int drone_id);
   void publishTraveledPaths();
+  void loadThreatZoneParameters();
+  void publishThreatZones();
 
   int num_drones_;
   bool enable_obstacles_;
   std::vector<Obstacle> obstacle_centers_;
+  std::vector<VisThreatZone> threat_zones_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr threat_zone_pub_;
+  rclcpp::TimerBase::SharedPtr threat_zone_timer_;
 
   std::vector<DroneParams> drone_params_;
   std::vector<DroneData> drone_data_;

@@ -112,7 +112,16 @@ PathVisualization::PathVisualization() : Node("path_visualization")
     obstacle_timer_ = this->create_wall_timer(1000ms, std::bind(&PathVisualization::publishObstacles, this));
     publishObstacles(); // Initial publish
   }
-  
+
+  // Load and visualize threat zones
+  loadThreatZoneParameters();
+  if (!threat_zones_.empty()) {
+    threat_zone_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("threat_field", 10);
+    threat_zone_timer_ = this->create_wall_timer(2000ms, std::bind(&PathVisualization::publishThreatZones, this));
+    publishThreatZones();
+    RCLCPP_INFO(this->get_logger(), "Threat zone visualization: %zu zones loaded", threat_zones_.size());
+  }
+
 }
 
 void PathVisualization::simplePathCallback(const nav_msgs::msg::Path::SharedPtr msg, int drone_id)
@@ -633,3 +642,98 @@ void PathVisualization::publishTraveledPaths()
   }
 }
 
+void PathVisualization::loadThreatZoneParameters()
+{
+  this->declare_parameter("threat_zones", std::vector<double>{});
+  std::vector<double> tz_params;
+  this->get_parameter("threat_zones", tz_params);
+  RCLCPP_INFO(this->get_logger(), "Threat zone params size: %zu", tz_params.size());
+  if (tz_params.size() >= 6 && tz_params.size() % 6 == 0) {
+    for (size_t i = 0; i < tz_params.size(); i += 6) {
+      VisThreatZone tz;
+      tz.center = Eigen::Vector3d(tz_params[i], tz_params[i+1], tz_params[i+2]);
+      tz.detection_range = tz_params[i+3];
+      tz.engagement_range = tz_params[i+4];
+      tz.max_threat_level = tz_params[i+5];
+      threat_zones_.push_back(tz);
+      RCLCPP_INFO(this->get_logger(), "  ThreatZone #%zu: center=(%.1f,%.1f,%.1f) detect=%.1f engage=%.1f",
+          threat_zones_.size()-1, tz.center.x(), tz.center.y(), tz.center.z(),
+          tz.detection_range, tz.engagement_range);
+    }
+  } else if (!tz_params.empty()) {
+    RCLCPP_WARN(this->get_logger(), "Invalid threat_zones param size: %zu (must be multiple of 6)", tz_params.size());
+  }
+}
+
+void PathVisualization::publishThreatZones()
+{
+  if (threat_zones_.empty() || !threat_zone_pub_) return;
+
+  int marker_id = 0;
+  for (size_t zi = 0; zi < threat_zones_.size(); ++zi) {
+    const auto &tz = threat_zones_[zi];
+
+    // Single threat sphere (detection range, red semi-transparent).
+    // Represents the unified threat volume — danger decays smoothly from center.
+    {
+      visualization_msgs::msg::Marker m;
+      m.header.frame_id = "map";
+      m.header.stamp = this->now();
+      m.ns = "threat_zone";
+      m.id = marker_id++;
+      m.type = visualization_msgs::msg::Marker::SPHERE;
+      m.action = visualization_msgs::msg::Marker::ADD;
+      m.pose.position.x = tz.center.x();
+      m.pose.position.y = tz.center.y();
+      m.pose.position.z = tz.center.z();
+      m.pose.orientation.w = 1.0;
+      double d = tz.detection_range * 2.0;
+      m.scale.x = d; m.scale.y = d; m.scale.z = d;
+      float alpha = std::min(0.4f, static_cast<float>(tz.max_threat_level / 250.0));
+      m.color.r = 1.0; m.color.g = 0.0; m.color.b = 0.0; m.color.a = alpha;
+      m.lifetime = rclcpp::Duration(0, 0);
+      threat_zone_pub_->publish(m);
+    }
+
+    // Center marker (radar base - small cylinder)
+    {
+      visualization_msgs::msg::Marker m;
+      m.header.frame_id = "map";
+      m.header.stamp = this->now();
+      m.ns = "threat_center";
+      m.id = marker_id++;
+      m.type = visualization_msgs::msg::Marker::CYLINDER;
+      m.action = visualization_msgs::msg::Marker::ADD;
+      m.pose.position.x = tz.center.x();
+      m.pose.position.y = tz.center.y();
+      m.pose.position.z = tz.center.z();
+      m.pose.orientation.w = 1.0;
+      m.scale.x = 1.0; m.scale.y = 1.0; m.scale.z = 0.5;
+      m.color.r = 0.8; m.color.g = 0.0; m.color.b = 0.0; m.color.a = 1.0;
+      m.lifetime = rclcpp::Duration(0, 0);
+      threat_zone_pub_->publish(m);
+    }
+
+    // Text label
+    {
+      visualization_msgs::msg::Marker m;
+      m.header.frame_id = "map";
+      m.header.stamp = this->now();
+      m.ns = "threat_label";
+      m.id = marker_id++;
+      m.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+      m.action = visualization_msgs::msg::Marker::ADD;
+      m.pose.position.x = tz.center.x();
+      m.pose.position.y = tz.center.y();
+      m.pose.position.z = tz.center.z() + tz.detection_range + 1.0;
+      m.pose.orientation.w = 1.0;
+      m.scale.z = 1.5;
+      m.color.r = 1.0; m.color.g = 0.2; m.color.b = 0.2; m.color.a = 1.0;
+      std::ostringstream ss;
+      ss << "SAM #" << zi << " (T=" << std::fixed << std::setprecision(0) << tz.max_threat_level << ")";
+      m.text = ss.str();
+      m.lifetime = rclcpp::Duration(0, 0);
+      threat_zone_pub_->publish(m);
+    }
+  }
+}
