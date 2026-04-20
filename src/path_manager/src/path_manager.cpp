@@ -28,6 +28,7 @@ namespace path_manager
         node_->declare_parameter("manager/max_acc", -1.0);
         node_->declare_parameter("manager/sfc_progress", 7.0);
         node_->declare_parameter("manager/sfc_range", 3.0);
+        node_->declare_parameter("manager/length_per_piece", 3.0);
         node_->declare_parameter("manager/z_min", 0.0);
         node_->declare_parameter("manager/terrain_clearance", 1.0);
         node_->declare_parameter("manager/terrain_sample_spacing", 1.0);
@@ -36,10 +37,23 @@ namespace path_manager
         node_->get_parameter("manager/max_acc", max_acc_);
         node_->get_parameter("manager/sfc_progress", sfc_progress_);
         node_->get_parameter("manager/sfc_range", sfc_range_);
+        node_->get_parameter("manager/length_per_piece", length_per_piece_);
         node_->get_parameter("manager/z_min", z_min_);
         node_->get_parameter("manager/terrain_clearance", terrain_clearance_);
         node_->get_parameter("manager/terrain_sample_spacing", terrain_sample_spacing_);
         node_->get_parameter("manager/threat_weight", threat_weight_);
+
+        // 실험용 SFC threat 처리 모드 (obstacle / freespace / hybrid)
+        node_->declare_parameter("manager/threat_sfc_mode", std::string("hybrid"));
+        node_->declare_parameter("experiment/scenario", std::string("default"));
+        std::string mode_str;
+        node_->get_parameter("manager/threat_sfc_mode", mode_str);
+        node_->get_parameter("experiment/scenario", experiment_scenario_);
+        if (mode_str == "obstacle")       threat_sfc_mode_ = ThreatSFCMode::OBSTACLE;
+        else if (mode_str == "freespace") threat_sfc_mode_ = ThreatSFCMode::FREESPACE;
+        else                              threat_sfc_mode_ = ThreatSFCMode::HYBRID;
+        log_manager_->infof("Threat SFC mode: %s, scenario=%s",
+            mode_str.c_str(), experiment_scenario_.c_str());
 
         // Parse threat zones: [cx, cy, cz, detection_range, engagement_range, max_threat_level, ...]
         node_->declare_parameter("threat_zones", std::vector<double>{});
@@ -114,8 +128,10 @@ namespace path_manager
             "/drone_" + std::to_string(drone_id) + "/simple_path", 10);
         sfc_corridor_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/drone_" + std::to_string(drone_id) + "/sfc_corridor", 10);
-        shortest_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
+        shortest_path_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/drone_" + std::to_string(drone_id) + "/shortest_path", 10);
+        ctrl_points_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/drone_" + std::to_string(drone_id) + "/ctrl_points", 10);
         rrt_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
             "/drone_" + std::to_string(drone_id) + "/rrt_path", 10);
         obstacle_points_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -200,8 +216,47 @@ namespace path_manager
         log_manager_->infof("Planning global trajectory using RRT* + SFC corridor with %zu waypoints", waypoints.size());
         auto t_total_start = std::chrono::steady_clock::now();
 
+        // 실험용 지표 수집 변수 (함수 끝에 CSV 한 줄 기록)
+        struct ExperimentMetrics {
+            bool success = false;
+            std::string fail_type = "NONE";
+            size_t polytope_count = 0;
+            double total_vol = 0.0, min_vol = 0.0, overlap_vol = 0.0;
+            // flatness = min_axis / max_axis (AABB 기준). 1에 가까우면 정상, 0에 가까우면 납작.
+            double min_flatness = 1.0;   // 모든 polytope 중 가장 눌린 것
+            double mean_flatness = 1.0;  // 전체 평균
+            double min_threat_dist = std::numeric_limits<double>::infinity();
+            double risk_integral = 0.0;
+            double detect_time = 0.0;
+            double engage_time = 0.0;
+            double traj_duration = 0.0;
+            int collides = -1;
+        } expm;
+        auto log_experiment_row = [&]() {
+            openExperimentCsvIfNeeded();
+            if (!experiment_csv_.is_open()) return;
+            const char *mode_str =
+                (threat_sfc_mode_ == ThreatSFCMode::OBSTACLE)  ? "obstacle"  :
+                (threat_sfc_mode_ == ThreatSFCMode::FREESPACE) ? "freespace" : "hybrid";
+            double ts = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
+            experiment_csv_
+                << std::fixed << ts << ","
+                << experiment_scenario_ << "," << mode_str << ","
+                << (expm.success ? 1 : 0) << "," << expm.fail_type << ","
+                << expm.polytope_count << ","
+                << expm.total_vol << "," << expm.min_vol << "," << expm.overlap_vol << ","
+                << expm.min_flatness << "," << expm.mean_flatness << ","
+                << expm.min_threat_dist << "," << expm.risk_integral << ","
+                << expm.detect_time << "," << expm.engage_time << ","
+                << expm.traj_duration << "," << expm.collides
+                << "\n";
+            experiment_csv_.flush();
+        };
+
         if (waypoints.empty()) {
             RCLCPP_ERROR(node_->get_logger(), "planGlobalTraj: No waypoints provided!");
+            expm.fail_type = "NO_WAYPOINTS";
+            log_experiment_row();
             return false;
         }
 
@@ -304,15 +359,21 @@ namespace path_manager
             if (std::isinf(cost) || seg_path.empty())
             {
                 RCLCPP_ERROR(node_->get_logger(),
-                    "RRT* failed for segment %zu: (%.2f,%.2f,%.2f) -> (%.2f,%.2f,%.2f)",
+                    "[FAIL_TYPE=C_RRT] RRT* failed for segment %zu: (%.2f,%.2f,%.2f) -> (%.2f,%.2f,%.2f)",
                     seg, all_points[seg].x(), all_points[seg].y(), all_points[seg].z(),
                     all_points[seg+1].x(), all_points[seg+1].y(), all_points[seg+1].z());
+                expm.fail_type = "C_RRT";
+                log_experiment_row();
                 return false;
             }
 
             // Append path (skip first point of subsequent segments to avoid duplicates)
             for (size_t i = (seg == 0 ? 0 : 1); i < seg_path.size(); ++i)
             {
+                if (!full_route.empty() &&
+                    (full_route.back() - seg_path[i]).norm() < 1e-3) {
+                    continue;
+                }
                 full_route.push_back(seg_path[i]);
             }
         }
@@ -321,6 +382,30 @@ namespace path_manager
         log_manager_->infof("RRT* route: %zu waypoints (%.1f ms)",
             full_route.size(),
             std::chrono::duration<double, std::milli>(t_rrt_end - t_rrt_start).count());
+        for (size_t ri = 0; ri < full_route.size(); ++ri) {
+            const auto &p = full_route[ri];
+            log_manager_->infof("  RRT*[%zu]: (%.2f, %.2f, %.2f)", ri, p.x(), p.y(), p.z());
+        }
+
+        // === Breakthrough/Avoidance classification (per threat zone) ===
+        // 돌파: goal 또는 RRT* 경로 점이 threat detection 안에 있음 → blocker 제외
+        // 우회: 그 외 → blocker 유지
+        threat_breakthrough_.assign(threat_zones_.size(), false);
+        if (!threat_zones_.empty()) {
+            for (size_t ti = 0; ti < threat_zones_.size(); ++ti) {
+                const auto &tz = threat_zones_[ti];
+                for (const auto &rp : full_route) {
+                    double dx = rp.x() - tz.center.x();
+                    double dy = rp.y() - tz.center.y();
+                    if (std::sqrt(dx*dx + dy*dy) < tz.detection_range) {
+                        threat_breakthrough_[ti] = true;
+                        break;
+                    }
+                }
+                log_manager_->infof("  ThreatZone #%zu: %s",
+                    ti, threat_breakthrough_[ti] ? "BREAKTHROUGH" : "AVOIDANCE");
+            }
+        }
 
         // Publish simple path for visualization
         nav_msgs::msg::Path path_msg;
@@ -479,19 +564,17 @@ namespace path_manager
         // no blocker is placed for that zone → narrow SFC corridor through the
         // weakest overlap that RRT* already selected.
         if (!threat_zones_.empty()) {
-            size_t before = obstacle_points_.size();
-            const double blocker_spacing = 0.4;
-            const double blocker_z_range = 3.0;
-            const double blocker_z_step = 1.0;
-            // How far inside the bounding box to place the blocker wall.
-            // Must be < sfc_range_ so the point lands inside FIRI's bd box.
+            // Blocker 밀도를 완화: FIRI가 a 주변 halfspace를 과도하게 만들어
+            // convexCover의 gap polytope 조건을 자주 트리거하는 문제 방지.
+            // 실험용: 방공망 경계를 "더 촘촘한 벽"으로 근사해 SFC가 납작해지는 현상 재현.
+            // 이전 값 (1.0 / 3.0 / 1.5) 은 blocker가 성겨서 FIRI가 사이로 빠져나가 SFC가 2D로 눌리지 않음.
+            const double blocker_spacing = 0.3;
+            const double blocker_z_range = 8.0;
+            const double blocker_z_step = 0.5;
             const double blocker_offset_from_route = sfc_range_ * 0.7;
 
-            // Densify the RRT* route so blockers are placed at regular spacing
-            // (not just at the sparse RRT* waypoints). Gaps between waypoints
-            // could let SFC overlaps extend into threat regions.
             std::vector<Eigen::Vector3d> dense_route;
-            const double route_sample_step = std::max(0.5, sfc_range_ * 0.5);
+            const double route_sample_step = std::max(0.8, sfc_range_ * 0.6);
             for (size_t ri = 0; ri + 1 < full_route.size(); ++ri) {
                 const Eigen::Vector3d &a = full_route[ri];
                 const Eigen::Vector3d &b = full_route[ri + 1];
@@ -507,27 +590,33 @@ namespace path_manager
 
             size_t blockers_added = 0, skipped_breakthrough = 0;
             for (const auto &rp : dense_route) {
-                for (const auto &tz : threat_zones_) {
-                    Eigen::Vector2d to_tz(tz.center.x() - rp.x(), tz.center.y() - rp.y());
-                    double dist_to_tz = to_tz.norm();
-
-                    // Route point inside threat detection range → breakthrough,
-                    // do not place blocker (leave corridor open)
-                    if (dist_to_tz < tz.detection_range) {
+                for (size_t ti = 0; ti < threat_zones_.size(); ++ti) {
+                    // 실험용 모드 스위치:
+                    //   OBSTACLE  : 항상 blocker 주입 (모든 zone을 장애물 취급)
+                    //   FREESPACE : 항상 blocker skip (모든 zone을 자유공간 취급)
+                    //   HYBRID    : breakthrough 분류에 따라 zone별로 다르게 처리
+                    bool skip_blocker = false;
+                    switch (threat_sfc_mode_) {
+                        case ThreatSFCMode::OBSTACLE:  skip_blocker = false; break;
+                        case ThreatSFCMode::FREESPACE: skip_blocker = true;  break;
+                        case ThreatSFCMode::HYBRID:    skip_blocker = threat_breakthrough_[ti]; break;
+                    }
+                    if (skip_blocker) {
                         skipped_breakthrough++;
                         continue;
                     }
-                    // Route far from this threat (beyond sfc influence) → skip too
+                    const auto &tz = threat_zones_[ti];
+                    Eigen::Vector2d to_tz(tz.center.x() - rp.x(), tz.center.y() - rp.y());
+                    double dist_to_tz = to_tz.norm();
+
                     if (dist_to_tz > tz.detection_range + sfc_range_ + 2.0) {
                         continue;
                     }
+                    if (dist_to_tz < 1e-6) {
+                        continue;
+                    }
 
-                    // Unit direction from route toward threat center
                     Eigen::Vector2d dir = to_tz / dist_to_tz;
-
-                    // Place a short wall of blockers perpendicular to `dir`,
-                    // offset from route toward the threat, but still inside
-                    // the RRT* segment's bounding box (offset < sfc_range_)
                     Eigen::Vector2d wall_center(
                         rp.x() + dir.x() * blocker_offset_from_route,
                         rp.y() + dir.y() * blocker_offset_from_route);
@@ -544,9 +633,8 @@ namespace path_manager
                     }
                 }
             }
-            log_manager_->infof("Threat-aware SFC blockers: %zu points added, %zu breakthrough skips (total obstacle pts: %zu)",
+            log_manager_->infof("Threat-aware SFC blockers: %zu points added, %zu breakthrough-zone skips (total obstacle pts: %zu)",
                 blockers_added, skipped_breakthrough, obstacle_points_.size());
-            (void)before;
         }
 
         // Publish obstacle points as MarkerArray for visualization
@@ -648,8 +736,59 @@ namespace path_manager
             global_hpolys_.size(),
             std::chrono::duration<double, std::milli>(t_sfc_end - t_sfc_start).count());
 
+        // === 실험용 SFC 품질 지표 (AABB 근사 부피 + flatness) ===
+        // flatness = min_axis / max_axis (AABB 기준). 1에 가까우면 정상, 0에 가까우면 납작.
+        expm.polytope_count = global_hpolys_.size();
+        expm.total_vol = 0.0;
+        expm.min_vol = std::numeric_limits<double>::infinity();
+        expm.overlap_vol = 0.0;
+        expm.min_flatness = 1.0;
+        expm.mean_flatness = 0.0;
+        int flat_count = 0;
+        for (size_t pi = 0; pi < global_hpolys_.size(); ++pi) {
+            PolyhedronV v;
+            if (geo_utils::enumerateVs(global_hpolys_[pi], v) && v.cols() > 0) {
+                Eigen::Vector3d lo = v.col(0), hi = v.col(0);
+                for (int k = 1; k < v.cols(); ++k) {
+                    lo = lo.cwiseMin(v.col(k));
+                    hi = hi.cwiseMax(v.col(k));
+                }
+                Eigen::Vector3d ext = hi - lo;
+                double vol = (ext.array() > 0.0).all() ? ext.x() * ext.y() * ext.z() : 0.0;
+                if (vol > 0.0) {
+                    expm.total_vol += vol;
+                    expm.min_vol = std::min(expm.min_vol, vol);
+                }
+                double maxx = ext.maxCoeff();
+                double minx = ext.minCoeff();
+                if (maxx > 1e-6) {
+                    double f = std::max(0.0, minx) / maxx;
+                    expm.mean_flatness += f;
+                    expm.min_flatness = std::min(expm.min_flatness, f);
+                    flat_count++;
+                }
+            }
+            if (pi + 1 < global_hpolys_.size()) {
+                Eigen::MatrixX4d inter(global_hpolys_[pi].rows() + global_hpolys_[pi+1].rows(), 4);
+                inter.topRows(global_hpolys_[pi].rows())    = global_hpolys_[pi];
+                inter.bottomRows(global_hpolys_[pi+1].rows()) = global_hpolys_[pi+1];
+                double ov = computePolytopeVolumeAabb(inter);
+                if (ov > 0.0) expm.overlap_vol += ov;
+            }
+        }
+        if (!std::isfinite(expm.min_vol)) expm.min_vol = 0.0;
+        if (flat_count > 0) expm.mean_flatness /= flat_count;
+        else { expm.mean_flatness = 0.0; expm.min_flatness = 0.0; }
+        log_manager_->infof(
+            "[SFC_METRICS] polytopes=%zu total_vol=%.3f min_vol=%.3f overlap_vol=%.3f "
+            "min_flatness=%.3f mean_flatness=%.3f",
+            expm.polytope_count, expm.total_vol, expm.min_vol, expm.overlap_vol,
+            expm.min_flatness, expm.mean_flatness);
+
         if (global_hpolys_.empty()) {
-            RCLCPP_ERROR(node_->get_logger(), "SFC corridor generation failed!");
+            RCLCPP_ERROR(node_->get_logger(), "[FAIL_TYPE=A_SFC_GEN] SFC corridor generation failed!");
+            expm.fail_type = "A_SFC_GEN";
+            log_experiment_row();
             return false;
         }
 
@@ -668,7 +807,9 @@ namespace path_manager
         PolyhedraV vPolytopes;
         if (!processCorridor(normHpolys, vPolytopes))
         {
-            RCLCPP_ERROR(node_->get_logger(), "processCorridor failed! Using fallback linear path.");
+            RCLCPP_ERROR(node_->get_logger(), "[FAIL_TYPE=B_CORRIDOR_PROC] processCorridor failed! Using fallback linear path.");
+            expm.fail_type = "B_CORRIDOR_PROC";
+            log_experiment_row();
             // Fallback: simple 2-piece trajectory
             poly_traj::MinJerkOpt globalMJO;
             Eigen::Matrix<double, 3, 3> headState, tailState;
@@ -698,6 +839,10 @@ namespace path_manager
         getShortestPath(start_pos, waypoints.back(), vPolytopes, smoothEps, shortPath);
 
         log_manager_->infof("Shortest path through %d corridor overlaps computed", (int)(vPolytopes.size() / 2));
+        for (int spi = 0; spi < shortPath.cols(); ++spi) {
+            const Eigen::Vector3d &p = shortPath.col(spi);
+            log_manager_->infof("  ShortPath[%d]: (%.2f, %.2f, %.2f)", spi, p.x(), p.y(), p.z());
+        }
 
         // Publish SFC corridor and shortest path for visualization
         publishSFCCorridor(normHpolys);
@@ -707,20 +852,21 @@ namespace path_manager
         log_manager_->infof("[TIMING] Corridor processing + shortest path: %.1f ms",
             std::chrono::duration<double, std::milli>(t_corridor_end - t_corridor_start).count());
 
-        // 4d. Determine piece count per polytope
-        // GCOPTER uses lengthPerPiece=INFINITY → exactly 1 piece per polytope.
-        // This is optimal for V-polytope parameterization: each inner point maps
-        // to one polytope overlap, avoiding over-parameterization that causes oscillation.
+        // 4d. Determine piece count per polytope (GCOPTER original style)
+        // 각 shortest path 세그먼트 길이를 lengthPerPiece로 나눠 piece 개수 결정.
+        // 긴 polytope은 여러 piece로 쪼개져 piece 간 duration 균등 유지.
         const int polyN = global_hpolys_.size();
         const Eigen::Matrix3Xd deltas = shortPath.rightCols(polyN) - shortPath.leftCols(polyN);
         double total_path_length = deltas.colwise().norm().sum();
 
-        // GCOPTER-style: 1 piece per polytope (lengthPerPiece = INFINITY)
-        Eigen::VectorXi pieceIdx = Eigen::VectorXi::Ones(polyN);
-        int piece_num = polyN;
+        Eigen::VectorXi pieceIdx =
+            (deltas.colwise().norm() / length_per_piece_).cast<int>().transpose();
+        pieceIdx.array() += 1;  // 최소 1 piece
+        int piece_num = pieceIdx.sum();
 
-        log_manager_->infof("Piece allocation: %d pieces across %d polytopes (path=%.1fm, 1 piece/polytope)",
-            piece_num, polyN, total_path_length);
+        log_manager_->infof(
+            "Piece allocation: %d pieces across %d polytopes (path=%.1fm, length_per_piece=%.1fm)",
+            piece_num, polyN, total_path_length, length_per_piece_);
 
         // 4e. Generate initial inner points and time allocation from shortest path
         const double allocSpeed = max_vel_ * 3.0;  // GCOPTER: 3x max_vel for initial allocation
@@ -729,10 +875,25 @@ namespace path_manager
         setInitialFromPath(shortPath, allocSpeed, pieceIdx, innerPts, time_vec);
 
         // 4f. Build MINCO trajectory
+        // 미사일 타격 시나리오: goal에서 정지(vel=0)가 아니라 관통해야 함.
+        // RRT*의 마지막 세그먼트 방향으로 max_vel 속도를 갖도록 tailState 설정.
+        Eigen::Vector3d approach_dir;
+        if (full_route.size() >= 2) {
+            approach_dir = (full_route.back() - full_route[full_route.size() - 2]).normalized();
+        } else {
+            approach_dir = (waypoints.back() - start_pos).normalized();
+        }
+        Eigen::Vector3d traj_end_vel = approach_dir * max_vel_;
+        Eigen::Vector3d traj_end_acc = Eigen::Vector3d::Zero();
+
         poly_traj::MinJerkOpt globalMJO;
         Eigen::Matrix<double, 3, 3> headState, tailState;
         headState << start_pos, start_vel, start_acc;
-        tailState << waypoints.back(), end_vel, end_acc;
+        tailState << waypoints.back(), traj_end_vel, traj_end_acc;
+
+        log_manager_->infof("Tail PVA: pos=(%.2f,%.2f,%.2f) vel=(%.2f,%.2f,%.2f)|%.2fm/s",
+            waypoints.back().x(), waypoints.back().y(), waypoints.back().z(),
+            traj_end_vel.x(), traj_end_vel.y(), traj_end_vel.z(), traj_end_vel.norm());
 
         globalMJO.reset(headState, tailState, piece_num);
         globalMJO.generate(innerPts, time_vec);
@@ -760,6 +921,7 @@ namespace path_manager
             // Pass SFC corridor to optimizer (both H and V representations)
             poly_traj_opt_->setSFCCorridor(global_hpolys_);
             poly_traj_opt_->setSFCVPolytopes(global_vpolys_);
+            poly_traj_opt_->setPiecesPerPoly(pieceIdx);
 
             // Set control points from initial trajectory
             poly_traj::Trajectory initTraj = globalMJO.getTraj();
@@ -787,6 +949,57 @@ namespace path_manager
 
                 log_manager_->infof("L-BFGS optimization SUCCESS: duration=%.3f, max_vel=%.3f",
                     optTraj.getTotalDuration(), optTraj.getMaxVelRate());
+
+                // === Control points 시각화 ===
+                {
+                    visualization_msgs::msg::MarkerArray arr;
+                    const auto stamp = node_->get_clock()->now();
+
+                    visualization_msgs::msg::Marker del;
+                    del.action = visualization_msgs::msg::Marker::DELETEALL;
+                    del.header.frame_id = "map";
+                    del.header.stamp = stamp;
+                    arr.markers.push_back(del);
+
+                    for (int ci = 0; ci < optimal_points.cols(); ++ci) {
+                        visualization_msgs::msg::Marker s;
+                        s.header.frame_id = "map";
+                        s.header.stamp = stamp;
+                        s.ns = "ctrl_points";
+                        s.id = ci;
+                        s.type = visualization_msgs::msg::Marker::SPHERE;
+                        s.action = visualization_msgs::msg::Marker::ADD;
+                        s.pose.position.x = optimal_points(0, ci);
+                        s.pose.position.y = optimal_points(1, ci);
+                        s.pose.position.z = optimal_points(2, ci);
+                        s.pose.orientation.w = 1.0;
+                        s.scale.x = 0.4; s.scale.y = 0.4; s.scale.z = 0.4;
+                        s.color.r = 1.0f; s.color.g = 0.3f; s.color.b = 1.0f; s.color.a = 1.0f;
+                        arr.markers.push_back(s);
+
+                        visualization_msgs::msg::Marker t;
+                        t.header.frame_id = "map";
+                        t.header.stamp = stamp;
+                        t.ns = "ctrl_points_label";
+                        t.id = ci;
+                        t.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+                        t.action = visualization_msgs::msg::Marker::ADD;
+                        t.pose.position.x = optimal_points(0, ci);
+                        t.pose.position.y = optimal_points(1, ci);
+                        t.pose.position.z = optimal_points(2, ci) + 0.6;
+                        t.pose.orientation.w = 1.0;
+                        t.scale.z = 0.5;
+                        t.color.r = 1.0f; t.color.g = 1.0f; t.color.b = 1.0f; t.color.a = 1.0f;
+                        t.text = "cp" + std::to_string(ci);
+                        arr.markers.push_back(t);
+                    }
+                    ctrl_points_pub_->publish(arr);
+                    log_manager_->infof("Published %d control points", (int)optimal_points.cols());
+                    for (int ci = 0; ci < optimal_points.cols(); ++ci) {
+                        log_manager_->infof("  CP[%d]: (%.2f, %.2f, %.2f)",
+                            ci, optimal_points(0, ci), optimal_points(1, ci), optimal_points(2, ci));
+                    }
+                }
 
                 // Post-optimization terrain collision check
                 if (terrain_data_.valid) {
@@ -820,7 +1033,8 @@ namespace path_manager
             else
             {
                 // Fallback: use initial MINCO trajectory as local trajectory
-                log_manager_->warnf("L-BFGS optimization failed, using initial MINCO trajectory");
+                log_manager_->warnf("[FAIL_TYPE=D_OPT] L-BFGS optimization failed, using initial MINCO trajectory");
+                expm.fail_type = "D_OPT";
                 double start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
                 traj_.setLocalTraj(globalMJO.getTraj(), start_time, traj_.local_traj.drone_id);
             }
@@ -842,6 +1056,48 @@ namespace path_manager
             std::chrono::duration<double, std::milli>(t_total_end - t_total_start).count());
 
         log_manager_->infof("Final optimized trajectory set as local_traj (single-shot, no replan)");
+
+        // === 실험용 최종 궤적-방공망 지표 ===
+        {
+            const auto &traj = traj_.local_traj.traj;
+            double total_duration = traj.getTotalDuration();
+            expm.traj_duration = total_duration;
+            if (total_duration > 0.0) {
+                const int n_samples = 200;
+                double dt = total_duration / n_samples;
+                int coll = 0;
+                for (int i = 0; i <= n_samples; ++i) {
+                    double t = std::min(total_duration, i * dt);
+                    Eigen::Vector3d p = traj.getPos(t);
+                    for (const auto &tz : threat_zones_) {
+                        double d = (p - tz.center).norm();
+                        expm.min_threat_dist = std::min(expm.min_threat_dist, d);
+                        if (d < tz.detection_range) {
+                            expm.detect_time += dt;
+                            double sigma = tz.detection_range / 3.0;
+                            double g = tz.max_threat_level *
+                                       std::exp(-0.5 * (d / sigma) * (d / sigma));
+                            expm.risk_integral += g * dt;
+                        }
+                        if (d < tz.engagement_range) {
+                            expm.engage_time += dt;
+                        }
+                    }
+                    if (terrain_data_.valid) {
+                        float elev = terrain_data_.getElevation(p.x(), p.y());
+                        if (elev > -1e10 && p.z() < elev + terrain_clearance_) coll++;
+                    }
+                }
+                expm.collides = (coll > 0) ? 1 : 0;
+            }
+            if (!std::isfinite(expm.min_threat_dist)) expm.min_threat_dist = -1.0;
+            log_manager_->infof(
+                "[TRAJ_METRICS] min_threat_dist=%.3f risk_int=%.3f detect_t=%.3f engage_t=%.3f duration=%.3f collides=%d",
+                expm.min_threat_dist, expm.risk_integral, expm.detect_time,
+                expm.engage_time, expm.traj_duration, expm.collides);
+        }
+        expm.success = true;  // 파이프라인이 궤적을 반환했는지 기준. D_OPT는 fail_type에 이미 기록됨.
+        log_experiment_row();
 
         return true;
     }
@@ -1408,7 +1664,6 @@ void PathManager::publishSFCCorridor(const PolyhedraH &hPolys)
 {
     visualization_msgs::msg::MarkerArray marker_array;
 
-    // First, delete all previous markers
     visualization_msgs::msg::Marker delete_marker;
     delete_marker.action = visualization_msgs::msg::Marker::DELETEALL;
     delete_marker.header.frame_id = "map";
@@ -1417,50 +1672,73 @@ void PathManager::publishSFCCorridor(const PolyhedraH &hPolys)
 
     for (size_t i = 0; i < hPolys.size(); i++)
     {
-        // Convert H-polytope to V-polytope for visualization
         Eigen::Matrix3Xd vPoly;
         if (!geo_utils::enumerateVs(hPolys[i], vPoly))
             continue;
 
-        // Create wireframe from vertices using LINE_LIST
-        visualization_msgs::msg::Marker marker;
-        marker.header.frame_id = "map";
-        marker.header.stamp = node_->get_clock()->now();
-        marker.ns = "sfc_corridor";
-        marker.id = i + 1;  // +1 because id=0 is delete_marker
-        marker.type = visualization_msgs::msg::Marker::LINE_LIST;
-        marker.action = visualization_msgs::msg::Marker::ADD;
-        marker.scale.x = 0.03;  // Line width
+        quickhull::QuickHull<double> qh;
+        const auto hull = qh.getConvexHull(vPoly.data(), vPoly.cols(), false, true);
+        const auto &idxBuffer = hull.getIndexBuffer();
+        if (idxBuffer.empty())
+            continue;
 
-        // Color: semi-transparent, different hue per polytope
         float hue = (float)i / std::max((int)hPolys.size(), 1);
-        marker.color.r = 0.2f + 0.8f * std::max(0.0f, std::min(1.0f, std::abs(hue * 6.0f - 3.0f) - 1.0f));
-        marker.color.g = 0.2f + 0.8f * std::max(0.0f, std::min(1.0f, 2.0f - std::abs(hue * 6.0f - 2.0f)));
-        marker.color.b = 0.2f + 0.8f * std::max(0.0f, std::min(1.0f, 2.0f - std::abs(hue * 6.0f - 4.0f)));
-        marker.color.a = 0.4f;
+        float r = 0.2f + 0.8f * std::max(0.0f, std::min(1.0f, std::abs(hue * 6.0f - 3.0f) - 1.0f));
+        float g = 0.2f + 0.8f * std::max(0.0f, std::min(1.0f, 2.0f - std::abs(hue * 6.0f - 2.0f)));
+        float b = 0.2f + 0.8f * std::max(0.0f, std::min(1.0f, 2.0f - std::abs(hue * 6.0f - 4.0f)));
 
-        marker.pose.orientation.w = 1.0;
+        visualization_msgs::msg::Marker mesh;
+        mesh.header.frame_id = "map";
+        mesh.header.stamp = node_->get_clock()->now();
+        mesh.ns = "sfc_corridor_mesh";
+        mesh.id = i + 1;
+        mesh.type = visualization_msgs::msg::Marker::TRIANGLE_LIST;
+        mesh.action = visualization_msgs::msg::Marker::ADD;
+        mesh.scale.x = 1.0;
+        mesh.scale.y = 1.0;
+        mesh.scale.z = 1.0;
+        mesh.pose.orientation.w = 1.0;
+        mesh.color.r = r;
+        mesh.color.g = g;
+        mesh.color.b = b;
+        mesh.color.a = 0.18f;
 
-        // Connect all vertex pairs as edges (convex hull wireframe)
-        int nv = vPoly.cols();
-        for (int a = 0; a < nv; a++)
+        visualization_msgs::msg::Marker edge;
+        edge.header.frame_id = "map";
+        edge.header.stamp = node_->get_clock()->now();
+        edge.ns = "sfc_corridor_edge";
+        edge.id = i + 1;
+        edge.type = visualization_msgs::msg::Marker::LINE_LIST;
+        edge.action = visualization_msgs::msg::Marker::ADD;
+        edge.scale.x = 0.04;
+        edge.pose.orientation.w = 1.0;
+        edge.color.r = r;
+        edge.color.g = g;
+        edge.color.b = b;
+        edge.color.a = 0.9f;
+
+        for (size_t t = 0; t + 2 < idxBuffer.size(); t += 3)
         {
-            for (int b = a + 1; b < nv; b++)
-            {
-                // Only draw edges shorter than a threshold (skip long diagonals)
-                double edge_len = (vPoly.col(a) - vPoly.col(b)).norm();
-                if (edge_len > 50.0) continue;  // Skip very long edges
+            const Eigen::Vector3d &v0 = vPoly.col(idxBuffer[t]);
+            const Eigen::Vector3d &v1 = vPoly.col(idxBuffer[t + 1]);
+            const Eigen::Vector3d &v2 = vPoly.col(idxBuffer[t + 2]);
 
-                geometry_msgs::msg::Point p1, p2;
-                p1.x = vPoly(0, a); p1.y = vPoly(1, a); p1.z = vPoly(2, a);
-                p2.x = vPoly(0, b); p2.y = vPoly(1, b); p2.z = vPoly(2, b);
-                marker.points.push_back(p1);
-                marker.points.push_back(p2);
-            }
+            geometry_msgs::msg::Point p0, p1, p2;
+            p0.x = v0.x(); p0.y = v0.y(); p0.z = v0.z();
+            p1.x = v1.x(); p1.y = v1.y(); p1.z = v1.z();
+            p2.x = v2.x(); p2.y = v2.y(); p2.z = v2.z();
+
+            mesh.points.push_back(p0);
+            mesh.points.push_back(p1);
+            mesh.points.push_back(p2);
+
+            edge.points.push_back(p0); edge.points.push_back(p1);
+            edge.points.push_back(p1); edge.points.push_back(p2);
+            edge.points.push_back(p2); edge.points.push_back(p0);
         }
 
-        if (!marker.points.empty())
-            marker_array.markers.push_back(marker);
+        if (!mesh.points.empty()) marker_array.markers.push_back(mesh);
+        if (!edge.points.empty()) marker_array.markers.push_back(edge);
     }
 
     sfc_corridor_pub_->publish(marker_array);
@@ -1469,34 +1747,123 @@ void PathManager::publishSFCCorridor(const PolyhedraH &hPolys)
 
 void PathManager::publishShortestPath(const Eigen::Matrix3Xd &path)
 {
-    visualization_msgs::msg::Marker marker;
-    marker.header.frame_id = "map";
-    marker.header.stamp = node_->get_clock()->now();
-    marker.ns = "shortest_path";
-    marker.id = 0;
-    marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
-    marker.action = visualization_msgs::msg::Marker::ADD;
-    marker.scale.x = 0.08;  // Line width
+    visualization_msgs::msg::MarkerArray marker_array;
+    const auto stamp = node_->get_clock()->now();
 
-    // Bright cyan color
-    marker.color.r = 0.0f;
-    marker.color.g = 1.0f;
-    marker.color.b = 1.0f;
-    marker.color.a = 1.0f;
+    visualization_msgs::msg::Marker del;
+    del.action = visualization_msgs::msg::Marker::DELETEALL;
+    del.header.frame_id = "map";
+    del.header.stamp = stamp;
+    marker_array.markers.push_back(del);
 
-    marker.pose.orientation.w = 1.0;
+    visualization_msgs::msg::Marker line;
+    line.header.frame_id = "map";
+    line.header.stamp = stamp;
+    line.ns = "shortest_path_line";
+    line.id = 0;
+    line.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    line.action = visualization_msgs::msg::Marker::ADD;
+    line.scale.x = 0.08;
+    line.color.r = 0.0f; line.color.g = 1.0f; line.color.b = 1.0f; line.color.a = 1.0f;
+    line.pose.orientation.w = 1.0;
 
-    for (int i = 0; i < path.cols(); i++)
-    {
+    for (int i = 0; i < path.cols(); i++) {
         geometry_msgs::msg::Point p;
-        p.x = path(0, i);
-        p.y = path(1, i);
-        p.z = path(2, i);
-        marker.points.push_back(p);
+        p.x = path(0, i); p.y = path(1, i); p.z = path(2, i);
+        line.points.push_back(p);
+    }
+    marker_array.markers.push_back(line);
+
+    for (int i = 0; i < path.cols(); i++) {
+        visualization_msgs::msg::Marker sphere;
+        sphere.header.frame_id = "map";
+        sphere.header.stamp = stamp;
+        sphere.ns = "shortest_path_waypoints";
+        sphere.id = i;
+        sphere.type = visualization_msgs::msg::Marker::SPHERE;
+        sphere.action = visualization_msgs::msg::Marker::ADD;
+        sphere.pose.position.x = path(0, i);
+        sphere.pose.position.y = path(1, i);
+        sphere.pose.position.z = path(2, i);
+        sphere.pose.orientation.w = 1.0;
+        sphere.scale.x = 0.5; sphere.scale.y = 0.5; sphere.scale.z = 0.5;
+
+        if (i == 0) {
+            sphere.color.r = 0.0f; sphere.color.g = 1.0f; sphere.color.b = 0.0f;
+        } else if (i == path.cols() - 1) {
+            sphere.color.r = 1.0f; sphere.color.g = 0.0f; sphere.color.b = 0.0f;
+        } else {
+            sphere.color.r = 1.0f; sphere.color.g = 1.0f; sphere.color.b = 0.0f;
+        }
+        sphere.color.a = 1.0f;
+        marker_array.markers.push_back(sphere);
+
+        visualization_msgs::msg::Marker text;
+        text.header.frame_id = "map";
+        text.header.stamp = stamp;
+        text.ns = "shortest_path_labels";
+        text.id = i;
+        text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+        text.action = visualization_msgs::msg::Marker::ADD;
+        text.pose.position.x = path(0, i);
+        text.pose.position.y = path(1, i);
+        text.pose.position.z = path(2, i) + 0.7;
+        text.pose.orientation.w = 1.0;
+        text.scale.z = 0.6;
+        text.color.r = 1.0f; text.color.g = 1.0f; text.color.b = 1.0f; text.color.a = 1.0f;
+        text.text = "wp" + std::to_string(i);
+        marker_array.markers.push_back(text);
     }
 
-    shortest_path_pub_->publish(marker);
+    shortest_path_pub_->publish(marker_array);
     log_manager_->infof("Published shortest path visualization (%d points)", (int)path.cols());
+}
+
+// ===== 실험용 헬퍼 =====
+void PathManager::openExperimentCsvIfNeeded()
+{
+    if (experiment_csv_.is_open()) return;
+    const std::string path = "./logs/runtime/sfc_experiment.csv";
+    bool new_file = (std::ifstream(path).peek() == std::ifstream::traits_type::eof());
+    experiment_csv_.open(path, std::ios::app);
+    if (!experiment_csv_.is_open()) {
+        log_manager_->warnf("Failed to open experiment CSV: %s", path.c_str());
+        return;
+    }
+    if (new_file) {
+        experiment_csv_
+            << "timestamp,scenario,mode,success,fail_type,"
+            << "polytope_count,total_vol,min_vol,overlap_vol,"
+            << "min_flatness,mean_flatness,"
+            << "min_threat_dist,risk_integral,detect_time,engage_time,"
+            << "traj_duration,collides\n";
+        experiment_csv_.flush();
+    }
+}
+
+// H-polytope의 AABB 근사 부피.
+// 볼록 폴리토프의 정확한 부피 대신 축 정렬 경계 상자 부피를 반환한다.
+// "SFC가 얇아지거나 붕괴하는 경향"을 정량화하기에는 충분한 근사이며,
+// 정점 나열(enumerateVs) 후 min/max 좌표로 계산한다.
+double PathManager::computePolytopeVolumeAabb(const Eigen::MatrixX4d &hpoly)
+{
+    PolyhedronV vpoly;
+    if (!geo_utils::enumerateVs(hpoly, vpoly)) return 0.0;
+    return computeAabbVolume(vpoly);
+}
+
+double PathManager::computeAabbVolume(const PolyhedronV &vpoly)
+{
+    if (vpoly.cols() < 1) return 0.0;
+    Eigen::Vector3d lo = vpoly.col(0);
+    Eigen::Vector3d hi = vpoly.col(0);
+    for (int i = 1; i < vpoly.cols(); ++i) {
+        lo = lo.cwiseMin(vpoly.col(i));
+        hi = hi.cwiseMax(vpoly.col(i));
+    }
+    Eigen::Vector3d ext = hi - lo;
+    if ((ext.array() <= 0.0).any()) return 0.0;
+    return ext.x() * ext.y() * ext.z();
 }
 
 } // namespace path_manager

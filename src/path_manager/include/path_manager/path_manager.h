@@ -19,6 +19,7 @@
 #include <grid_map_msgs/msg/grid_map.hpp>
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <fstream>
 
 using namespace ego_planner;
 
@@ -27,6 +28,16 @@ namespace path_manager
   enum class ObstacleShape {
     CIRCLE,
     RECTANGLE
+  };
+
+  // SFC blocker 주입 정책 (실험용)
+  //   OBSTACLE : 모든 threat zone을 장애물로 취급 (항상 blocker 주입)
+  //   FREESPACE: 모든 threat zone을 자유공간으로 취급 (blocker 주입 안 함)
+  //   HYBRID   : 기본 동작. breakthrough 분류에 따라 zone별로 다르게 처리
+  enum class ThreatSFCMode {
+    OBSTACLE,
+    FREESPACE,
+    HYBRID
   };
 
   struct Obstacle {
@@ -263,7 +274,13 @@ namespace path_manager
     std::vector<Eigen::Vector3d> simple_path_;
     std::vector<Obstacle> obstacle_centers_;
     std::vector<ThreatZone> threat_zones_;
+    std::vector<bool> threat_breakthrough_;  // per-threat: true=돌파 대상(blocker 제외), false=우회
     double threat_weight_;  // α for RRT* cost: edge_cost = dist * (1 + α * threat)
+
+    // 실험용 SFC threat 처리 모드 스위치
+    ThreatSFCMode threat_sfc_mode_ = ThreatSFCMode::HYBRID;
+    std::string experiment_scenario_ = "default";  // CSV 태그용
+    std::ofstream experiment_csv_;
 
     // SFC corridor data
     std::vector<Eigen::MatrixX4d> global_hpolys_;     // Global SFC corridor (H-polytopes)
@@ -289,7 +306,8 @@ namespace path_manager
 
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr simple_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr sfc_corridor_pub_;
-    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr shortest_path_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr shortest_path_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr ctrl_points_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr rrt_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr obstacle_points_pub_;
 
@@ -307,6 +325,11 @@ namespace path_manager
     typedef Eigen::MatrixX4d PolyhedronH;
     typedef std::vector<PolyhedronV> PolyhedraV;
     typedef std::vector<PolyhedronH> PolyhedraH;
+
+    // 실험용 헬퍼 (PolyhedronV typedef 뒤에 선언 필요)
+    void openExperimentCsvIfNeeded();
+    static double computeAabbVolume(const PolyhedronV &vpoly);
+    static double computePolytopeVolumeAabb(const Eigen::MatrixX4d &hpoly);
 
     void publishSFCCorridor(const PolyhedraH &hPolys);
     void publishShortestPath(const Eigen::Matrix3Xd &path);

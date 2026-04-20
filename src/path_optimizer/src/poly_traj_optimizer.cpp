@@ -222,7 +222,8 @@ namespace ego_planner
         for (const auto &hp : sfc_hpolys_)
         {
           Eigen::VectorXd viola = hp.leftCols<3>() * pos + hp.rightCols<1>();
-          if (viola.maxCoeff() <= 0.0)
+          // 부동소수점 노이즈로 start/goal이 경계 위에서 살짝 밖으로 판정되는 것 방지
+          if (viola.maxCoeff() <= 1.0e-4)
           {
             inside_corridor = true;
             break;
@@ -736,17 +737,19 @@ namespace ego_planner
       return;
     }
 
-    // Distribute pieces proportionally across polytopes
-    // Each polytope gets at least 1 piece
-    Eigen::VectorXi piecesPerPoly = Eigen::VectorXi::Ones(polyN);
-    int remaining = piece_num - polyN;
-    // Distribute remaining pieces evenly
-    for (int i = 0; i < remaining; ++i)
-    {
-      piecesPerPoly(i % polyN) += 1;
+    // path_manager가 계산한 pieces_per_poly_가 있으면 그대로 사용 (GCOPTER 원본 방식).
+    // 없으면 fallback으로 round-robin 분배.
+    Eigen::VectorXi piecesPerPoly;
+    if (pieces_per_poly_.size() == polyN && pieces_per_poly_.sum() == piece_num) {
+      piecesPerPoly = pieces_per_poly_;
+    } else {
+      piecesPerPoly = Eigen::VectorXi::Ones(polyN);
+      int remaining = piece_num - polyN;
+      for (int i = 0; i < remaining; ++i) {
+        piecesPerPoly(i % polyN) += 1;
+      }
     }
 
-    // Build the mapping
     int j = 0;
     for (int i = 0; i < polyN; ++i)
     {
@@ -1501,12 +1504,17 @@ namespace ego_planner
       return;
     }
 
-    // Distribute pieces across polytopes (same as buildPiecePolytopeMapping)
-    Eigen::VectorXi piecesPerPoly = Eigen::VectorXi::Ones(polyN);
-    if (piece_num > polyN) {
-      int remaining = piece_num - polyN;
-      for (int i = 0; i < remaining; ++i) {
-        piecesPerPoly(i % polyN) += 1;
+    // path_manager가 계산한 pieces_per_poly_가 있으면 그대로 사용.
+    Eigen::VectorXi piecesPerPoly;
+    if (pieces_per_poly_.size() == polyN && pieces_per_poly_.sum() == piece_num) {
+      piecesPerPoly = pieces_per_poly_;
+    } else {
+      piecesPerPoly = Eigen::VectorXi::Ones(polyN);
+      if (piece_num > polyN) {
+        int remaining = piece_num - polyN;
+        for (int i = 0; i < remaining; ++i) {
+          piecesPerPoly(i % polyN) += 1;
+        }
       }
     }
 

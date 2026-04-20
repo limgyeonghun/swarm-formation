@@ -453,9 +453,16 @@ namespace sfc_gen
             if (hpolys.size() != 0)
             {
                 const Eigen::Vector4d ah(a(0), a(1), a(2), 1.0);
-                if (3 <= ((hp * ah).array() > -eps).cast<int>().sum() +
-                             ((hpolys.back() * ah).array() > -eps).cast<int>().sum())
+                int active_sum = ((hp * ah).array() > -eps).cast<int>().sum() +
+                                 ((hpolys.back() * ah).array() > -eps).cast<int>().sum();
+                // Gap polytope은 a가 두 polytope의 실제 공통 꼭짓점에 가까울 때만 삽입.
+                // 원본 threshold(3)는 blocker 밀도가 높은 환경에서 과도 발동 → 얇은 중복
+                // polytope 생성. threshold를 5로 올려 극단 케이스만 gap 삽입.
+                if (active_sum >= 5)
                 {
+                    std::fprintf(stderr,
+                        "[convexCover] gap polytope inserted at (%.2f,%.2f,%.2f), active_sum=%d\n",
+                        a(0), a(1), a(2), active_sum);
                     firi::firi(bd, pc, a, a, gap, 1);
                     hpolys.emplace_back(gap);
                 }

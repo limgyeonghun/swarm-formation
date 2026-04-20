@@ -132,6 +132,7 @@ namespace ego_planner
     // SFC corridor data (GCOPTER-style piece-to-polytope mapping)
     std::vector<Eigen::MatrixX4d> sfc_hpolys_;  // H-polytope corridor
     Eigen::VectorXi hpoly_piece_idx_;            // hpoly index for each trajectory piece
+    Eigen::VectorXi pieces_per_poly_;            // pieces per polytope (set by path_manager)
     double smoothing_eps_;                        // smoothedL1 smoothing factor
 
     // V-polytope parameterization (GCOPTER-style: points guaranteed inside corridor)
@@ -155,6 +156,7 @@ namespace ego_planner
     void setLogManager(swarm_formation::LogManager::Ptr log_manager);
     void setSFCCorridor(const std::vector<Eigen::MatrixX4d> &hpolys) { sfc_hpolys_ = hpolys; }
     void setSFCVPolytopes(const std::vector<Eigen::Matrix3Xd> &vpolys) { sfc_vpolys_ = vpolys; }
+    void setPiecesPerPoly(const Eigen::VectorXi &pieces_per_poly) { pieces_per_poly_ = pieces_per_poly; }
     void buildPiecePolytopeMapping(int piece_num);
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
