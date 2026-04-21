@@ -1,58 +1,53 @@
 /**:
   ros__parameters:
     # ============================================================
-    # GCOPTER SFC-based Trajectory Optimization Parameters
-    # Pipeline: RRT* → SFC corridor → MINCO → L-BFGS (single-shot)
+    # SDF-based Trajectory Optimization Parameters
+    # Pipeline: RRT* (threat-aware) -> SDF path shortening -> MINCO
+    #          -> L-BFGS with SDF gradient penalty
     # ============================================================
 
-    # Optimization Algorithm Parameters
-    optimization/constrain_points_perPiece: 16
+    optimization/constrain_points_perPiece: 50
 
-    # Obstacle Avoidance Control (SFC corridor-based)
     enable_obstacles: true
-
-    # Debug Logging Control
     enable_debug_logs: true
     enable_lbfgs_detail_logs: false
 
-    # Cost Function Weights (GCOPTER ChiVec: [1e4, 1e4, 1e4, 1e4, 1e5], WeightT: 20)
-    optimization/weight_obstacle: 100.0      # SFC corridor penalty (= ChiVec[0])
-    optimization/weight_swarm: 0.0             # Swarm collision avoidance
-    optimization/weight_feasibility: 100.0   # Vel/acc feasibility (= ChiVec[1])
-    optimization/weight_sqrvariance: 100.0   # Distance variance (smoothness)
-    optimization/weight_time: 1.0             # Time optimality (= WeightT)
-    optimization/weight_formation: 0.0         # Formation keeping
-    optimization/weight_threat: 0.0        # Threat zone avoidance (air defense penetration)
+    # Cost function weights (scale matched to proven main-branch values).
+    optimization/weight_obstacle: 50000.0     # SDF violation penalty
+    optimization/weight_swarm: 0.0            # Swarm collision avoidance
+    optimization/weight_feasibility: 10000.0   # Vel/acc feasibility
+    optimization/weight_sqrvariance: 10000.0  # Distance variance (smoothness)
+    optimization/weight_time: 20.0            # Time optimality
+    optimization/weight_formation: 0.0        # Formation keeping
+    optimization/weight_threat: 0.3           # Threat zone avoidance
 
-    # Threat Zone Parameters (RRT* cost weighting)
-    manager/threat_weight: 10.0               # α: RRT* edge cost multiplier (cost = dist × (1 + α·threat))
+    # Threat weighting in RRT* edge cost (cost = dist * (1 + alpha * threat))
+    manager/threat_weight: 10.0
 
-    # Safety Distance Settings
-    optimization/swarm_clearance: 0.5          # Min distance between drones (m)
+    optimization/swarm_clearance: 0.5
 
-    # Formation Type (default)
     optimization/formation_type: 2
 
-    # GCOPTER smoothedL1 penalty smoothing factor
-    optimization/smoothing_eps: 0.01           # SmoothingEps (GCOPTER default: 1e-2)
+    # Smoothing factor for smoothedL1 penalty
+    optimization/smoothing_eps: 0.01
 
-    # Dynamics Constraints (GCOPTER: MaxVelMag=4.0, MaxBdrMag=2.1→acc≈5.0)
-    optimization/max_vel: 3.0                  # Max velocity (m/s) (= MaxVelMag)
-    optimization/max_acc: 5.0                  # Max acceleration (m/s²)
+    # Dynamic limits
+    optimization/max_vel: 3.0
+    optimization/max_acc: 5.0
 
-    # Path Manager Parameters
-    manager/max_vel: 3.0                       # Max velocity for path manager (m/s)
-    manager/max_acc: 5.0                       # Max acceleration for path manager (m/s²)
+    manager/max_vel: 3.0
+    manager/max_acc: 5.0
 
-    # SFC Corridor Generation Parameters
-    manager/sfc_progress: 5.0                  # Step size along path for polytope generation (m), smaller = denser corridor
-    manager/sfc_range: 3.0                     # Obstacle search radius per segment (m), larger = wider coverage
-    manager/length_per_piece: 9999.0              # GCOPTER style: split long polytopes into pieces of this length (m)
+    # MINCO piece granularity (m per piece).
+    # Smaller -> more pieces -> more inner points -> higher optimization DoF.
+    manager/length_per_piece: 9999.0
 
-    # Ground / Terrain Limits
-    manager/z_min: 0.0                         # Minimum flight altitude (m), trajectory cannot go below this
-    manager/terrain_clearance: 1.0             # Min height above terrain surface (m) for collision check
-    manager/terrain_sample_spacing: 1.0        # Terrain surface point sampling interval (m) for SFC generation
+    # Precomputed terrain ESDF (both optional). Flat binary format (.esdf).
+    #   save_terrain_esdf: write .esdf after the first successful build.
+    #   load_terrain_esdf: read .esdf instead of voxelizing (fast startup).
+    # Usage: set save once, run, then switch to load for subsequent runs.
+    manager/save_terrain_esdf: ""
+    manager/load_terrain_esdf: "/home/ros/ws/dev/MMP/src/mmp_terrain/data/terrain.esdf"
 
     # Hungarian Assignment Parameters
     fsm/hungarian_distance_weight: 1.0

@@ -23,24 +23,19 @@
 */
 
 /*
-    Modified for MMP: Replaced OMPL-based planPath with a self-contained RRT* implementation.
-    convexCover and shortCut are kept unchanged from the original GCOPTER.
+    Modified for MMP: trimmed to the self-contained RRT* implementation only.
+    Original SFC helpers (convexCover, shortCut, firi, geo_utils) were removed
+    once SDF-based planning replaced the corridor pipeline.
 */
 
 #ifndef SFC_GEN_HPP
 #define SFC_GEN_HPP
 
-#include "geo_utils.hpp"
-#include "firi.hpp"
-
-#include <deque>
 #include <algorithm>
 #include <memory>
 #include <random>
 #include <vector>
-#include <unordered_set>
 #include <Eigen/Eigen>
-#include <cstdio>
 
 namespace sfc_gen
 {
@@ -353,168 +348,14 @@ namespace sfc_gen
         }
         std::reverse(p.begin(), p.end());
 
-        // Shortcutting: remove redundant waypoints where direct connection is
-        // both collision-free AND lower cost (accounts for threat zones)
-        if (p.size() > 2)
-        {
-            // Pre-compute cumulative cost along the path
-            std::vector<double> cum_cost(p.size(), 0.0);
-            for (size_t k = 1; k < p.size(); ++k) {
-                cum_cost[k] = cum_cost[k-1] + segmentThreatCost(p[k-1], p[k], mapPtr);
-            }
-
-            std::vector<Eigen::Vector3d> shortened;
-            shortened.push_back(p.front());
-            size_t i = 0;
-            while (i < p.size() - 1)
-            {
-                size_t farthest = i + 1;
-                for (size_t j = p.size() - 1; j > i + 1; --j)
-                {
-                    if (isSegmentFree(p[i], p[j], mapPtr, step_size * 0.5))
-                    {
-                        double shortcut_cost = segmentThreatCost(p[i], p[j], mapPtr);
-                        double detour_cost = cum_cost[j] - cum_cost[i];
-                        // Only shortcut if it doesn't increase cost
-                        if (shortcut_cost <= detour_cost * 1.05) {
-                            farthest = j;
-                            break;
-                        }
-                    }
-                }
-                shortened.push_back(p[farthest]);
-                i = farthest;
-            }
-            p = shortened;
-        }
+        // Shortcutting removed: downstream path_shortening (SDF + threat)
+        // handles redundant-waypoint removal with better information. Keeping
+        // RRT*'s raw tree path preserves waypoint density so MINCO/L-BFGS
+        // have enough inner points to shape the trajectory.
 
         return best_cost;
     }
 
-    // ===================== convexCover (unchanged from GCOPTER) =====================
-
-    inline void convexCover(const std::vector<Eigen::Vector3d> &path,
-                            const std::vector<Eigen::Vector3d> &points,
-                            const Eigen::Vector3d &lowCorner,
-                            const Eigen::Vector3d &highCorner,
-                            const double &progress,
-                            const double &range,
-                            std::vector<Eigen::MatrixX4d> &hpolys,
-                            const double eps = 1.0e-6)
-    {
-        hpolys.clear();
-        const int n = path.size();
-        Eigen::Matrix<double, 6, 4> bd = Eigen::Matrix<double, 6, 4>::Zero();
-        bd(0, 0) = 1.0;
-        bd(1, 0) = -1.0;
-        bd(2, 1) = 1.0;
-        bd(3, 1) = -1.0;
-        bd(4, 2) = 1.0;
-        bd(5, 2) = -1.0;
-
-        Eigen::MatrixX4d hp, gap;
-        Eigen::Vector3d a, b = path[0];
-        std::vector<Eigen::Vector3d> valid_pc;
-        std::vector<Eigen::Vector3d> bs;
-        valid_pc.reserve(points.size());
-        for (int i = 1; i < n;)
-        {
-            a = b;
-            if ((a - path[i]).norm() > progress)
-            {
-                b = (path[i] - a).normalized() * progress + a;
-            }
-            else
-            {
-                b = path[i];
-                i++;
-            }
-            bs.emplace_back(b);
-
-            bd(0, 3) = -std::min(std::max(a(0), b(0)) + range, highCorner(0));
-            bd(1, 3) = +std::max(std::min(a(0), b(0)) - range, lowCorner(0));
-            bd(2, 3) = -std::min(std::max(a(1), b(1)) + range, highCorner(1));
-            bd(3, 3) = +std::max(std::min(a(1), b(1)) - range, lowCorner(1));
-            bd(4, 3) = -std::min(std::max(a(2), b(2)) + range, highCorner(2));
-            bd(5, 3) = +std::max(std::min(a(2), b(2)) - range, lowCorner(2));
-
-            valid_pc.clear();
-            for (const Eigen::Vector3d &p : points)
-            {
-                if ((bd.leftCols<3>() * p + bd.rightCols<1>()).maxCoeff() < 0.0)
-                {
-                    valid_pc.emplace_back(p);
-                }
-            }
-            Eigen::Map<const Eigen::Matrix<double, 3, -1, Eigen::ColMajor>> pc(valid_pc[0].data(), 3, valid_pc.size());
-
-            firi::firi(bd, pc, a, b, hp);
-
-            if (hpolys.size() != 0)
-            {
-                const Eigen::Vector4d ah(a(0), a(1), a(2), 1.0);
-                int active_sum = ((hp * ah).array() > -eps).cast<int>().sum() +
-                                 ((hpolys.back() * ah).array() > -eps).cast<int>().sum();
-                // Gap polytope은 a가 두 polytope의 실제 공통 꼭짓점에 가까울 때만 삽입.
-                // 원본 threshold(3)는 blocker 밀도가 높은 환경에서 과도 발동 → 얇은 중복
-                // polytope 생성. threshold를 5로 올려 극단 케이스만 gap 삽입.
-                if (active_sum >= 5)
-                {
-                    std::fprintf(stderr,
-                        "[convexCover] gap polytope inserted at (%.2f,%.2f,%.2f), active_sum=%d\n",
-                        a(0), a(1), a(2), active_sum);
-                    firi::firi(bd, pc, a, a, gap, 1);
-                    hpolys.emplace_back(gap);
-                }
-            }
-
-            hpolys.emplace_back(hp);
-        }
-    }
-
-    // ===================== shortCut (unchanged from GCOPTER) =====================
-
-    inline void shortCut(std::vector<Eigen::MatrixX4d> &hpolys)
-    {
-        std::vector<Eigen::MatrixX4d> htemp = hpolys;
-        if (htemp.size() == 1)
-        {
-            Eigen::MatrixX4d headPoly = htemp.front();
-            htemp.insert(htemp.begin(), headPoly);
-        }
-        hpolys.clear();
-
-        int M = htemp.size();
-        Eigen::MatrixX4d hPoly;
-        bool overlap;
-        std::deque<int> idices;
-        idices.push_front(M - 1);
-        for (int i = M - 1; i >= 0; i--)
-        {
-            for (int j = 0; j < i; j++)
-            {
-                if (j < i - 1)
-                {
-                    overlap = geo_utils::overlap(htemp[i], htemp[j], 0.01);
-                }
-                else
-                {
-                    overlap = true;
-                }
-                if (overlap)
-                {
-                    idices.push_front(j);
-                    i = j + 1;
-                    break;
-                }
-            }
-        }
-        for (const auto &ele : idices)
-        {
-            hpolys.push_back(htemp[ele]);
-        }
-    }
-
-}
+} // namespace sfc_gen
 
 #endif

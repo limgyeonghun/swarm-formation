@@ -6,7 +6,6 @@
 #include <chrono>
 #include <fstream>
 #include <rclcpp/rclcpp.hpp>
-#include <path_planner/gcopter/geo_utils.hpp>
 #include <swarm_graph/swarm_graph.hpp>
 #include "../../common/log_manager.hpp"
 
@@ -16,6 +15,7 @@ using LogManager = swarm_formation::LogManager;
 #include "plan_container.hpp"
 #include "poly_traj_utils.hpp"
 #include "munkres_algorithm.hpp"
+#include "path_planner/sdf/sdf_manager.h"
 
 #define LOG_INFO(msg, ...) do { \
   if (!enable_debug_logs_) { \
@@ -43,11 +43,10 @@ using LogManager = swarm_formation::LogManager;
 
 namespace ego_planner
 {
-  // Air defense threat zone (shared definition with path_manager)
+  // Air defense threat zone (shared definition with path_manager).
   struct ThreatZone {
     Eigen::Vector3d center;
     double detection_range;
-    double engagement_range;
     double max_threat_level;
   };
 
@@ -129,21 +128,12 @@ namespace ego_planner
 
     rclcpp::Node::SharedPtr node_;
 
-    // SFC corridor data (GCOPTER-style piece-to-polytope mapping)
-    std::vector<Eigen::MatrixX4d> sfc_hpolys_;  // H-polytope corridor
-    Eigen::VectorXi hpoly_piece_idx_;            // hpoly index for each trajectory piece
-    Eigen::VectorXi pieces_per_poly_;            // pieces per polytope (set by path_manager)
-    double smoothing_eps_;                        // smoothedL1 smoothing factor
+    // SDF-based obstacle avoidance (replaces SFC corridor penalty).
+    const path_planner::sdf::SDFManager *sdf_manager_{nullptr};
+    double obstacle_clearance_{0.5};  // safety margin used by SDF penalty
+    double smoothing_eps_;             // smoothedL1 smoothing factor
 
-    // V-polytope parameterization (GCOPTER-style: points guaranteed inside corridor)
-    typedef Eigen::Matrix3Xd PolyhedronV;
-    typedef std::vector<PolyhedronV> PolyhedraV;
-    PolyhedraV sfc_vpolys_;           // V-polytope corridor (from processCorridor)
-    Eigen::VectorXi vpoly_idx_;       // Maps each inner point to its V-polytope index
-    int spatial_dim_{0};              // Total xi dimension = sum of V-polytope vertex counts
-    bool use_vpoly_param_{true};      // V-polytope parameterization enabled
-
-    // Threat zone data for trajectory optimization (2nd stage: fine-tuning within SFC)
+    // Threat zone data for trajectory optimization.
     std::vector<ThreatZone> threat_zones_;
     bool use_threat_zones_{false};
 
@@ -154,10 +144,8 @@ namespace ego_planner
 
     void setParam(const rclcpp::Node::SharedPtr &node);
     void setLogManager(swarm_formation::LogManager::Ptr log_manager);
-    void setSFCCorridor(const std::vector<Eigen::MatrixX4d> &hpolys) { sfc_hpolys_ = hpolys; }
-    void setSFCVPolytopes(const std::vector<Eigen::Matrix3Xd> &vpolys) { sfc_vpolys_ = vpolys; }
-    void setPiecesPerPoly(const Eigen::VectorXi &pieces_per_poly) { pieces_per_poly_ = pieces_per_poly; }
-    void buildPiecePolytopeMapping(int piece_num);
+    void setSDFManager(const path_planner::sdf::SDFManager *sdf) { sdf_manager_ = sdf; }
+    void setObstacleClearance(double c) { obstacle_clearance_ = c; }
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
     void setDroneId(const int drone_id);
@@ -206,10 +194,9 @@ namespace ego_planner
     template <typename EIGENVEC>
     void addPVAGradCost2CT(EIGENVEC &gdT, Eigen::VectorXd &costs, const int &K);
 
-    bool corridorGradCostP(const int piece_idx,
-                           const Eigen::Vector3d &p,
-                           Eigen::Vector3d &gradp,
-                           double &costp);
+    bool sdfGradCostP(const Eigen::Vector3d &p,
+                      Eigen::Vector3d &gradp,
+                      double &costp);
 
     bool swarmGradCostP(const int i_dp,
                         const double t,
@@ -276,39 +263,8 @@ namespace ego_planner
 
     bool checkCollision(void);
 
-    // Jerk metric calculation functions
     double computeTotalJerk(const poly_traj::Trajectory &traj);
     double computeMaxJerk(const poly_traj::Trajectory &traj);
-
-    // GCOPTER V-polytope parameterization functions
-    static void forwardP(const double *xi_data,
-                         const Eigen::VectorXi &vIdx,
-                         const PolyhedraV &vPolys,
-                         Eigen::Matrix3Xd &P);
-
-    static void backwardGradP(const double *xi_data,
-                              const Eigen::VectorXi &vIdx,
-                              const PolyhedraV &vPolys,
-                              const Eigen::Matrix3Xd &gradP,
-                              double *gradXi_data);
-
-    static void normRestrictionLayer(const double *xi_data,
-                                     const Eigen::VectorXi &vIdx,
-                                     const PolyhedraV &vPolys,
-                                     double &cost,
-                                     double *gradXi_data);
-
-    static double costTinyNLS(void *ptr,
-                              const double *x, double *grad, const int n);
-
-    void backwardP(const Eigen::Matrix3Xd &P,
-                   const Eigen::VectorXi &vIdx,
-                   const PolyhedraV &vPolys,
-                   double *xi_data);
-
-    void buildVPolyMapping(int piece_num);
-
-    static double costFunctionCallbackVPoly(void *func_data, const double *x, double *grad, const int n);
 
   public:
     typedef std::unique_ptr<PolyTrajOptimizer> Ptr;

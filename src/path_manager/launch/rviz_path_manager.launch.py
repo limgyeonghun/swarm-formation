@@ -43,17 +43,6 @@ def generate_launch_description():
             default_value='false',
             description='Disable file logging (logs will only appear in console)'
         ),
-        DeclareLaunchArgument(
-            'threat_sfc_mode',
-            default_value='hybrid',
-            description='SFC threat processing mode for experiments: obstacle | freespace | hybrid'
-        ),
-        DeclareLaunchArgument(
-            'experiment_scenario',
-            default_value='default',
-            description='Experiment scenario tag written to CSV (free string)'
-        ),
-
         # Include base path_manager launch with RViz defaults
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(path_manager_launch),
@@ -66,8 +55,6 @@ def generate_launch_description():
                 'drone_id': LaunchConfiguration('drone_id'),
                 'record_bag': LaunchConfiguration('record_bag'),
                 'disable_file_logging': LaunchConfiguration('disable_file_logging'),
-                'threat_sfc_mode': LaunchConfiguration('threat_sfc_mode'),
-                'experiment_scenario': LaunchConfiguration('experiment_scenario'),
             }.items()
         ),
     ])

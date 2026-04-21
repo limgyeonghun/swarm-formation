@@ -82,6 +82,27 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   ${PATH_MANAGER_DEPENDENCIES}
 )
 
+# Link path_planner_sdf (CPU ESDF library installed by the path_planner package).
+# OpenMP is required because the SDF library uses parallel EDT sweeps.
+get_filename_component(PATH_PLANNER_PREFIX
+    "${path_planner_DIR}/../../.." ABSOLUTE)
+find_library(PATH_PLANNER_SDF_LIB
+    NAMES path_planner_sdf
+    HINTS "${PATH_PLANNER_PREFIX}/lib"
+    REQUIRED)
+message(STATUS "path_manager: linking ${PATH_PLANNER_SDF_LIB}")
+
+find_package(OpenMP)
+# Plain signature (ament_target_dependencies uses plain style, so mixing
+# keyword would break). OpenMP compile/link flags are attached as raw flags
+# instead of the imported target to avoid leaking the target into our
+# ament export set (downstream packages should not need find_package(OpenMP)).
+target_link_libraries(${PROJECT_NAME}_lib ${PATH_PLANNER_SDF_LIB})
+if(OpenMP_CXX_FOUND)
+  target_compile_options(${PROJECT_NAME}_lib PRIVATE ${OpenMP_CXX_FLAGS})
+  target_link_libraries(${PROJECT_NAME}_lib ${OpenMP_CXX_LIBRARIES})
+endif()
+
 target_include_directories(${PROJECT_NAME}_lib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_cpp>

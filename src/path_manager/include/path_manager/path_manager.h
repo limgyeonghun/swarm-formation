@@ -3,7 +3,9 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include "path_planner/gcopter/sfc_gen.hpp"
-#include "path_planner/gcopter/geo_utils.hpp"
+#include "path_planner/sdf/sdf_manager.h"
+#include "path_planner/sdf/sdf_query_adapter.h"
+#include "path_planner/sdf/path_shortening.h"
 #include "path_optimizer/poly_traj_optimizer.h"
 #include "path_optimizer/plan_container.hpp"
 #include "../../common/log_manager.hpp"
@@ -30,16 +32,6 @@ namespace path_manager
     RECTANGLE
   };
 
-  // SFC blocker 주입 정책 (실험용)
-  //   OBSTACLE : 모든 threat zone을 장애물로 취급 (항상 blocker 주입)
-  //   FREESPACE: 모든 threat zone을 자유공간으로 취급 (blocker 주입 안 함)
-  //   HYBRID   : 기본 동작. breakthrough 분류에 따라 zone별로 다르게 처리
-  enum class ThreatSFCMode {
-    OBSTACLE,
-    FREESPACE,
-    HYBRID
-  };
-
   struct Obstacle {
     Eigen::Vector3d center;
     ObstacleShape shape;
@@ -52,12 +44,12 @@ namespace path_manager
     Obstacle(const Eigen::Vector3d& c, double width, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(height) {}
   };
 
-  // Air defense threat zone (방공망)
+  // Air defense threat zone. Single Gaussian centered at `center` with
+  // support out to `detection_range` (sigma = range/3). Peak = max_threat_level.
   struct ThreatZone {
     Eigen::Vector3d center;
-    double detection_range;    // Outer range: detected but low threat
-    double engagement_range;   // Inner range: high threat (missile engagement)
-    double max_threat_level;   // Peak threat at center (0~)
+    double detection_range;
+    double max_threat_level;
   };
 
   // Terrain elevation data extracted from GridMap
@@ -127,69 +119,6 @@ namespace path_manager
     }
   };
 
-  // Collision check: geometry obstacles + terrain elevation + threat cost
-  struct ObstacleQueryAdapter {
-    const std::vector<Obstacle> *obstacles = nullptr;
-    const TerrainData *terrain = nullptr;
-    const std::vector<ThreatZone> *threat_zones = nullptr;
-    double safety_margin = 0.5;  // Extra clearance around obstacles
-    double terrain_clearance = 0.0;  // Min height above terrain
-    double threat_weight = 10.0;  // α: threat cost multiplier for RRT* edge cost
-
-    // Hard collision check (physical obstacles + terrain only)
-    int query(const Eigen::Vector3d &pos) const {
-      // Check geometry obstacles
-      if (obstacles) {
-        for (const auto &obs : *obstacles) {
-          Eigen::Vector2d diff_2d(pos.x() - obs.center.x(), pos.y() - obs.center.y());
-          double dist_2d = diff_2d.norm();
-
-          if (obs.shape == ObstacleShape::CIRCLE) {
-            double radius = (obs.param1 > 0) ? obs.param1 : 0.5;
-            if (dist_2d < radius + safety_margin) return 1;
-          } else if (obs.shape == ObstacleShape::RECTANGLE) {
-            double half_w = obs.param1 / 2.0 + safety_margin;
-            double half_h = obs.param2 / 2.0 + safety_margin;
-            if (std::abs(pos.x() - obs.center.x()) < half_w &&
-                std::abs(pos.y() - obs.center.y()) < half_h) return 1;
-          }
-        }
-      }
-      // Check terrain collision
-      if (terrain && terrain->valid) {
-        float elev = terrain->getElevation(pos.x(), pos.y());
-        if (elev > -1e10 && pos.z() < elev + terrain_clearance) return 1;
-      }
-      return 0;
-    }
-
-    // Threat level at a position (soft cost, not a hard obstacle)
-    // Returns 0.0 if no threat, higher values for more dangerous positions
-    // Threat level at a position: continuous Gaussian over detection range.
-    // No engagement/detection split — detection itself is hazardous
-    // (survivability-first). Threat decays smoothly from center to zero at
-    // detection_range, so RRT* naturally routes through weakest overlap when
-    // penetration is unavoidable.
-    double getThreatLevel(const Eigen::Vector3d &pos) const {
-      if (!threat_zones || threat_zones->empty()) return 0.0;
-      double total_threat = 0.0;
-      for (const auto &tz : *threat_zones) {
-        double dist = (pos - tz.center).norm();
-        if (dist < tz.detection_range) {
-          double sigma = tz.detection_range / 3.0;
-          total_threat += tz.max_threat_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
-        }
-      }
-      return total_threat;
-    }
-
-    // Threat cost multiplier for RRT* edge cost: cost = dist * getThreatCostMultiplier(pos)
-    double getThreatCostMultiplier(const Eigen::Vector3d &pos) const {
-      double threat = getThreatLevel(pos);
-      return 1.0 + threat_weight * threat;
-    }
-  };
-
   class PathManager
   {
   public:
@@ -236,7 +165,6 @@ namespace path_manager
 
     void setLengthPerPiece(double val) { length_per_piece_ = val; }
     void setObstacleClearance(double val) { obstacle_clearance_ = val; }
-    void setTerrainClearance(double val) { terrain_clearance_ = val; }
 
     // Emergency stop: generate hovering trajectory at current position
     bool EmergencyStop(const Eigen::Vector3d& stop_pos);
@@ -274,42 +202,49 @@ namespace path_manager
     std::vector<Eigen::Vector3d> simple_path_;
     std::vector<Obstacle> obstacle_centers_;
     std::vector<ThreatZone> threat_zones_;
-    std::vector<bool> threat_breakthrough_;  // per-threat: true=돌파 대상(blocker 제외), false=우회
-    double threat_weight_;  // α for RRT* cost: edge_cost = dist * (1 + α * threat)
-
-    // 실험용 SFC threat 처리 모드 스위치
-    ThreatSFCMode threat_sfc_mode_ = ThreatSFCMode::HYBRID;
-    std::string experiment_scenario_ = "default";  // CSV 태그용
-    std::ofstream experiment_csv_;
-
-    // SFC corridor data
-    std::vector<Eigen::MatrixX4d> global_hpolys_;     // Global SFC corridor (H-polytopes)
-    std::vector<Eigen::Matrix3Xd> global_vpolys_;    // Global SFC corridor (V-polytopes, for optimizer)
-    std::vector<Eigen::Vector3d> obstacle_points_;      // Obstacle point cloud for SFC generation
-    Eigen::Vector3d map_lower_bound_;                   // Map bounds
+    double threat_weight_;
+    Eigen::Vector3d map_lower_bound_;
     Eigen::Vector3d map_upper_bound_;
     std::vector<LocalTrajData> swarm_traj_;
     double max_vel_;
     double max_acc_;
     double length_per_piece_ = 2.0;
     double obstacle_clearance_ = 0.5;
-    double sfc_progress_;
-    double sfc_range_;
-    double z_min_;
-    double terrain_clearance_;
-    double terrain_sample_spacing_;
     TerrainData terrain_data_;
+
+    // ESDF map for SDF-based RRT* queries (phase 3).
+    // Built from terrain + obstacle_centers_ inside planGlobalTraj.
+    path_planner::sdf::SDFManager sdf_manager_;
+    double sdf_voxel_size_ = 1.0;  // m
+
+    // Precomputed-ESDF paths (both optional, via yaml).
+    //   load: if set and file present, skip voxelization on first plan.
+    //   save: if set, write the freshly built ESDF after first build.
+    // When either is set, the ESDF covers the full loaded terrain (not the
+    // per-mission bbox) so the cached map is reusable across missions.
+    std::string save_terrain_esdf_path_;
+    std::string load_terrain_esdf_path_;
+    bool sdf_loaded_from_file_ = false;
+
+    // Full-terrain bbox used when save/load is active. Computed once from
+    // terrain_data_ metadata on first use.
+    bool terrain_bbox_computed_ = false;
+    Eigen::Vector3d terrain_bbox_lo_ = Eigen::Vector3d::Zero();
+    Eigen::Vector3d terrain_bbox_hi_ = Eigen::Vector3d::Zero();
+    bool computeTerrainBBox(Eigen::Vector3d* lo, Eigen::Vector3d* hi);
+
+    // Rebuilds sdf_manager_ from current terrain + obstacles, covering the
+    // bounding box given in world coords. Returns true on success.
+    bool buildSDFForBounds(const Eigen::Vector3d &lo, const Eigen::Vector3d &hi);
+
     ego_planner::PolyTrajOptimizer::Ptr poly_traj_opt_;
     bool is_optimizer_initialized_;
     Eigen::Vector3d current_start_pt_, current_target_pt_;
     bool has_valid_state_;
 
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr simple_path_pub_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr sfc_corridor_pub_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr shortest_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr ctrl_points_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr rrt_path_pub_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr obstacle_points_pub_;
 
     std::shared_ptr<swarm_formation::LogManager> log_manager_;
     bool enable_debug_logs_;
@@ -318,33 +253,6 @@ namespace path_manager
     int current_drone_id_;
     std::string current_formation_type_;
     std::vector<Eigen::Vector3d> current_formation_pattern_;
-
-
-    // GCOPTER-style shortest path through corridor overlaps
-    typedef Eigen::Matrix3Xd PolyhedronV;
-    typedef Eigen::MatrixX4d PolyhedronH;
-    typedef std::vector<PolyhedronV> PolyhedraV;
-    typedef std::vector<PolyhedronH> PolyhedraH;
-
-    // 실험용 헬퍼 (PolyhedronV typedef 뒤에 선언 필요)
-    void openExperimentCsvIfNeeded();
-    static double computeAabbVolume(const PolyhedronV &vpoly);
-    static double computePolytopeVolumeAabb(const Eigen::MatrixX4d &hpoly);
-
-    void publishSFCCorridor(const PolyhedraH &hPolys);
-    void publishShortestPath(const Eigen::Matrix3Xd &path);
-
-    bool processCorridor(const PolyhedraH &hPs, PolyhedraV &vPs);
-
-    static double costDistance(void *ptr,
-                               const Eigen::VectorXd &xi,
-                               Eigen::VectorXd &gradXi);
-
-    void getShortestPath(const Eigen::Vector3d &ini,
-                         const Eigen::Vector3d &fin,
-                         const PolyhedraV &vPolys,
-                         const double &smoothD,
-                         Eigen::Matrix3Xd &path);
 
     void setInitialFromPath(const Eigen::Matrix3Xd &path,
                             const double &speed,

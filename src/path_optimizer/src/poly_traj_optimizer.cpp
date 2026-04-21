@@ -25,24 +25,6 @@ namespace ego_planner
 
     jerkOpt_.reset(iniState, finState, piece_num_);
 
-    // Build piece-to-polytope mapping
-    if (!sfc_hpolys_.empty()) {
-      buildPiecePolytopeMapping(piece_num_);
-    }
-
-    // Build V-polytope mapping if V-polytope parameterization is active
-    bool vpoly_active = use_vpoly_param_ && !sfc_vpolys_.empty() && !sfc_hpolys_.empty();
-    if (vpoly_active) {
-      buildVPolyMapping(piece_num_);
-      if (spatial_dim_ <= 0 || vpoly_idx_.size() != piece_num_ - 1) {
-        if (log_manager_) {
-          log_manager_->warnf("[V-POLY] buildVPolyMapping failed (spatial_dim=%d, vpoly_idx=%d), falling back to legacy",
-                              spatial_dim_, (int)vpoly_idx_.size());
-        }
-        vpoly_active = false;
-      }
-    }
-
     Eigen::Vector3d start_pos = iniState.col(0);
 
     double final_cost;
@@ -71,73 +53,28 @@ namespace ego_planner
 
     int result;
 
-    if (vpoly_active)
-    {
-      // === V-POLYTOPE PATH: xi parameterization ===
-      // Variable layout: x = [tau(piece_num_) | xi(spatial_dim_)]
-      variable_num_ = piece_num_ + spatial_dim_;
-      std::vector<double> q(variable_num_);
+    // Direct 3D coordinate optimization with SDF-based obstacle penalty.
+    variable_num_ = 4 * (piece_num_ - 1) + 1;
+    std::vector<double> q(variable_num_);
+    memcpy(q.data(), initInnerPts.data(), initInnerPts.size() * sizeof(double));
+    Eigen::Map<Eigen::VectorXd> Vt(q.data() + initInnerPts.size(), initT.size());
+    RealT2VirtualT(initT, Vt);
 
-      // Initialize tau (virtual time) from initT
-      Eigen::Map<Eigen::VectorXd> tau_init(q.data(), piece_num_);
-      RealT2VirtualT(initT, tau_init);
+    t1 = node_->get_clock()->now();
 
-      // Initialize xi by projecting initial 3D inner points to V-polytope space
-      Eigen::Matrix3Xd initP = initInnerPts;
-      backwardP(initP, vpoly_idx_, sfc_vpolys_, q.data() + piece_num_);
+    result = lbfgs::lbfgs_optimize(
+        variable_num_,
+        q.data(),
+        &final_cost,
+        PolyTrajOptimizer::costFunctionCallback,
+        NULL,
+        PolyTrajOptimizer::earlyExitCallback,
+        this,
+        &lbfgs_params);
 
-      if (log_manager_ && enable_debug_logs_) {
-          log_manager_->infof("[V-POLY] Optimization: variable_num=%d (tau=%d + xi=%d), pieces=%d",
-                              variable_num_, piece_num_, spatial_dim_, piece_num_);
-      }
-
-      t1 = node_->get_clock()->now();
-
-      result = lbfgs::lbfgs_optimize(
-          variable_num_,
-          q.data(),
-          &final_cost,
-          PolyTrajOptimizer::costFunctionCallbackVPoly,
-          NULL,
-          PolyTrajOptimizer::earlyExitCallback,
-          this,
-          &lbfgs_params);
-
-      // Extract final trajectory from optimized variables
-      Eigen::Map<const Eigen::VectorXd> tau_final(q.data(), piece_num_);
-      Eigen::VectorXd T_final(piece_num_);
-      VirtualT2RealT(tau_final, T_final);
-      Eigen::Matrix3Xd P_final;
-      forwardP(q.data() + piece_num_, vpoly_idx_, sfc_vpolys_, P_final);
-      jerkOpt_.generate(P_final, T_final);
-    }
-    else
-    {
-      // === LEGACY PATH: direct 3D coordinate optimization ===
-      variable_num_ = 4 * (piece_num_ - 1) + 1;
-      std::vector<double> q(variable_num_);
-      memcpy(q.data(), initInnerPts.data(), initInnerPts.size() * sizeof(double));
-      Eigen::Map<Eigen::VectorXd> Vt(q.data() + initInnerPts.size(), initT.size());
-      RealT2VirtualT(initT, Vt);
-
-      t1 = node_->get_clock()->now();
-
-      result = lbfgs::lbfgs_optimize(
-          variable_num_,
-          q.data(),
-          &final_cost,
-          PolyTrajOptimizer::costFunctionCallback,
-          NULL,
-          PolyTrajOptimizer::earlyExitCallback,
-          this,
-          &lbfgs_params);
-    }
-
-    // Log L-BFGS result
     if (log_manager_ && enable_debug_logs_) {
         const char* result_str = lbfgs::lbfgs_strerror(result);
-        log_manager_->infof("L-BFGS Result: %d (%s), mode=%s", result, result_str,
-                            vpoly_active ? "V-POLY" : "LEGACY");
+        log_manager_->infof("L-BFGS Result: %d (%s)", result, result_str);
         log_manager_->infof("Iteration info: costFunction calls=%d, max_iterations=%d", iter_num_, lbfgs_params.max_iterations);
     }
 
@@ -210,40 +147,20 @@ namespace ego_planner
     double t = 0.0;
     collision_check_time_end_ = T_end;
 
-    if (!sfc_hpolys_.empty())
+    if (sdf_manager_ && sdf_manager_->hasData())
     {
-      // SFC corridor-based collision check
       for (int i = 0; i < i_end; i++)
       {
         Eigen::Vector3d pos = traj.getPos(t);
-
-        // Check if point is inside any polytope in the corridor
-        bool inside_corridor = false;
-        for (const auto &hp : sfc_hpolys_)
-        {
-          Eigen::VectorXd viola = hp.leftCols<3>() * pos + hp.rightCols<1>();
-          // 부동소수점 노이즈로 start/goal이 경계 위에서 살짝 밖으로 판정되는 것 방지
-          if (viola.maxCoeff() <= 1.0e-4)
-          {
-            inside_corridor = true;
-            break;
-          }
-        }
-
-        if (!inside_corridor)
-        {
-          LOG_WARN("[COLLISION] t=%.3f pos=(%.3f, %.3f, %.3f) outside SFC corridor",
-                   t, pos.x(), pos.y(), pos.z());
+        float d = sdf_manager_->getDistance(pos);
+        if (std::isfinite(d) && d < 0.0f) {
+          LOG_WARN("[COLLISION] t=%.3f pos=(%.3f, %.3f, %.3f) d=%.3f inside obstacle",
+                   t, pos.x(), pos.y(), pos.z(), d);
           occ = true;
           break;
         }
-
         t += dt;
       }
-    }
-    else
-    {
-      LOG_WARN("[COLLISION] No SFC corridor available for collision check");
     }
 
     return occ;
@@ -331,80 +248,6 @@ namespace ego_planner
     }
 
     return smoo_cost + obs_swarm_feas_qvar_costs.sum() + time_cost;
-  }
-
-  // V-Polytope parameterization cost function callback.
-  // Variable layout: x = [tau(N) | xi(spatial_dim)]
-  // Key difference from legacy: xi -> P via forwardP (guaranteed inside SFC),
-  // gradients flow back via backwardGradP. No corridor penalty needed.
-  double PolyTrajOptimizer::costFunctionCallbackVPoly(void *func_data, const double *x, double *grad, const int n)
-  {
-    PolyTrajOptimizer *opt = reinterpret_cast<PolyTrajOptimizer *>(func_data);
-    opt->min_ellip_dist2_ = std::numeric_limits<double>::max();
-
-    const int dimTau = opt->piece_num_;
-    const int dimXi = opt->spatial_dim_;
-
-    // Map optimization variables: [tau | xi]
-    const double *tau_data = x;
-    const double *xi_data = x + dimTau;
-    double *gradTau_data = grad;
-    double *gradXi_data = grad + dimTau;
-
-    // 1. Forward transform: tau -> T (real durations)
-    Eigen::Map<const Eigen::VectorXd> tau(tau_data, dimTau);
-    Eigen::VectorXd T(opt->piece_num_);
-    opt->VirtualT2RealT(tau, T);
-
-    // 2. Forward transform: xi -> P (3D inner points, guaranteed inside SFC)
-    Eigen::Matrix3Xd P;
-    forwardP(xi_data, opt->vpoly_idx_, opt->sfc_vpolys_, P);
-
-    // 3. Generate MINCO trajectory
-    opt->jerkOpt_.generate(P, T);
-
-    // 4. Smoothness (jerk energy) cost + gradient
-    Eigen::VectorXd gradT(opt->piece_num_);
-    double smoo_cost = 0;
-    opt->initAndGetSmoothnessGradCost2PT(gradT, smoo_cost);
-
-    // 5. Penalty costs: feasibility + swarm + formation (NO corridor, NO sqrvariance)
-    Eigen::VectorXd obs_swarm_feas_qvar_costs(6);
-    opt->addPVAGradCost2CT(gradT, obs_swarm_feas_qvar_costs, opt->cps_num_prePiece_);
-
-    // 6. Adjoint gradient propagation: gdC -> gradP (gradient w.r.t. inner points)
-    Eigen::Matrix3Xd gradP(3, opt->piece_num_ - 1);
-    opt->jerkOpt_.getGrad2TP(gradT, gradP);
-
-    // 7. Backward transform: gradP -> gradXi (chain rule through V-polytope parameterization)
-    memset(gradXi_data, 0, dimXi * sizeof(double));
-    backwardGradP(xi_data, opt->vpoly_idx_, opt->sfc_vpolys_, gradP, gradXi_data);
-
-    // 8. Norm restriction layer: soft penalty to keep ||xi|| near 1
-    double total_cost = smoo_cost + obs_swarm_feas_qvar_costs.sum();
-    normRestrictionLayer(xi_data, opt->vpoly_idx_, opt->sfc_vpolys_, total_cost, gradXi_data);
-
-    // 9. Time cost + gradient (virtual time parameterization)
-    double time_cost = 0;
-    Eigen::Map<Eigen::VectorXd> gradTauMap(gradTau_data, dimTau);
-    opt->VirtualTGradCost(T, tau, gradT, gradTauMap, time_cost);
-
-    opt->iter_num_ += 1;
-
-    // Debug logging
-    if (opt->enable_lbfgs_detail_logs_ && opt->log_manager_ && opt->iter_num_ % 10 == 0) {
-        double final_cost = total_cost + time_cost;
-        opt->log_manager_->infof("[V-POLY L-BFGS] iter=%d, total=%.6f, smooth=%.6f, feas=%.6f, swarm=%.6f, form=%.6f, threat=%.6f, time=%.6f",
-            opt->iter_num_, final_cost, smoo_cost,
-            obs_swarm_feas_qvar_costs(4), obs_swarm_feas_qvar_costs(1),
-            obs_swarm_feas_qvar_costs(2), obs_swarm_feas_qvar_costs(3), time_cost);
-    }
-
-    if (opt->use_formation_) {
-        opt->dbg_cost_formation_ = obs_swarm_feas_qvar_costs(2);
-    }
-
-    return total_cost + time_cost;
   }
 
   int PolyTrajOptimizer::earlyExitCallback(void *func_data, const double *x, const double *g, const double fx,
@@ -520,11 +363,9 @@ namespace ego_planner
 
         cps_.points.col(i_dp) = pos;
 
-        // Obstacle/Corridor cost calculation (SFC corridor-based)
-        // Skip when V-polytope parameterization is active: corridor is structurally guaranteed
-        if (enable_obstacles_ && !sfc_hpolys_.empty() && !use_vpoly_param_) {
-            bool has_corridor_cost = corridorGradCostP(i, pos, gradp, costp);
-            if (has_corridor_cost) {
+        // SDF-based obstacle penalty.
+        if (enable_obstacles_ && sdf_manager_ && sdf_manager_->hasData()) {
+            if (sdfGradCostP(pos, gradp, costp)) {
                 gradViolaPc = beta0 * gradp.transpose();
                 gradViolaPt = alpha * gradp.transpose() * vel;
                 jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
@@ -594,9 +435,8 @@ namespace ego_planner
       t += jerkOpt_.get_T1()(i);
     }
 
-    // Distance variance cost: skip when V-polytope parameterization is active
-    // (not in original GCOPTER; MINCO jerk minimization provides sufficient smoothness)
-    if (!use_vpoly_param_) {
+    // Distance variance cost (spreads inner points evenly).
+    {
       Eigen::MatrixXd gdp;
       double var;
       distanceSqrVarianceWithGradCost2p(cps_.points, gdp, var);
@@ -718,101 +558,32 @@ namespace ego_planner
     return ret;
   }
 
-  void PolyTrajOptimizer::buildPiecePolytopeMapping(int piece_num)
-  {
-    // GCOPTER-style: distribute pieces evenly across polytopes
-    int polyN = sfc_hpolys_.size();
-    if (polyN == 0 || piece_num <= 0)
-    {
-      hpoly_piece_idx_.resize(0);
-      return;
-    }
-
-    hpoly_piece_idx_.resize(piece_num);
-
-    if (polyN == 1)
-    {
-      // All pieces map to the single polytope
-      hpoly_piece_idx_.setZero();
-      return;
-    }
-
-    // path_manager가 계산한 pieces_per_poly_가 있으면 그대로 사용 (GCOPTER 원본 방식).
-    // 없으면 fallback으로 round-robin 분배.
-    Eigen::VectorXi piecesPerPoly;
-    if (pieces_per_poly_.size() == polyN && pieces_per_poly_.sum() == piece_num) {
-      piecesPerPoly = pieces_per_poly_;
-    } else {
-      piecesPerPoly = Eigen::VectorXi::Ones(polyN);
-      int remaining = piece_num - polyN;
-      for (int i = 0; i < remaining; ++i) {
-        piecesPerPoly(i % polyN) += 1;
-      }
-    }
-
-    int j = 0;
-    for (int i = 0; i < polyN; ++i)
-    {
-      for (int k = 0; k < piecesPerPoly(i) && j < piece_num; ++k, ++j)
-      {
-        hpoly_piece_idx_(j) = i;
-      }
-    }
-  }
-
-  bool PolyTrajOptimizer::corridorGradCostP(const int piece_idx,
-                                             const Eigen::Vector3d &p,
-                                             Eigen::Vector3d &gradp,
-                                             double &costp)
+  // SDF-based obstacle penalty.
+  // violation = obstacle_clearance_ - d(p).
+  // If violation > 0, applies smoothedL1 penalty; gradient points away from
+  // obstacle (i.e. opposite to ∇d, since violation = clearance - d).
+  bool PolyTrajOptimizer::sdfGradCostP(const Eigen::Vector3d &p,
+                                        Eigen::Vector3d &gradp,
+                                        double &costp)
   {
     gradp.setZero();
     costp = 0;
 
-    if (sfc_hpolys_.empty()) return false;
+    if (!sdf_manager_ || !sdf_manager_->hasData()) return false;
 
-    // GCOPTER-style: use piece-to-polytope mapping
-    int poly_idx;
-    if (hpoly_piece_idx_.size() > 0 && piece_idx >= 0 && piece_idx < hpoly_piece_idx_.size())
-    {
-      poly_idx = hpoly_piece_idx_(piece_idx);
-    }
-    else
-    {
-      // Fallback: find closest polytope (legacy behavior)
-      double best_max_violation = std::numeric_limits<double>::max();
-      poly_idx = 0;
-      for (size_t k = 0; k < sfc_hpolys_.size(); ++k)
-      {
-        Eigen::VectorXd violations = sfc_hpolys_[k].leftCols<3>() * p + sfc_hpolys_[k].rightCols<1>();
-        double max_viola = violations.maxCoeff();
-        if (max_viola < best_max_violation)
-        {
-          best_max_violation = max_viola;
-          poly_idx = k;
-        }
-      }
-    }
+    float d = 0.0f;
+    Eigen::Vector3d grad_d = Eigen::Vector3d::Zero();
+    if (!sdf_manager_->getDistanceAndGradient(p, &d, &grad_d)) return false;
+    if (!std::isfinite(d)) return false;
 
-    // GCOPTER-style: smoothedL1 penalty for each violating face of assigned polytope
-    bool ret = false;
-    const Eigen::MatrixX4d &hPoly = sfc_hpolys_[poly_idx];
-    int K = hPoly.rows();
+    double violation = obstacle_clearance_ - static_cast<double>(d);
+    double pena, penaD;
+    if (!smoothedL1(violation, smoothing_eps_, pena, penaD)) return false;
 
-    for (int k = 0; k < K; ++k)
-    {
-      Eigen::Vector3d outerNormal = hPoly.row(k).head<3>();
-      double violaPos = outerNormal.dot(p) + hPoly(k, 3);
-
-      double violaPosPena, violaPosPenaD;
-      if (smoothedL1(violaPos, smoothing_eps_, violaPosPena, violaPosPenaD))
-      {
-        gradp += wei_obs_ * violaPosPenaD * outerNormal;
-        costp += wei_obs_ * violaPosPena;
-        ret = true;
-      }
-    }
-
-    return ret;
+    costp = wei_obs_ * pena;
+    // d(violation)/d(p) = -grad_d, so gradp = wei_obs_ * penaD * (-grad_d).
+    gradp = -wei_obs_ * penaD * grad_d;
+    return true;
   }
 
   bool PolyTrajOptimizer::swarmGradCostP(const int i_dp,
@@ -925,15 +696,17 @@ namespace ego_planner
     return false;
   }
 
-  // Continuous Gaussian threat over detection range (no engagement/detection split).
+  // Continuous Gaussian threat over detection range.
   // Matches ObstacleQueryAdapter::getThreatLevel in path_manager.h.
+  // Threat reporting (for logging / RRT* compatibility).
+  // Smooth Gaussian bell used only for informational queries.
   double PolyTrajOptimizer::getThreatLevel(const Eigen::Vector3d &pos) const
   {
     double total_threat = 0.0;
     for (const auto &tz : threat_zones_) {
       double dist = (pos - tz.center).norm();
       if (dist < tz.detection_range) {
-        double sigma = tz.detection_range / 3.0;
+        double sigma = tz.detection_range / 2.0;
         total_threat += tz.max_threat_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
       }
     }
@@ -948,16 +721,20 @@ namespace ego_planner
       double dist = diff.norm();
       if (dist < 1e-6) continue;
       if (dist < tz.detection_range) {
-        double sigma = tz.detection_range / 3.0;
+        double sigma = tz.detection_range / 2.0;
         double sigma2 = sigma * sigma;
         double gauss = tz.max_threat_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
-        // ∇threat = gauss × (−dist/σ²) × (diff/dist) = gauss × (−1/σ²) × diff
         grad += gauss * (-1.0 / sigma2) * diff;
       }
     }
     return grad;
   }
 
+  // Obstacle-like threat penalty.
+  // Outside detection_range: exactly zero (no tail).
+  // Inside:                   smoothedL1 on violation = detection_range - dist.
+  // Per-zone magnitude scales with max_threat_level so stronger SAMs produce
+  // proportionally stronger gradients while the shape stays well-conditioned.
   bool PolyTrajOptimizer::threatGradCostP(const int i_dp,
                                            const Eigen::Vector3d &p,
                                            Eigen::Vector3d &gradp,
@@ -966,15 +743,28 @@ namespace ego_planner
     if (i_dp <= 0 || i_dp >= cps_.cp_size)
       return false;
 
-    double threat = getThreatLevel(p);
-    if (threat > 0.01) {
-      Eigen::Vector3d threat_grad = getThreatGradient(p);
-      // Quadratic cost: smooth penalty proportional to threat^2
-      costp = wei_threat_ * threat * threat;
-      gradp = wei_threat_ * 2.0 * threat * threat_grad;
-      return true;
+    gradp.setZero();
+    costp = 0.0;
+    bool ret = false;
+
+    for (const auto &tz : threat_zones_) {
+      Eigen::Vector3d diff = p - tz.center;
+      double dist = diff.norm();
+      double violation = tz.detection_range - dist;
+      if (violation <= 0.0) continue;
+
+      double pena, penaD;
+      if (!smoothedL1(violation, smoothing_eps_, pena, penaD)) continue;
+
+      double w = wei_threat_ * tz.max_threat_level;
+      costp += w * pena;
+      // violation = R - |p - c|, so ∇violation = -(p - c)/|p - c|.
+      Eigen::Vector3d outward = diff / std::max(dist, 1e-6);
+      gradp += -w * penaD * outward;
+      ret = true;
     }
-    return false;
+
+    return ret;
   }
 
   void PolyTrajOptimizer::distanceSqrVarianceWithGradCost2p(const Eigen::MatrixXd &ps,
@@ -1118,13 +908,9 @@ namespace ego_planner
     node_->declare_parameter("optimization/max_acc", 1.0);
     node_->get_parameter("optimization/max_acc", max_acc_);
 
-    // GCOPTER-style smoothedL1 smoothing factor
+    // smoothedL1 smoothing factor for SDF violation penalty.
     node_->declare_parameter("optimization/smoothing_eps", 0.01);
     node_->get_parameter("optimization/smoothing_eps", smoothing_eps_);
-
-    // V-polytope parameterization (GCOPTER-style: structural corridor guarantee)
-    node_->declare_parameter("optimization/use_vpoly_param", true);
-    node_->get_parameter("optimization/use_vpoly_param", use_vpoly_param_);
 
     // Log initialization based on enable_debug_logs setting
     if (enable_debug_logs_) {
@@ -1331,222 +1117,4 @@ namespace ego_planner
     return max_jerk;
   }
 
-  /* ================================================================
-   *  GCOPTER V-Polytope Parameterization Functions
-   *  Ported from: gcopter.hpp (ZJU-FAST-Lab/GCOPTER)
-   *  Purpose: Guarantee trajectory control points stay inside SFC
-   *           corridor via structural parameterization, not penalty.
-   * ================================================================ */
-
-  // Convert xi weights to 3D positions via V-polytope vertices.
-  // Each inner point is a convex combination of polytope vertices:
-  //   P = V.col(0) + V.rightCols(k-1) * q²  where q = xi.normalized()
-  // Since q² >= 0, the point is guaranteed inside the polytope.
-  // Ported from gcopter.hpp:143-160
-  void PolyTrajOptimizer::forwardP(const double *xi_data,
-                                    const Eigen::VectorXi &vIdx,
-                                    const PolyhedraV &vPolys,
-                                    Eigen::Matrix3Xd &P)
-  {
-    const int sizeP = vIdx.size();
-    P.resize(3, sizeP);
-    for (int i = 0, j = 0, k, l; i < sizeP; i++, j += k)
-    {
-      l = vIdx(i);
-      k = vPolys[l].cols();
-      Eigen::Map<const Eigen::VectorXd> seg(xi_data + j, k);
-      Eigen::VectorXd q = seg.normalized().head(k - 1);
-      P.col(i) = vPolys[l].rightCols(k - 1) * q.cwiseProduct(q) +
-                  vPolys[l].col(0);
-    }
-  }
-
-  // Chain-rule gradient: gradP (w.r.t. 3D positions) -> gradXi (w.r.t. xi weights).
-  // Ported from gcopter.hpp:236-262
-  void PolyTrajOptimizer::backwardGradP(const double *xi_data,
-                                         const Eigen::VectorXi &vIdx,
-                                         const PolyhedraV &vPolys,
-                                         const Eigen::Matrix3Xd &gradP,
-                                         double *gradXi_data)
-  {
-    const int sizeP = vIdx.size();
-    double normInv;
-    Eigen::VectorXd q, gradQ, unitQ;
-    for (int i = 0, j = 0, k, l; i < sizeP; i++, j += k)
-    {
-      l = vIdx(i);
-      k = vPolys[l].cols();
-      Eigen::Map<const Eigen::VectorXd> seg(xi_data + j, k);
-      Eigen::Map<Eigen::VectorXd> gradSeg(gradXi_data + j, k);
-      normInv = 1.0 / seg.norm();
-      unitQ = seg * normInv;
-      gradQ.resize(k);
-      gradQ.head(k - 1) = (vPolys[l].rightCols(k - 1).transpose() * gradP.col(i)).array() *
-                            unitQ.head(k - 1).array() * 2.0;
-      gradQ(k - 1) = 0.0;
-      gradSeg = (gradQ - unitQ * unitQ.dot(gradQ)) * normInv;
-    }
-  }
-
-  // Soft penalty to keep ||xi_segment|| near 1.
-  // If ||q||² > 1, adds penalty = (||q||²-1)³ to prevent runaway norm.
-  // Ported from gcopter.hpp:265-294
-  void PolyTrajOptimizer::normRestrictionLayer(const double *xi_data,
-                                                const Eigen::VectorXi &vIdx,
-                                                const PolyhedraV &vPolys,
-                                                double &cost,
-                                                double *gradXi_data)
-  {
-    const int sizeP = vIdx.size();
-    for (int i = 0, j = 0, k; i < sizeP; i++, j += k)
-    {
-      k = vPolys[vIdx(i)].cols();
-      Eigen::Map<const Eigen::VectorXd> q(xi_data + j, k);
-      Eigen::Map<Eigen::VectorXd> gradQ(gradXi_data + j, k);
-      double sqrNormQ = q.squaredNorm();
-      double sqrNormViolation = sqrNormQ - 1.0;
-      if (sqrNormViolation > 0.0)
-      {
-        double c = sqrNormViolation * sqrNormViolation;
-        double dc = 3.0 * c;
-        c *= sqrNormViolation;
-        cost += c;
-        gradQ += dc * 2.0 * q;
-      }
-    }
-  }
-
-  // Per-point NLS cost for backwardP: find xi that minimizes ||forwardP(xi) - target||².
-  // Ported from gcopter.hpp:162-193
-  double PolyTrajOptimizer::costTinyNLS(void *ptr,
-                                         const double *x, double *grad, const int n)
-  {
-    const Eigen::Matrix3Xd &ovPoly = *(Eigen::Matrix3Xd *)ptr;
-    Eigen::Map<const Eigen::VectorXd> xi(x, n);
-    Eigen::Map<Eigen::VectorXd> gradXi(grad, n);
-
-    const double sqrNormXi = xi.squaredNorm();
-    const double invNormXi = 1.0 / sqrt(sqrNormXi);
-    const Eigen::VectorXd unitXi = xi * invNormXi;
-    const Eigen::VectorXd r = unitXi.head(n - 1);
-    const Eigen::Vector3d delta = ovPoly.rightCols(n - 1) * r.cwiseProduct(r) +
-                                  ovPoly.col(1) - ovPoly.col(0);
-
-    double cost = delta.squaredNorm();
-    gradXi.head(n - 1) = (ovPoly.rightCols(n - 1).transpose() * (2 * delta)).array() *
-                           r.array() * 2.0;
-    gradXi(n - 1) = 0.0;
-    gradXi = (gradXi - unitXi.dot(gradXi) * unitXi).eval() * invNormXi;
-
-    const double sqrNormViolation = sqrNormXi - 1.0;
-    if (sqrNormViolation > 0.0)
-    {
-      double c = sqrNormViolation * sqrNormViolation;
-      const double dc = 3.0 * c;
-      c *= sqrNormViolation;
-      cost += c;
-      gradXi += dc * 2.0 * xi;
-    }
-
-    return cost;
-  }
-
-  // Project 3D inner points to xi space by solving per-point NLS.
-  // Ported from gcopter.hpp:196-233
-  void PolyTrajOptimizer::backwardP(const Eigen::Matrix3Xd &P,
-                                     const Eigen::VectorXi &vIdx,
-                                     const PolyhedraV &vPolys,
-                                     double *xi_data)
-  {
-    const int sizeP = P.cols();
-
-    lbfgs::lbfgs_parameter_t tiny_nls_params;
-    lbfgs::lbfgs_load_default_parameters(&tiny_nls_params);
-    tiny_nls_params.past = 0;
-    tiny_nls_params.delta = 1.0e-5;
-    tiny_nls_params.g_epsilon = 1.0e-6;
-    tiny_nls_params.max_iterations = 128;
-
-    Eigen::Matrix3Xd ovPoly;
-    for (int i = 0, j = 0, k, l; i < sizeP; i++, j += k)
-    {
-      l = vIdx(i);
-      k = vPolys[l].cols();
-
-      // Build ovPoly: col(0)=target point, col(1)=reference vertex, cols(2+)=offset vertices
-      ovPoly.resize(3, k + 1);
-      ovPoly.col(0) = P.col(i);
-      ovPoly.rightCols(k) = vPolys[l];
-
-      // Initialize xi segment uniformly
-      Eigen::Map<Eigen::VectorXd> seg(xi_data + j, k);
-      seg.setConstant(sqrt(1.0 / k));
-
-      double minSqrD;
-      lbfgs::lbfgs_optimize(k, seg.data(), &minSqrD,
-                             &PolyTrajOptimizer::costTinyNLS,
-                             nullptr, nullptr,
-                             &ovPoly, &tiny_nls_params);
-    }
-  }
-
-  // Build mapping: each inner point -> which V-polytope it belongs to.
-  // For N corridor polytopes: 2*N+1 V-polytopes (individual + overlaps).
-  // Interior piece boundaries map to individual V-polytopes (even indices),
-  // polytope-crossing boundaries map to overlap V-polytopes (odd indices).
-  // Mirrors gcopter.hpp:772-791
-  void PolyTrajOptimizer::buildVPolyMapping(int piece_num)
-  {
-    int polyN = sfc_hpolys_.size();
-    if (polyN == 0 || piece_num <= 0 || sfc_vpolys_.empty()) {
-      vpoly_idx_.resize(0);
-      spatial_dim_ = 0;
-      return;
-    }
-
-    // path_manager가 계산한 pieces_per_poly_가 있으면 그대로 사용.
-    Eigen::VectorXi piecesPerPoly;
-    if (pieces_per_poly_.size() == polyN && pieces_per_poly_.sum() == piece_num) {
-      piecesPerPoly = pieces_per_poly_;
-    } else {
-      piecesPerPoly = Eigen::VectorXi::Ones(polyN);
-      if (piece_num > polyN) {
-        int remaining = piece_num - polyN;
-        for (int i = 0; i < remaining; ++i) {
-          piecesPerPoly(i % polyN) += 1;
-        }
-      }
-    }
-
-    // Build vPolyIdx for piece_num - 1 inner points
-    // Mirrors GCOPTER gcopter.hpp:772-791 exactly
-    vpoly_idx_.resize(piece_num - 1);
-    spatial_dim_ = 0;
-    for (int i = 0, j = 0, k; i < polyN; i++)
-    {
-      k = piecesPerPoly(i);
-      for (int l = 0; l < k; l++, j++)
-      {
-        if (l < k - 1)
-        {
-          // Interior point: belongs to individual V-polytope (even index)
-          vpoly_idx_(j) = 2 * i;
-          spatial_dim_ += sfc_vpolys_[2 * i].cols();
-        }
-        else if (i < polyN - 1)
-        {
-          // Boundary point: belongs to overlap V-polytope (odd index)
-          vpoly_idx_(j) = 2 * i + 1;
-          spatial_dim_ += sfc_vpolys_[2 * i + 1].cols();
-        }
-        // Last piece of last polytope: no inner point (j does not index vPolyIdx)
-      }
-    }
-
-    if (log_manager_ && enable_debug_logs_) {
-      log_manager_->infof("[V-POLY] buildVPolyMapping: piece_num=%d, inner_points=%d, spatial_dim=%d, vpolys=%zu",
-                          piece_num, piece_num - 1, spatial_dim_, sfc_vpolys_.size());
-    }
-  }
-
-}
+} // namespace ego_planner

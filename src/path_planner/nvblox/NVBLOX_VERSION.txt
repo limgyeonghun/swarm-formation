@@ -1,0 +1,23 @@
+NVBlox vendored for MMP project
+
+  Version: v0.0.6
+  Source:  https://github.com/nvidia-isaac/nvblox
+  License: Apache-2.0 (see LICENSE.md in this directory)
+
+Build environment tested:
+  Ubuntu 24.04
+  CUDA 12.2, RTX 4060 Ti (CMAKE_CUDA_ARCHITECTURES=89)
+  CMake 3.28, GCC 13.3
+
+Local patches applied:
+  - nvblox/include/nvblox/utils/rates.h
+      + #include <array>
+      (Reason: GCC 13 requires explicit header for std::array)
+
+Upgrade notes:
+  - For CUDA >= 12.4, newer NVBlox tags (v0.0.9+) can be used
+    because cuda::std::not_equal_to becomes available.
+  - For Blackwell (RTX 5090), use CMAKE_CUDA_ARCHITECTURES=120
+    and CUDA 12.8+.
+
+To upgrade, run update_nvblox.sh at the path_planner root.

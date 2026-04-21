@@ -148,16 +148,10 @@ def create_drone_nodes(context, *args, **kwargs):
         # Get mavlink_id from config, or default to index + 1
         mavlink_id = cfg.get('mavlink_id', idx + 1)
 
-        # Experiment parameters (실험용 SFC threat 처리 모드 + 시나리오 태그)
-        threat_sfc_mode = context.perform_substitution(LaunchConfiguration('threat_sfc_mode'))
-        experiment_scenario = context.perform_substitution(LaunchConfiguration('experiment_scenario'))
-
         params = {
             'rviz_simulation': rviz_sim,
             'drone_id':        idx,
             'mavlink_id':      mavlink_id,
-            'manager/threat_sfc_mode': threat_sfc_mode,
-            'experiment/scenario':     experiment_scenario,
         }
         # Note: start_point will be received from TrajectoryCommand message
 
@@ -394,16 +388,6 @@ def generate_launch_description():
             'disable_file_logging',
             default_value='false',
             description='Disable file logging (logs will only appear in console)'
-        ),
-        DeclareLaunchArgument(
-            'threat_sfc_mode',
-            default_value='hybrid',
-            description='SFC threat processing mode for experiments: obstacle | freespace | hybrid'
-        ),
-        DeclareLaunchArgument(
-            'experiment_scenario',
-            default_value='default',
-            description='Experiment scenario tag written to CSV (free string)'
         ),
         OpaqueFunction(function=create_drone_nodes),
     ])

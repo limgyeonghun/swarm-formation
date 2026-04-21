@@ -24,13 +24,13 @@
 
     obstacles: [0.0, -9999.0, 0.0]
 
-    # [cx, cy, cz, detection_range, engagement_range, max_threat_level]
+    # [cx, cy, cz, detection_range, max_threat_level]
     threat_zones: [
        # Main SAM protecting the goal itself (goal is inside!)
-       40.0,   0.0, 0.0, 12.0, 6.0, 150.0,
+       40.0,   0.0, 0.0, 12.0, 150.0,
        # Outer ring — 4 SAMs blocking approach corridors
-       25.0,   0.0, 0.0, 10.0, 5.0,  90.0,
-       55.0,   0.0, 0.0, 10.0, 5.0,  90.0,
-       40.0,  15.0, 0.0, 12.0, 6.0, 100.0,
-       40.0, -15.0, 0.0, 12.0, 6.0, 100.0
+       25.0,   0.0, 0.0, 10.0,  90.0,
+       55.0,   0.0, 0.0, 10.0,  90.0,
+       40.0,  15.0, 0.0, 12.0, 100.0,
+       40.0, -15.0, 0.0, 12.0, 100.0
     ]

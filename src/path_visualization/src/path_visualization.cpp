@@ -648,20 +648,19 @@ void PathVisualization::loadThreatZoneParameters()
   std::vector<double> tz_params;
   this->get_parameter("threat_zones", tz_params);
   RCLCPP_INFO(this->get_logger(), "Threat zone params size: %zu", tz_params.size());
-  if (tz_params.size() >= 6 && tz_params.size() % 6 == 0) {
-    for (size_t i = 0; i < tz_params.size(); i += 6) {
+  if (tz_params.size() >= 5 && tz_params.size() % 5 == 0) {
+    for (size_t i = 0; i < tz_params.size(); i += 5) {
       VisThreatZone tz;
       tz.center = Eigen::Vector3d(tz_params[i], tz_params[i+1], tz_params[i+2]);
       tz.detection_range = tz_params[i+3];
-      tz.engagement_range = tz_params[i+4];
-      tz.max_threat_level = tz_params[i+5];
+      tz.max_threat_level = tz_params[i+4];
       threat_zones_.push_back(tz);
-      RCLCPP_INFO(this->get_logger(), "  ThreatZone #%zu: center=(%.1f,%.1f,%.1f) detect=%.1f engage=%.1f",
+      RCLCPP_INFO(this->get_logger(), "  ThreatZone #%zu: center=(%.1f,%.1f,%.1f) detect=%.1f threat=%.1f",
           threat_zones_.size()-1, tz.center.x(), tz.center.y(), tz.center.z(),
-          tz.detection_range, tz.engagement_range);
+          tz.detection_range, tz.max_threat_level);
     }
   } else if (!tz_params.empty()) {
-    RCLCPP_WARN(this->get_logger(), "Invalid threat_zones param size: %zu (must be multiple of 6)", tz_params.size());
+    RCLCPP_WARN(this->get_logger(), "Invalid threat_zones param size: %zu (must be multiple of 5)", tz_params.size());
   }
 }
 

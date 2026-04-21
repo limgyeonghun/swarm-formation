@@ -34,7 +34,6 @@ struct Obstacle {
 struct VisThreatZone {
   Eigen::Vector3d center;
   double detection_range;
-  double engagement_range;
   double max_threat_level;
 };
 
