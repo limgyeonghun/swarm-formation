@@ -11,8 +11,8 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-# Set optimization flags  
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g -DNDEBUG")
+# Set optimization flags (match path_planner for consistent Eigen vectorization).
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -mtune=native -ffast-math -funroll-loops -Wall -g -DNDEBUG")
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -Wall -g")
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
