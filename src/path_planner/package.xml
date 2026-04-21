@@ -2,7 +2,7 @@
 <package format="3">
   <name>path_planner</name>
   <version>0.0.1</version>
-  <description>Path planner utilities with GCOPTER SFC generation</description>
+  <description>Path planner utilities: self-contained RRT*, CPU ESDF (FH + OpenMP), flat binary map save/load</description>
   <maintainer email="your@email.com">Your Name</maintainer>
   <license>Apache-2.0</license>
 
