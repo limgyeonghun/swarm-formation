@@ -450,10 +450,10 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
     rclcpp::Time msg_time(msg->start_time);
     double time_diff = (rclcpp::Clock(RCL_ROS_TIME).now() - msg_time).seconds();
     if (std::abs(time_diff) > 0.25) {
-        RCLCPP_WARN(node_->get_logger(), "Time stamp diff: Local - Remote Agent %d = %fs",
-                   msg->drone_id, time_diff);
-        log_manager_->warnf("Time stamp diff: Local - Remote Agent %d = %fs",
-                   msg->drone_id, time_diff);
+        // RCLCPP_WARN(node_->get_logger(), "Time stamp diff: Local - Remote Agent %d = %fs",
+        //            msg->drone_id, time_diff);
+        // log_manager_->warnf("Time stamp diff: Local - Remote Agent %d = %fs",
+        //            msg->drone_id, time_diff);
         return;
     }
 

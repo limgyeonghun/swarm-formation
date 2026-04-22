@@ -15,11 +15,11 @@
     # Cost function weights (scale matched to proven main-branch values).
     optimization/weight_obstacle: 50000.0     # SDF violation penalty
     optimization/weight_swarm: 0.0            # Swarm collision avoidance
-    optimization/weight_feasibility: 10000.0   # Vel/acc feasibility
+    optimization/weight_feasibility: 20000.0   # Vel/acc feasibility
     optimization/weight_sqrvariance: 10000.0  # Distance variance (smoothness)
-    optimization/weight_time: 20.0            # Time optimality
+    optimization/weight_time: 10.0          # Time optimality (raise to prevent duration blow-up that produces loop-shaped trajectories)
     optimization/weight_formation: 0.0        # Formation keeping
-    optimization/weight_threat: 0.3           # Threat zone avoidance
+    optimization/weight_threat: 0.0           # Threat zone avoidance
 
     # Threat weighting in RRT* edge cost (cost = dist * (1 + alpha * threat))
     manager/threat_weight: 10.0
@@ -27,9 +27,6 @@
     optimization/swarm_clearance: 0.5
 
     optimization/formation_type: 2
-
-    # Smoothing factor for smoothedL1 penalty
-    optimization/smoothing_eps: 0.01
 
     # Dynamic limits
     optimization/max_vel: 3.0

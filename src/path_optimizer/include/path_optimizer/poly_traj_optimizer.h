@@ -131,7 +131,6 @@ namespace ego_planner
     // SDF-based obstacle avoidance (replaces SFC corridor penalty).
     const path_planner::sdf::SDFManager *sdf_manager_{nullptr};
     double obstacle_clearance_{0.5};  // safety margin used by SDF penalty
-    double smoothing_eps_;             // smoothedL1 smoothing factor
 
     // Threat zone data for trajectory optimization.
     std::vector<ThreatZone> threat_zones_;
@@ -194,7 +193,8 @@ namespace ego_planner
     template <typename EIGENVEC>
     void addPVAGradCost2CT(EIGENVEC &gdT, Eigen::VectorXd &costs, const int &K);
 
-    bool sdfGradCostP(const Eigen::Vector3d &p,
+    bool sdfGradCostP(const int i_dp,
+                      const Eigen::Vector3d &p,
                       Eigen::Vector3d &gradp,
                       double &costp);
 
@@ -215,31 +215,6 @@ namespace ego_planner
                              double &gradt,
                              double &grad_prev_t,
                              double &costp);
-
-    // GCOPTER-style smoothed L1 penalty (smooth at 0, linear for large violations)
-    static inline bool smoothedL1(const double &x, const double &mu,
-                                  double &f, double &df)
-    {
-      if (x < 0.0)
-      {
-        return false;
-      }
-      else if (x > mu)
-      {
-        f = x - 0.5 * mu;
-        df = 1.0;
-        return true;
-      }
-      else
-      {
-        const double xdmu = x / mu;
-        const double sqrxdmu = xdmu * xdmu;
-        const double mumxd2 = mu - 0.5 * x;
-        f = mumxd2 * sqrxdmu * xdmu;
-        df = sqrxdmu * ((-0.5) * xdmu + 3.0 * mumxd2 / mu);
-        return true;
-      }
-    }
 
     bool threatGradCostP(const int i_dp,
                          const Eigen::Vector3d &p,

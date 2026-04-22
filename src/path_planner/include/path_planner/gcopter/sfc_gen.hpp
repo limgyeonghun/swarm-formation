@@ -32,12 +32,8 @@
 #define SFC_GEN_HPP
 
 #include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <functional>
 #include <memory>
 #include <random>
-#include <unordered_map>
 #include <vector>
 #include <Eigen/Eigen>
 
@@ -50,79 +46,6 @@ namespace sfc_gen
         Eigen::Vector3d pos;
         int parent;
         double cost;
-    };
-
-    // Uniform 3D spatial hash used by RRT* to accelerate nearest / radius
-    // queries from O(n) to O(local). Cell size is chosen close to the RRT*
-    // step size so each cell holds a small number of nodes in practice.
-    struct SpatialHash3D
-    {
-        struct Key
-        {
-            int32_t x, y, z;
-            bool operator==(const Key &o) const
-            { return x == o.x && y == o.y && z == o.z; }
-        };
-        struct Hasher
-        {
-            size_t operator()(const Key &k) const noexcept
-            {
-                // Mix with large primes; xor-shift variant.
-                size_t h = static_cast<size_t>(k.x) * 73856093u;
-                h ^= static_cast<size_t>(k.y) * 19349663u;
-                h ^= static_cast<size_t>(k.z) * 83492791u;
-                return h;
-            }
-        };
-
-        double cell_size = 1.0;
-        double inv_cell = 1.0;
-        std::unordered_map<Key, std::vector<int>, Hasher> cells;
-
-        inline void init(double cs)
-        {
-            cell_size = cs;
-            inv_cell = 1.0 / cs;
-            cells.clear();
-        }
-
-        inline Key toKey(const Eigen::Vector3d &p) const
-        {
-            return Key{
-                static_cast<int32_t>(std::floor(p.x() * inv_cell)),
-                static_cast<int32_t>(std::floor(p.y() * inv_cell)),
-                static_cast<int32_t>(std::floor(p.z() * inv_cell))};
-        }
-
-        inline void insert(const Eigen::Vector3d &p, int idx)
-        {
-            cells[toKey(p)].push_back(idx);
-        }
-
-        // Visit every node index whose cell lies within `radius` of p.
-        // fn is called with each candidate index; caller does the true
-        // distance check (cells give you a superset).
-        template <typename Fn>
-        inline void forEachWithinRadius(const Eigen::Vector3d &p,
-                                         double radius,
-                                         Fn &&fn) const
-        {
-            const int r = static_cast<int>(std::ceil(radius * inv_cell));
-            const Key c = toKey(p);
-            for (int dx = -r; dx <= r; ++dx)
-            {
-                for (int dy = -r; dy <= r; ++dy)
-                {
-                    for (int dz = -r; dz <= r; ++dz)
-                    {
-                        Key k{c.x + dx, c.y + dy, c.z + dz};
-                        auto it = cells.find(k);
-                        if (it == cells.end()) continue;
-                        for (int idx : it->second) fn(idx);
-                    }
-                }
-            }
-        }
     };
 
     // Check if a straight line from a to b is collision-free
@@ -184,9 +107,11 @@ namespace sfc_gen
         const double goal_threshold = step_size * 2.0;
         const double rewire_radius_base = 3.0;
 
-        // Constrain Z sampling near start/goal Z to focus 2D search
+        // Z sampling: allow climbing up to the bbox ceiling so RRT* can route
+        // over terrain obstacles (mountains) when start/goal are near-sea-level.
+        // Lower bound clipped near start/goal to avoid wasting samples underground.
         const double z_lo = std::max(lb(2), std::min(s(2), g(2)) - 5.0);
-        const double z_hi = std::min(hb(2), std::max(s(2), g(2)) + 5.0);
+        const double z_hi = hb(2);
 
         std::mt19937_64 rng(std::chrono::steady_clock::now().time_since_epoch().count());
         std::uniform_real_distribution<double> dist_x(lb(0), hb(0));
@@ -203,12 +128,6 @@ namespace sfc_gen
         std::vector<RRTNode> tree;
         tree.reserve(max_iter + 1);
         tree.push_back({s, -1, 0.0});
-
-        // Spatial hash for O(local) nearest / radius queries during RRT*.
-        // Cell size = step_size: each cell holds ~O(1) nodes on average.
-        SpatialHash3D spatial;
-        spatial.init(step_size);
-        spatial.insert(s, 0);
 
         // Children index for fast cost propagation during rewiring
         std::vector<std::vector<int>> children;
@@ -275,32 +194,16 @@ namespace sfc_gen
                 rand_pt = Eigen::Vector3d(dist_x(rng), dist_y(rng), dist_z(rng));
             }
 
-            // Find nearest node via spatial hash. Expanding ring search until
-            // at least one cell hit; fall back to linear scan on miss (rare,
-            // only when rand_pt is far outside any occupied cell).
-            int nearest_idx = -1;
-            double nearest_dist = std::numeric_limits<double>::max();
-            int search_cells = 1;
-            while (nearest_idx < 0 && search_cells <= 64)
+            // Find nearest node
+            int nearest_idx = 0;
+            double nearest_dist = (tree[0].pos - rand_pt).norm();
+            for (int i = 1; i < (int)tree.size(); ++i)
             {
-                const double radius = search_cells * spatial.cell_size;
-                spatial.forEachWithinRadius(rand_pt, radius,
-                    [&](int idx) {
-                        double d = (tree[idx].pos - rand_pt).norm();
-                        if (d < nearest_dist) { nearest_dist = d; nearest_idx = idx; }
-                    });
-                if (nearest_idx >= 0) break;
-                search_cells *= 2;
-            }
-            if (nearest_idx < 0)
-            {
-                // Ultimate fallback (should not happen with a populated tree).
-                nearest_idx = 0;
-                nearest_dist = (tree[0].pos - rand_pt).norm();
-                for (int i = 1; i < (int)tree.size(); ++i)
+                double d = (tree[i].pos - rand_pt).norm();
+                if (d < nearest_dist)
                 {
-                    double d = (tree[i].pos - rand_pt).norm();
-                    if (d < nearest_dist) { nearest_dist = d; nearest_idx = i; }
+                    nearest_dist = d;
+                    nearest_idx = i;
                 }
             }
 
@@ -336,32 +239,31 @@ namespace sfc_gen
             int best_parent = nearest_idx;
             double best_new_cost = tree[nearest_idx].cost + segmentThreatCost(tree[nearest_idx].pos, new_pt, mapPtr);
 
-            // Collect neighbors within rewire_radius via spatial hash.
             std::vector<int> near_idxs;
-            near_idxs.reserve(32);
-            spatial.forEachWithinRadius(new_pt, rewire_radius,
-                [&](int i) {
-                    double d = (tree[i].pos - new_pt).norm();
-                    if (d >= rewire_radius) return;
+            for (int i = 0; i < (int)tree.size(); ++i)
+            {
+                double d = (tree[i].pos - new_pt).norm();
+                if (d < rewire_radius)
+                {
                     near_idxs.push_back(i);
-                    // Quick reject before collision/threat cost computation.
-                    if (tree[i].cost + d >= best_new_cost) return;
+                    // Quick check: even pure distance can't beat current best?
+                    if (tree[i].cost + d >= best_new_cost)
+                        continue;
                     if (isSegmentFree(tree[i].pos, new_pt, mapPtr, step_size * 0.5))
                     {
-                        double potential_cost = tree[i].cost +
-                            segmentThreatCost(tree[i].pos, new_pt, mapPtr);
+                        double potential_cost = tree[i].cost + segmentThreatCost(tree[i].pos, new_pt, mapPtr);
                         if (potential_cost < best_new_cost)
                         {
                             best_parent = i;
                             best_new_cost = potential_cost;
                         }
                     }
-                });
+                }
+            }
 
-            // Add new node (and register it in the spatial hash).
+            // Add new node
             int new_idx = tree.size();
             tree.push_back({new_pt, best_parent, best_new_cost});
-            spatial.insert(new_pt, new_idx);
             if (best_parent >= 0) children[best_parent].push_back(new_idx);
 
             // Rewire neighbors with OMPL-style cost propagation (updateChildCosts)

@@ -326,7 +326,7 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
   }
 
   // Use dark blue color for optimized path (local trajectory)
-  publishPath(optimized_path, drone_id, 0.0f, 0.0f, 1.0f, 1.0, optimized_traj_pub_);
+  publishPath(optimized_path, drone_id, 0.0f, 0.0f, 1.0f, 0.6, optimized_traj_pub_);
   
   // Only publish obstacles if obstacle avoidance is enabled
   if (enable_obstacles_)
@@ -555,7 +555,7 @@ void PathVisualization::publishPath(const std::vector<Eigen::Vector3d> &path, in
 {
   std::string ns_prefix = (pub == global_traj_pub_) ? "global_path_drone_" : "opt_path_drone_";
   auto marker = createMarker(ns_prefix + std::to_string(id), id,
-                             visualization_msgs::msg::Marker::LINE_STRIP, 0.05, r, g, b, alpha);
+                             visualization_msgs::msg::Marker::LINE_STRIP, 0.4, r, g, b, alpha);
   for (const auto &pt : path)
   {
     geometry_msgs::msg::Point p;

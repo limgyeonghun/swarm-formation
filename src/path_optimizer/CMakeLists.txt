@@ -11,8 +11,12 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-# Set optimization flags (match path_planner for consistent Eigen vectorization).
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -mtune=native -ffast-math -funroll-loops -Wall -g -DNDEBUG")
+# Set optimization flags.
+# NOTE: -march=native was tried but triggered a SIGSEGV in Eigen assignment
+# (likely an AVX alignment mismatch with path_manager, which doesn't set
+# -march=native). Leaving at -O3 only until all packages that share Eigen
+# matrices are compiled with consistent vector ISA flags.
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -funroll-loops -Wall -g -DNDEBUG")
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -Wall -g")
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")

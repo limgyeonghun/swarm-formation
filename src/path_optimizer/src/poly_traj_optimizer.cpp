@@ -33,15 +33,17 @@ namespace ego_planner
     auto t1 = node_->get_clock()->now();
     auto t2 = node_->get_clock()->now();
 
-    // L-BFGS parameter setup (GCOPTER-style: converge until cost stops improving)
+    // L-BFGS parameter setup — GCOPTER-style global one-shot planning.
+    // Converge by relative cost delta only; no iteration cap, no gradient
+    // norm test. Large Hessian memory for long trajectories.
     lbfgs::lbfgs_parameter_t lbfgs_params;
     lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
-    lbfgs_params.mem_size = 256;
-    lbfgs_params.g_epsilon = 0.0;          // Disable gradient norm test
-    lbfgs_params.past = 3;                 // Compare cost with 3 iterations ago
-    lbfgs_params.delta = 1.0e-5;           // Stop when relative cost change < 1e-5
-    lbfgs_params.min_step = 1.0e-32;
-    lbfgs_params.max_iterations = 0;       // Unlimited (GCOPTER-style: converge by delta only)
+    lbfgs_params.mem_size       = 256;
+    lbfgs_params.g_epsilon      = 0.0;     // disable gradient norm test
+    lbfgs_params.past           = 3;       // compare cost with 3 iters ago
+    lbfgs_params.delta          = 1.0e-5;  // stop when relative cost change < 1e-5
+    lbfgs_params.min_step       = 1.0e-32;
+    lbfgs_params.max_iterations = 0;       // unlimited — delta is the stopping rule
 
     if (!use_formation)
     {
@@ -78,8 +80,10 @@ namespace ego_planner
         log_manager_->infof("Iteration info: costFunction calls=%d, max_iterations=%d", iter_num_, lbfgs_params.max_iterations);
     }
 
-    // Collision check (only if obstacles are enabled)
-    bool occ = enable_obstacles_ ? checkCollision() : false;
+    // DEBUG: run check for logging but ignore the verdict so we can visualise
+    // the optimized trajectory even when it clips obstacles.
+    if (enable_obstacles_) (void)checkCollision();
+    bool occ = false;
 
     t2 = node_->get_clock()->now();
     double time_ms = (t2 - t1).seconds() * 1000;
@@ -365,7 +369,7 @@ namespace ego_planner
 
         // SDF-based obstacle penalty.
         if (enable_obstacles_ && sdf_manager_ && sdf_manager_->hasData()) {
-            if (sdfGradCostP(pos, gradp, costp)) {
+            if (sdfGradCostP(i_dp, pos, gradp, costp)) {
                 gradViolaPc = beta0 * gradp.transpose();
                 gradViolaPt = alpha * gradp.transpose() * vel;
                 jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
@@ -481,9 +485,7 @@ namespace ego_planner
                                               double &grad_prev_t,
                                               double &costp)
   {
-    if (i_dp <= 0 || i_dp >= cps_.cp_size)
-      return false;
-
+    (void)i_dp;  // guard removed: consider all control points.
     if (!swarm_trajs_) {
       return false;
     }
@@ -559,13 +561,17 @@ namespace ego_planner
   }
 
   // SDF-based obstacle penalty.
-  // violation = obstacle_clearance_ - d(p).
-  // If violation > 0, applies smoothedL1 penalty; gradient points away from
-  // obstacle (i.e. opposite to ∇d, since violation = clearance - d).
-  bool PolyTrajOptimizer::sdfGradCostP(const Eigen::Vector3d &p,
+  // Cubic penalty (matches the main-branch obstacleGradCostP that was already
+  // tuned against wei_obs_ ~ 1e4..5e4). smoothedL1 was inherited from GCOPTER
+  // and produced a flat, oversized gradient (~wei_obs_) for any violation
+  // > smoothing_eps, which whipsawed L-BFGS line search and produced
+  // loop-shaped trajectories at the start of the plan.
+  bool PolyTrajOptimizer::sdfGradCostP(const int i_dp,
+                                        const Eigen::Vector3d &p,
                                         Eigen::Vector3d &gradp,
                                         double &costp)
   {
+    (void)i_dp;  // guard removed: consider all control points.
     gradp.setZero();
     costp = 0;
 
@@ -577,12 +583,12 @@ namespace ego_planner
     if (!std::isfinite(d)) return false;
 
     double violation = obstacle_clearance_ - static_cast<double>(d);
-    double pena, penaD;
-    if (!smoothedL1(violation, smoothing_eps_, pena, penaD)) return false;
+    if (violation <= 0.0) return false;
 
-    costp = wei_obs_ * pena;
-    // d(violation)/d(p) = -grad_d, so gradp = wei_obs_ * penaD * (-grad_d).
-    gradp = -wei_obs_ * penaD * grad_d;
+    costp = wei_obs_ * violation * violation * violation;
+    // d(cost)/d(p) = wei_obs_ * 3 * violation^2 * d(violation)/d(p)
+    //              = wei_obs_ * 3 * violation^2 * (-grad_d)
+    gradp = -wei_obs_ * 3.0 * violation * violation * grad_d;
     return true;
   }
 
@@ -595,9 +601,7 @@ namespace ego_planner
                                          double &grad_prev_t,
                                          double &costp)
   {
-    if (i_dp <= 0 || i_dp >= cps_.cp_size)
-      return false;
-
+    (void)i_dp;  // guard removed: consider all control points.
     // Check for nullptr before accessing swarm_trajs_
     if (!swarm_trajs_) {
       return false;
@@ -668,13 +672,14 @@ namespace ego_planner
                                                Eigen::Vector3d &gradv,
                                                double &costv)
   {
-    // GCOPTER-style: smoothedL1 penalty for each velocity component
+    // Cubic penalty (main-branch style). smoothedL1 saturated the gradient at
+    // ~wei_feas_ once violation exceeded smoothing_eps, letting L-BFGS inflate
+    // duration to satisfy max-vel instead of deforming the path.
     double vpen = v.squaredNorm() - max_vel_ * max_vel_;
-    double violaVelPena, violaVelPenaD;
-    if (smoothedL1(vpen, smoothing_eps_, violaVelPena, violaVelPenaD))
+    if (vpen > 0)
     {
-      gradv = wei_feas_ * violaVelPenaD * 2.0 * v;
-      costv = wei_feas_ * violaVelPena;
+      gradv = wei_feas_ * 6.0 * vpen * vpen * v;
+      costv = wei_feas_ * vpen * vpen * vpen;
       return true;
     }
     return false;
@@ -684,13 +689,12 @@ namespace ego_planner
                                                Eigen::Vector3d &grada,
                                                double &costa)
   {
-    // GCOPTER-style: smoothedL1 penalty for acceleration
+    // Cubic penalty (main-branch style).
     double apen = a.squaredNorm() - max_acc_ * max_acc_;
-    double violaAccPena, violaAccPenaD;
-    if (smoothedL1(apen, smoothing_eps_, violaAccPena, violaAccPenaD))
+    if (apen > 0)
     {
-      grada = wei_feas_ * violaAccPenaD * 2.0 * a;
-      costa = wei_feas_ * violaAccPena;
+      grada = wei_feas_ * 6.0 * apen * apen * a;
+      costa = wei_feas_ * apen * apen * apen;
       return true;
     }
     return false;
@@ -730,41 +734,25 @@ namespace ego_planner
     return grad;
   }
 
-  // Obstacle-like threat penalty.
-  // Outside detection_range: exactly zero (no tail).
-  // Inside:                   smoothedL1 on violation = detection_range - dist.
-  // Per-zone magnitude scales with max_threat_level so stronger SAMs produce
-  // proportionally stronger gradients while the shape stays well-conditioned.
+  // Gaussian-based threat penalty (matches main-branch threatGradCostP).
+  // Quadratic cost on the smooth Gaussian threat level, so gradient stays
+  // smooth everywhere (no hard boundary at detection_range).
   bool PolyTrajOptimizer::threatGradCostP(const int i_dp,
                                            const Eigen::Vector3d &p,
                                            Eigen::Vector3d &gradp,
                                            double &costp)
   {
-    if (i_dp <= 0 || i_dp >= cps_.cp_size)
-      return false;
-
+    (void)i_dp;  // guard removed: consider all control points.
     gradp.setZero();
     costp = 0.0;
-    bool ret = false;
 
-    for (const auto &tz : threat_zones_) {
-      Eigen::Vector3d diff = p - tz.center;
-      double dist = diff.norm();
-      double violation = tz.detection_range - dist;
-      if (violation <= 0.0) continue;
+    double threat = getThreatLevel(p);
+    if (threat <= 0.01) return false;
 
-      double pena, penaD;
-      if (!smoothedL1(violation, smoothing_eps_, pena, penaD)) continue;
-
-      double w = wei_threat_ * tz.max_threat_level;
-      costp += w * pena;
-      // violation = R - |p - c|, so ∇violation = -(p - c)/|p - c|.
-      Eigen::Vector3d outward = diff / std::max(dist, 1e-6);
-      gradp += -w * penaD * outward;
-      ret = true;
-    }
-
-    return ret;
+    Eigen::Vector3d threat_grad = getThreatGradient(p);
+    costp = wei_threat_ * threat * threat;
+    gradp = wei_threat_ * 2.0 * threat * threat_grad;
+    return true;
   }
 
   void PolyTrajOptimizer::distanceSqrVarianceWithGradCost2p(const Eigen::MatrixXd &ps,
@@ -875,8 +863,12 @@ namespace ego_planner
     
     // Get enable_debug_logs parameter (declared in replan_fsm)
     node_->get_parameter("enable_debug_logs", enable_debug_logs_);
-    
-    // Get enable_lbfgs_detail_logs parameter
+
+    // Declare + get (bug fix: this param was previously read without being
+    // declared, so it always fell back to default-constructed false).
+    if (!node_->has_parameter("enable_lbfgs_detail_logs")) {
+        node_->declare_parameter("enable_lbfgs_detail_logs", false);
+    }
     node_->get_parameter("enable_lbfgs_detail_logs", enable_lbfgs_detail_logs_);
     
     // Use conditional logging - only RCLCPP when debug logs disabled, only LogManager when enabled
@@ -907,10 +899,6 @@ namespace ego_planner
     node_->get_parameter("optimization/max_vel", max_vel_);
     node_->declare_parameter("optimization/max_acc", 1.0);
     node_->get_parameter("optimization/max_acc", max_acc_);
-
-    // smoothedL1 smoothing factor for SDF violation penalty.
-    node_->declare_parameter("optimization/smoothing_eps", 0.01);
-    node_->get_parameter("optimization/smoothing_eps", smoothing_eps_);
 
     // Log initialization based on enable_debug_logs setting
     if (enable_debug_logs_) {

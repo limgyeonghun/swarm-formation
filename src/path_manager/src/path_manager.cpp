@@ -115,6 +115,12 @@ namespace path_manager
             "/drone_" + std::to_string(drone_id) + "/ctrl_points", 10);
         rrt_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
             "/drone_" + std::to_string(drone_id) + "/rrt_path", 10);
+        shorten_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
+            "/drone_" + std::to_string(drone_id) + "/shorten_path", 10);
+        init_minco_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
+            "/drone_" + std::to_string(drone_id) + "/init_minco_path", 10);
+        esdf_occ_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
+            "/drone_" + std::to_string(drone_id) + "/esdf_occupied", 1);
     }
 
     void PathManager::updateRobotState(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& local_target_pt)
@@ -211,8 +217,9 @@ namespace path_manager
             all_points.push_back(wp);
         }
 
-        // === STEP 2: RRT* path planning through waypoints ===
-        auto t_rrt_start = std::chrono::steady_clock::now();
+        // === STEP 2 preamble: build SDF-based auxiliary query adapter. ===
+        // Kept for logging/debug of obstacle_centers_; A* uses sdf_manager_
+        // directly via astar_.setSDF().
         // SDF-based collision query. Threat zones stay separate.
         std::vector<path_planner::sdf::ThreatZoneLite> sdf_threat_zones;
         sdf_threat_zones.reserve(threat_zones_.size());
@@ -282,8 +289,18 @@ namespace path_manager
 
         // If save or load is requested, use the full-terrain bbox so the
         // cached ESDF is reusable across missions.
-        const bool use_cache =
+        // Load/save of a precomputed terrain ESDF only makes sense when a
+        // terrain GridMap has actually been received. Without terrain data,
+        // fall back to mission-bbox voxelization and skip file I/O entirely.
+        const bool has_terrain = terrain_data_.valid;
+        const bool want_cache =
             !load_terrain_esdf_path_.empty() || !save_terrain_esdf_path_.empty();
+        const bool use_cache = want_cache && has_terrain;
+        if (want_cache && !has_terrain) {
+            log_manager_->warnf("save/load_terrain_esdf set but no terrain loaded; "
+                                "skipping ESDF file I/O for this plan.");
+        }
+
         Eigen::Vector3d sdf_lo = map_lower_bound_;
         Eigen::Vector3d sdf_hi = map_upper_bound_;
         if (use_cache) {
@@ -299,8 +316,8 @@ namespace path_manager
             }
         }
 
-        // Try loading a precomputed ESDF on the first plan.
-        if (!sdf_loaded_from_file_ && !load_terrain_esdf_path_.empty()) {
+        // Try loading a precomputed ESDF on the first plan (terrain must exist).
+        if (use_cache && !sdf_loaded_from_file_ && !load_terrain_esdf_path_.empty()) {
             if (sdf_manager_.loadFromFile(load_terrain_esdf_path_, sdf_lo, sdf_hi)) {
                 sdf_loaded_from_file_ = true;
                 log_manager_->infof("SDF loaded from %s (skipping voxelization)",
@@ -311,14 +328,14 @@ namespace path_manager
             }
         }
 
-        // Build SDF (fallback or no load).
+        // Build SDF (fallback or no cache).
         if (!sdf_loaded_from_file_) {
             if (!buildSDFForBounds(sdf_lo, sdf_hi)) {
                 RCLCPP_ERROR(node_->get_logger(), "SDF build failed");
                 return false;
             }
-            // Persist on first successful build if requested.
-            if (!save_terrain_esdf_path_.empty()) {
+            // Persist on first successful build if requested (terrain must exist).
+            if (use_cache && !save_terrain_esdf_path_.empty()) {
                 if (sdf_manager_.saveToFile(save_terrain_esdf_path_)) {
                     log_manager_->infof("SDF saved to %s",
                                         save_terrain_esdf_path_.c_str());
@@ -336,6 +353,42 @@ namespace path_manager
                                 d_start, d_goal, obstacle_clearance_);
         }
 
+        // === ESDF occupancy visualization ===
+        // Sample the ESDF on a coarse grid and publish occupied voxels as a
+        // CUBE_LIST so the user can overlay them on the terrain mesh in RViz
+        // to confirm terrain → SDF mapping.
+        if (esdf_occ_pub_) {
+            const double step = 1.0;
+            Eigen::Vector3d lo = map_lower_bound_;
+            Eigen::Vector3d hi = map_upper_bound_;
+            visualization_msgs::msg::Marker cubes;
+            cubes.header.frame_id = "map";
+            cubes.header.stamp = node_->get_clock()->now();
+            cubes.ns = "esdf_occupied";
+            cubes.id = 0;
+            cubes.type = visualization_msgs::msg::Marker::CUBE_LIST;
+            cubes.action = visualization_msgs::msg::Marker::ADD;
+            cubes.pose.orientation.w = 1.0;
+            cubes.scale.x = step; cubes.scale.y = step; cubes.scale.z = step;
+            cubes.color.r = 1.0f; cubes.color.g = 0.1f; cubes.color.b = 0.1f; cubes.color.a = 0.4f;
+            for (double x = lo.x(); x <= hi.x(); x += step) {
+                for (double y = lo.y(); y <= hi.y(); y += step) {
+                    for (double z = lo.z(); z <= hi.z(); z += step) {
+                        Eigen::Vector3d p(x, y, z);
+                        float d = sdf_manager_.getDistance(p);
+                        if (std::isfinite(d) && d < 0.0f) {
+                            geometry_msgs::msg::Point pt;
+                            pt.x = x; pt.y = y; pt.z = z;
+                            cubes.points.push_back(pt);
+                        }
+                    }
+                }
+            }
+            log_manager_->infof("ESDF viz: %zu occupied cubes (step=%.1fm)",
+                                cubes.points.size(), step);
+            esdf_occ_pub_->publish(cubes);
+        }
+
         // Debug: check obstacle query at known obstacle positions
         for (const auto &obs : obstacle_centers_) {
             int q = map_adapter.query(obs.center);
@@ -344,31 +397,75 @@ namespace path_manager
                 (int)obs.shape, obs.param1);
         }
 
+        // === STEP 2: 3D A* search + visibility-thinning simple_path ===
+        // Bind SDF + threat zones to the A* front-end. A* collision check uses
+        // the ESDF (distance < obstacle_clearance_ == blocked), and threat
+        // cost is added to the A* g-score per visited cell.
+        std::vector<path_planner::astar::ThreatZoneLite> astar_threats;
+        astar_threats.reserve(threat_zones_.size());
+        for (const auto &tz : threat_zones_) {
+            astar_threats.push_back({tz.center, tz.detection_range, tz.max_threat_level});
+        }
+        Eigen::Vector3d map_size = map_upper_bound_ - map_lower_bound_;
+        astar_.setLogManager(log_manager_);
+        astar_.setSDF(&sdf_manager_, map_lower_bound_, map_size, sdf_voxel_size_);
+        astar_.setThreatZones(astar_threats.empty() ? nullptr : &astar_threats);
+        // A* margin is larger than the L-BFGS obstacle_clearance so the
+        // front-end picks a "chunky" path that stays well away from terrain,
+        // while the optimizer keeps a tighter safety margin as a last-resort
+        // guard. Extra padding covers voxel quantization (worst case
+        // sqrt(3)/2 * voxel_size) plus a comfortable buffer.
+        const double astar_extra_margin = 1.0;
+        astar_.setObstacleMargin(obstacle_clearance_ + astar_extra_margin);
+        astar_.setThreatWeight(threat_weight_);
+
+        // Ensure the search pool can cover the longest segment in world
+        // units. Pool cells use sdf_voxel_size_ (= A* step); pad a bit.
+        {
+            double max_span = 0.0;
+            for (size_t i = 0; i + 1 < all_points.size(); ++i) {
+                max_span = std::max(max_span,
+                    (all_points[i + 1] - all_points[i]).cwiseAbs().maxCoeff());
+            }
+            int needed = static_cast<int>(std::ceil(max_span / sdf_voxel_size_)) + 20;
+            needed = std::max(needed, 80);
+            Eigen::Vector3i desired(needed, needed, std::min(60, needed));
+            if (!astar_initialized_) {
+                astar_pool_size_ = desired;
+                astar_.initGridMap(astar_pool_size_);
+                astar_initialized_ = true;
+                log_manager_->infof("A* pool allocated: (%d,%d,%d)",
+                    astar_pool_size_.x(), astar_pool_size_.y(), astar_pool_size_.z());
+            } else if (desired != astar_pool_size_) {
+                astar_pool_size_ = desired;
+                astar_.resizePool(astar_pool_size_);
+                log_manager_->infof("A* pool resized: (%d,%d,%d)",
+                    astar_pool_size_.x(), astar_pool_size_.y(), astar_pool_size_.z());
+            }
+        }
+
+        auto t_astar_start = std::chrono::steady_clock::now();
         std::vector<Eigen::Vector3d> full_route;
         full_route.push_back(start_pos);
-
         for (size_t seg = 0; seg < all_points.size() - 1; ++seg)
         {
-            std::vector<Eigen::Vector3d> seg_path;
-            double rrt_timeout = threat_zones_.empty() ? 2.0 : 5.0;
-            double cost = sfc_gen::planPath<path_planner::sdf::SDFQueryAdapter>(
-                all_points[seg], all_points[seg + 1],
-                map_lower_bound_, map_upper_bound_,
-                &map_adapter, rrt_timeout, seg_path);
+            std::vector<Eigen::Vector3d> seg_path =
+                astar_.astarSearchAndGetSimplePath(
+                    sdf_voxel_size_, all_points[seg], all_points[seg + 1],
+                    traj_.local_traj.drone_id);
 
-            log_manager_->infof("RRT* segment %zu: cost=%.3f, path_size=%zu",
-                seg, cost, seg_path.size());
+            log_manager_->infof("A* segment %zu: simple_path_size=%zu",
+                seg, seg_path.size());
 
-            if (std::isinf(cost) || seg_path.empty())
+            if (seg_path.size() < 2)
             {
                 RCLCPP_ERROR(node_->get_logger(),
-                    "RRT* failed for segment %zu: (%.2f,%.2f,%.2f) -> (%.2f,%.2f,%.2f)",
+                    "A* failed for segment %zu: (%.2f,%.2f,%.2f) -> (%.2f,%.2f,%.2f)",
                     seg, all_points[seg].x(), all_points[seg].y(), all_points[seg].z(),
                     all_points[seg+1].x(), all_points[seg+1].y(), all_points[seg+1].z());
                 return false;
             }
 
-            // Append path (skip first point of subsequent segments to avoid duplicates)
             for (size_t i = (seg == 0 ? 0 : 1); i < seg_path.size(); ++i)
             {
                 if (!full_route.empty() &&
@@ -380,12 +477,12 @@ namespace path_manager
         }
 
         auto t_rrt_end = std::chrono::steady_clock::now();
-        log_manager_->infof("RRT* route: %zu waypoints (%.1f ms)",
+        log_manager_->infof("A* route: %zu waypoints (%.1f ms)",
             full_route.size(),
-            std::chrono::duration<double, std::milli>(t_rrt_end - t_rrt_start).count());
+            std::chrono::duration<double, std::milli>(t_rrt_end - t_astar_start).count());
         for (size_t ri = 0; ri < full_route.size(); ++ri) {
             const auto &p = full_route[ri];
-            log_manager_->infof("  RRT*[%zu]: (%.2f, %.2f, %.2f)", ri, p.x(), p.y(), p.z());
+            log_manager_->infof("  A*[%zu]: (%.2f, %.2f, %.2f)", ri, p.x(), p.y(), p.z());
         }
 
         // Publish simple path for visualization
@@ -441,21 +538,38 @@ namespace path_manager
             rrt_path_pub_->publish(dots);
         }
 
-        // === STEP 3: SDF-based path shortening (replaces SFC + shortest-path) ===
-        auto t_shorten_start = std::chrono::steady_clock::now();
-        const std::vector<path_planner::sdf::ThreatZoneLite>* threats_for_short =
-            sdf_threat_zones.empty() ? nullptr : &sdf_threat_zones;
-        std::vector<Eigen::Vector3d> clean_path =
-            path_planner::sdf::shortenPath(sdf_manager_, full_route,
-                                            obstacle_clearance_,
-                                            threats_for_short,
-                                            sdf_voxel_size_);
-        auto t_shorten_end = std::chrono::steady_clock::now();
-        log_manager_->infof("Path shortening: %zu -> %zu waypoints (%.1f ms)",
-            full_route.size(), clean_path.size(),
-            std::chrono::duration<double, std::milli>(t_shorten_end - t_shorten_start).count());
+        // === STEP 3: Feed RRT* waypoints directly to MINCO. ===
+        // RRT* already avoids obstacles at each vertex; keeping those vertices
+        // as piece boundaries (with straight-line interpolation between them)
+        // guarantees the initial trajectory stays on the safe side of the
+        // obstacle margin. Any smoothing attempt (B-spline, greedy shortening)
+        // risks cutting corners inside the obstacle clearance.
+        std::vector<Eigen::Vector3d> clean_path = full_route;
+        log_manager_->infof("Using RRT* path directly: %zu waypoints -> MINCO",
+            clean_path.size());
+
+        // Publish initial path for RViz (orange).
+        if (shorten_path_pub_) {
+            visualization_msgs::msg::Marker line;
+            line.header.frame_id = "map";
+            line.header.stamp = node_->get_clock()->now();
+            line.ns = "shorten_path";
+            line.id = 0;
+            line.type = visualization_msgs::msg::Marker::LINE_STRIP;
+            line.action = visualization_msgs::msg::Marker::ADD;
+            line.pose.orientation.w = 1.0;
+            line.scale.x = 0.3;
+            line.color.r = 1.0f; line.color.g = 0.5f; line.color.b = 0.0f; line.color.a = 1.0f;
+            for (const auto &p : clean_path) {
+                geometry_msgs::msg::Point pt;
+                pt.x = p.x(); pt.y = p.y(); pt.z = p.z();
+                line.points.push_back(pt);
+            }
+            shorten_path_pub_->publish(line);
+        }
+
         if (clean_path.size() < 2) {
-            RCLCPP_ERROR(node_->get_logger(), "clean_path too short");
+            log_manager_->errorf("clean_path too short");
             return false;
         }
 
@@ -472,17 +586,15 @@ namespace path_manager
         Eigen::Matrix3Xd clean_mat(3, clean_path.size());
         for (size_t i = 0; i < clean_path.size(); ++i) clean_mat.col(i) = clean_path[i];
 
-        const double allocSpeed = max_vel_ * 3.0;
+        // Use max_vel directly — the "* 3.0" factor was inflating the initial
+        // speed so MINCO started at ~3×max_vel and forced L-BFGS to stretch
+        // duration by ~25× to satisfy the feasibility penalty.
         Eigen::Matrix3Xd innerPts;
         Eigen::VectorXd time_vec;
-        setInitialFromPath(clean_mat, allocSpeed, pieceIdx, innerPts, time_vec);
+        setInitialFromPath(clean_mat, max_vel_, pieceIdx, innerPts, time_vec);
 
-        Eigen::Vector3d approach_dir;
-        if (clean_path.size() >= 2) {
-            approach_dir = (clean_path.back() - clean_path[clean_path.size() - 2]).normalized();
-        } else {
-            approach_dir = (waypoints.back() - start_pos).normalized();
-        }
+        Eigen::Vector3d approach_dir =
+            (clean_path.back() - clean_path[clean_path.size() - 2]).normalized();
         Eigen::Vector3d traj_end_vel = approach_dir * max_vel_;
         Eigen::Vector3d traj_end_acc = Eigen::Vector3d::Zero();
 
@@ -490,7 +602,6 @@ namespace path_manager
         Eigen::Matrix<double, 3, 3> headState, tailState;
         headState << start_pos, start_vel, start_acc;
         tailState << waypoints.back(), traj_end_vel, traj_end_acc;
-
         globalMJO.reset(headState, tailState, piece_num);
         globalMJO.generate(innerPts, time_vec);
 
@@ -502,6 +613,35 @@ namespace path_manager
             globalMJO.getTraj().getPieceNum(),
             globalMJO.getTraj().getTotalDuration(),
             globalMJO.getTraj().getMaxVelRate());
+
+        // Publish the initial (pre-L-BFGS) MINCO trajectory as a dense green
+        // LINE_STRIP so the user can compare it to the optimized result.
+        if (init_minco_pub_) {
+            visualization_msgs::msg::Marker line;
+            line.header.frame_id = "map";
+            line.header.stamp = node_->get_clock()->now();
+            line.ns = "init_minco_path";
+            line.id = 0;
+            line.type = visualization_msgs::msg::Marker::LINE_STRIP;
+            line.action = visualization_msgs::msg::Marker::ADD;
+            line.pose.orientation.w = 1.0;
+            line.scale.x = 0.3;
+            line.color.r = 0.0f; line.color.g = 1.0f; line.color.b = 0.2f; line.color.a = 1.0f;
+            const auto &initTraj = globalMJO.getTraj();
+            const double dt = 0.1;
+            const double T = initTraj.getTotalDuration();
+            for (double t = 0.0; t < T; t += dt) {
+                Eigen::Vector3d p = initTraj.getPos(t);
+                geometry_msgs::msg::Point pt;
+                pt.x = p.x(); pt.y = p.y(); pt.z = p.z();
+                line.points.push_back(pt);
+            }
+            Eigen::Vector3d pe = initTraj.getPos(T);
+            geometry_msgs::msg::Point pte;
+            pte.x = pe.x(); pte.y = pe.y(); pte.z = pe.z();
+            line.points.push_back(pte);
+            init_minco_pub_->publish(line);
+        }
 
         auto t_minco_end = std::chrono::steady_clock::now();
         log_manager_->infof("[TIMING] MINCO trajectory generation: %.1f ms",
@@ -595,18 +735,14 @@ namespace path_manager
             }
             else
             {
-                // Fallback: use initial MINCO trajectory as local trajectory.
-                log_manager_->warnf("L-BFGS optimization failed, using initial MINCO trajectory");
-                double start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
-                traj_.setLocalTraj(globalMJO.getTraj(), start_time, traj_.local_traj.drone_id);
+                log_manager_->errorf("L-BFGS optimization failed");
+                return false;
             }
         }
         else
         {
-            // No optimizer: use initial MINCO trajectory directly.
-            log_manager_->warnf("No optimizer, using initial MINCO trajectory");
-            double start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
-            traj_.setLocalTraj(globalMJO.getTraj(), start_time, traj_.local_traj.drone_id);
+            log_manager_->errorf("Optimizer not initialized");
+            return false;
         }
 
         auto t_opt_end = std::chrono::steady_clock::now();
@@ -985,19 +1121,44 @@ bool PathManager::buildSDFForBounds(const Eigen::Vector3d &lo,
     };
 
     // Terrain: voxels strictly below the surface are occupied.
+    size_t terrain_occupied_voxels = 0;
+    size_t terrain_valid_queries = 0;
+    size_t terrain_invalid_queries = 0;
+    float terrain_max_elev = -1e30f;
+    float terrain_min_elev = 1e30f;
     if (terrain_data_.valid) {
         for (int xi = 0; xi < nx; ++xi) {
             double wx = lo.x() + (xi + 0.5) * res;
             for (int yi = 0; yi < ny; ++yi) {
                 double wy = lo.y() + (yi + 0.5) * res;
                 float elev = terrain_data_.getElevation(wx, wy);
-                if (elev <= -1e10) continue;
+                if (elev <= -1e10) { ++terrain_invalid_queries; continue; }
+                ++terrain_valid_queries;
+                terrain_max_elev = std::max(terrain_max_elev, elev);
+                terrain_min_elev = std::min(terrain_min_elev, elev);
                 int zi_max = std::min(nz, (int)std::ceil((elev - lo.z()) / res));
                 for (int zi = 0; zi < zi_max; ++zi) {
                     occ[idx(xi, yi, zi)] = 1;
+                    ++terrain_occupied_voxels;
                 }
             }
         }
+        log_manager_->infof(
+            "Terrain → SDF: valid_xy=%zu, invalid_xy=%zu, occupied_voxels=%zu, "
+            "elev_range=[%.2f, %.2f]",
+            terrain_valid_queries, terrain_invalid_queries, terrain_occupied_voxels,
+            terrain_min_elev, terrain_max_elev);
+
+        // Probe a few world points on the A* straight-line path (y≈78.5).
+        const std::array<std::pair<double,double>, 5> probes = {{
+            {100.0, 78.5}, {120.0, 78.5}, {141.4, 78.5}, {160.0, 78.5}, {180.0, 78.5}
+        }};
+        for (auto [px, py] : probes) {
+            float e = terrain_data_.getElevation(px, py);
+            log_manager_->infof("  terrain probe (%.1f, %.1f) -> elev=%.3f", px, py, e);
+        }
+    } else {
+        log_manager_->infof("Terrain → SDF: terrain_data_ INVALID (not applied)");
     }
 
     // Geometry obstacles.

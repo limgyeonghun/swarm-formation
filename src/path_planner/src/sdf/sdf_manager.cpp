@@ -128,6 +128,24 @@ bool SDFManager::buildFromVoxels(const uint8_t* occupancy,
     return ((size_t(x) * ny_) + y) * nz_ + z;
   };
 
+  // Special case: no obstacles at all. fillEDT1D with all-INF seeds produces
+  // NaN (inf - inf in the parabola intersection). Fill the whole cache with
+  // a large finite free-distance value and return.
+  bool any_occupied = false;
+  for (size_t i = 0; i < N; ++i) {
+    if (occupancy[i] != 0) { any_occupied = true; break; }
+  }
+  if (!any_occupied) {
+    const float kLargeFree = static_cast<float>(res) *
+                             static_cast<float>(std::max({nx, ny, nz}));
+    impl_->distance_cache.assign(N, kLargeFree);
+    impl_->has_data = true;
+    std::cerr << "[SDFManager] built (no obstacles): shape=(" << nx << ","
+              << ny << "," << nz << ") voxel=" << res << " voxels=" << N
+              << " free_distance=" << kLargeFree << "\n";
+    return true;
+  }
+
   // Positive DT on the occupied set (obstacles = 0, free = +inf).
   std::vector<double> tmp1(N), tmp2(N);
   std::vector<double> d_pos(N);

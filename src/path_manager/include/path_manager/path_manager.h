@@ -6,6 +6,7 @@
 #include "path_planner/sdf/sdf_manager.h"
 #include "path_planner/sdf/sdf_query_adapter.h"
 #include "path_planner/sdf/path_shortening.h"
+#include "path_planner/dyn_a_star.h"
 #include "path_optimizer/poly_traj_optimizer.h"
 #include "path_optimizer/plan_container.hpp"
 #include "../../common/log_manager.hpp"
@@ -217,6 +218,11 @@ namespace path_manager
     path_planner::sdf::SDFManager sdf_manager_;
     double sdf_voxel_size_ = 1.0;  // m
 
+    // 3D A* front-end. Uses ESDF for collision, threat_zones_ for soft cost.
+    path_planner::astar::AStar astar_;
+    bool astar_initialized_ = false;
+    Eigen::Vector3i astar_pool_size_ = Eigen::Vector3i(120, 120, 40);
+
     // Precomputed-ESDF paths (both optional, via yaml).
     //   load: if set and file present, skip voxelization on first plan.
     //   save: if set, write the freshly built ESDF after first build.
@@ -245,6 +251,9 @@ namespace path_manager
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr simple_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr ctrl_points_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr rrt_path_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr shorten_path_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr init_minco_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr esdf_occ_pub_;
 
     std::shared_ptr<swarm_formation::LogManager> log_manager_;
     bool enable_debug_logs_;
