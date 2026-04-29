@@ -344,19 +344,58 @@ bool SDFManager::loadFromFile(const std::string& path,
   return true;
 }
 
+// Voxel (i,j,k) sample is located at voxel CENTER in world coords:
+//   p_center(i,j,k) = origin + (i + 0.5, j + 0.5, k + 0.5) * voxel_size
+// Trilinear interpolation blends the 8 surrounding centers. Falling back to
+// nearest-voxel lookup produced a piecewise-constant distance field with zero
+// interior gradient, which prevented L-BFGS from climbing out of obstacles.
+namespace {
+inline int clampIdx(int v, int lo, int hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+}  // namespace
+
 float SDFManager::getDistance(const Eigen::Vector3d& pos) const {
   if (!impl_->initialized || !impl_->has_data) {
     return std::numeric_limits<float>::infinity();
   }
-  Eigen::Vector3d vf = impl_->worldToVoxelF(pos);
-  int xi = int(std::floor(vf.x()));
-  int yi = int(std::floor(vf.y()));
-  int zi = int(std::floor(vf.z()));
-  if (xi < 0 || yi < 0 || zi < 0 ||
-      xi >= impl_->nx || yi >= impl_->ny || zi >= impl_->nz) {
+  const Eigen::Vector3d vf = impl_->worldToVoxelF(pos) -
+                             Eigen::Vector3d(0.5, 0.5, 0.5);
+  const int xi0 = int(std::floor(vf.x()));
+  const int yi0 = int(std::floor(vf.y()));
+  const int zi0 = int(std::floor(vf.z()));
+  if (xi0 < -1 || yi0 < -1 || zi0 < -1 ||
+      xi0 >= impl_->nx || yi0 >= impl_->ny || zi0 >= impl_->nz) {
     return std::numeric_limits<float>::infinity();
   }
-  return impl_->distance_cache[impl_->flatIdx(xi, yi, zi)];
+
+  const double tx = vf.x() - xi0;
+  const double ty = vf.y() - yi0;
+  const double tz = vf.z() - zi0;
+
+  const int xi1 = clampIdx(xi0 + 1, 0, impl_->nx - 1);
+  const int yi1 = clampIdx(yi0 + 1, 0, impl_->ny - 1);
+  const int zi1 = clampIdx(zi0 + 1, 0, impl_->nz - 1);
+  const int xi0c = clampIdx(xi0, 0, impl_->nx - 1);
+  const int yi0c = clampIdx(yi0, 0, impl_->ny - 1);
+  const int zi0c = clampIdx(zi0, 0, impl_->nz - 1);
+
+  const float c000 = impl_->distance_cache[impl_->flatIdx(xi0c, yi0c, zi0c)];
+  const float c100 = impl_->distance_cache[impl_->flatIdx(xi1,  yi0c, zi0c)];
+  const float c010 = impl_->distance_cache[impl_->flatIdx(xi0c, yi1,  zi0c)];
+  const float c110 = impl_->distance_cache[impl_->flatIdx(xi1,  yi1,  zi0c)];
+  const float c001 = impl_->distance_cache[impl_->flatIdx(xi0c, yi0c, zi1 )];
+  const float c101 = impl_->distance_cache[impl_->flatIdx(xi1,  yi0c, zi1 )];
+  const float c011 = impl_->distance_cache[impl_->flatIdx(xi0c, yi1,  zi1 )];
+  const float c111 = impl_->distance_cache[impl_->flatIdx(xi1,  yi1,  zi1 )];
+
+  const double c00 = c000 * (1.0 - tx) + c100 * tx;
+  const double c10 = c010 * (1.0 - tx) + c110 * tx;
+  const double c01 = c001 * (1.0 - tx) + c101 * tx;
+  const double c11 = c011 * (1.0 - tx) + c111 * tx;
+  const double c0  = c00  * (1.0 - ty) + c10  * ty;
+  const double c1  = c01  * (1.0 - ty) + c11  * ty;
+  return static_cast<float>(c0 * (1.0 - tz) + c1 * tz);
 }
 
 bool SDFManager::getDistanceAndGradient(const Eigen::Vector3d& pos,
@@ -367,28 +406,71 @@ bool SDFManager::getDistanceAndGradient(const Eigen::Vector3d& pos,
 
   if (!impl_->initialized || !impl_->has_data) return false;
 
-  float d_c = getDistance(pos);
-  if (!std::isfinite(d_c)) return false;
-  if (distance) *distance = d_c;
+  const Eigen::Vector3d vf = impl_->worldToVoxelF(pos) -
+                             Eigen::Vector3d(0.5, 0.5, 0.5);
+  const int xi0 = int(std::floor(vf.x()));
+  const int yi0 = int(std::floor(vf.y()));
+  const int zi0 = int(std::floor(vf.z()));
+  if (xi0 < -1 || yi0 < -1 || zi0 < -1 ||
+      xi0 >= impl_->nx || yi0 >= impl_->ny || zi0 >= impl_->nz) {
+    return false;
+  }
 
-  const double h = impl_->voxel_size;
-  float dx_p = getDistance(pos + Eigen::Vector3d(h, 0, 0));
-  float dx_m = getDistance(pos - Eigen::Vector3d(h, 0, 0));
-  float dy_p = getDistance(pos + Eigen::Vector3d(0, h, 0));
-  float dy_m = getDistance(pos - Eigen::Vector3d(0, h, 0));
-  float dz_p = getDistance(pos + Eigen::Vector3d(0, 0, h));
-  float dz_m = getDistance(pos - Eigen::Vector3d(0, 0, h));
+  const double tx = vf.x() - xi0;
+  const double ty = vf.y() - yi0;
+  const double tz = vf.z() - zi0;
 
-  auto safe = [](float v, float fb) { return std::isfinite(v) ? v : fb; };
-  dx_p = safe(dx_p, d_c); dx_m = safe(dx_m, d_c);
-  dy_p = safe(dy_p, d_c); dy_m = safe(dy_m, d_c);
-  dz_p = safe(dz_p, d_c); dz_m = safe(dz_m, d_c);
+  const int xi1 = clampIdx(xi0 + 1, 0, impl_->nx - 1);
+  const int yi1 = clampIdx(yi0 + 1, 0, impl_->ny - 1);
+  const int zi1 = clampIdx(zi0 + 1, 0, impl_->nz - 1);
+  const int xi0c = clampIdx(xi0, 0, impl_->nx - 1);
+  const int yi0c = clampIdx(yi0, 0, impl_->ny - 1);
+  const int zi0c = clampIdx(zi0, 0, impl_->nz - 1);
 
-  double inv_2h = 1.0 / (2.0 * h);
+  const double c000 = impl_->distance_cache[impl_->flatIdx(xi0c, yi0c, zi0c)];
+  const double c100 = impl_->distance_cache[impl_->flatIdx(xi1,  yi0c, zi0c)];
+  const double c010 = impl_->distance_cache[impl_->flatIdx(xi0c, yi1,  zi0c)];
+  const double c110 = impl_->distance_cache[impl_->flatIdx(xi1,  yi1,  zi0c)];
+  const double c001 = impl_->distance_cache[impl_->flatIdx(xi0c, yi0c, zi1 )];
+  const double c101 = impl_->distance_cache[impl_->flatIdx(xi1,  yi0c, zi1 )];
+  const double c011 = impl_->distance_cache[impl_->flatIdx(xi0c, yi1,  zi1 )];
+  const double c111 = impl_->distance_cache[impl_->flatIdx(xi1,  yi1,  zi1 )];
+
+  const double c00 = c000 * (1.0 - tx) + c100 * tx;
+  const double c10 = c010 * (1.0 - tx) + c110 * tx;
+  const double c01 = c001 * (1.0 - tx) + c101 * tx;
+  const double c11 = c011 * (1.0 - tx) + c111 * tx;
+  const double c0  = c00  * (1.0 - ty) + c10  * ty;
+  const double c1  = c01  * (1.0 - ty) + c11  * ty;
+  const double d   = c0   * (1.0 - tz) + c1  * tz;
+
+  if (distance) *distance = static_cast<float>(d);
+
   if (gradient) {
-    (*gradient) << (dx_p - dx_m) * inv_2h,
-                   (dy_p - dy_m) * inv_2h,
-                   (dz_p - dz_m) * inv_2h;
+    // Analytical gradient of the trilinear form w.r.t. world coords.
+    // d(t)/d(world) = (1 / voxel_size) * d(t)/d(voxel)
+    const double inv_h = 1.0 / impl_->voxel_size;
+
+    // dC/dtx at fixed ty,tz
+    const double dc00_dtx = c100 - c000;
+    const double dc10_dtx = c110 - c010;
+    const double dc01_dtx = c101 - c001;
+    const double dc11_dtx = c111 - c011;
+    const double dc0_dtx  = dc00_dtx * (1.0 - ty) + dc10_dtx * ty;
+    const double dc1_dtx  = dc01_dtx * (1.0 - ty) + dc11_dtx * ty;
+    const double dD_dtx   = dc0_dtx * (1.0 - tz) + dc1_dtx * tz;
+
+    // dC/dty at fixed tx,tz
+    const double dc0_dty  = c10 - c00;
+    const double dc1_dty  = c11 - c01;
+    const double dD_dty   = dc0_dty * (1.0 - tz) + dc1_dty * tz;
+
+    // dC/dtz at fixed tx,ty
+    const double dD_dtz   = c1 - c0;
+
+    (*gradient) << dD_dtx * inv_h,
+                   dD_dty * inv_h,
+                   dD_dtz * inv_h;
   }
   return true;
 }
@@ -400,6 +482,14 @@ double SDFManager::voxelSize() const { return impl_->voxel_size; }
 size_t SDFManager::numAllocatedBlocks() const {
   // Retained for API compatibility. No block concept here; report voxel count.
   return impl_->distance_cache.size();
+}
+
+Eigen::Vector3i SDFManager::shape() const {
+  return Eigen::Vector3i(impl_->nx, impl_->ny, impl_->nz);
+}
+
+Eigen::Vector3d SDFManager::origin() const {
+  return impl_->origin;
 }
 
 }  // namespace sdf

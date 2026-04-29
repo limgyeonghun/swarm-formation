@@ -83,14 +83,14 @@ def create_drone_nodes(context, *args, **kwargs):
         map_file = PathJoinSubstitution([pkg_share, 'config', 'map.yaml'])
         print("Using default map config: map.yaml")
 
-    # Threat zones config (optional)
-    threat_zones_config = context.perform_substitution(LaunchConfiguration('threat_zones'))
-    if threat_zones_config:
-        threat_zones_file = PathJoinSubstitution([pkg_share, 'config', f'{threat_zones_config}.yaml'])
-        print(f"Using threat zones config: {threat_zones_config}.yaml")
+    # Risk zones config (optional)
+    risk_zones_config = context.perform_substitution(LaunchConfiguration('risk_zones'))
+    if risk_zones_config:
+        risk_zones_file = PathJoinSubstitution([pkg_share, 'config', f'{risk_zones_config}.yaml'])
+        print(f"Using risk zones config: {risk_zones_config}.yaml")
     else:
-        threat_zones_file = None
-        print("No threat zones config specified")
+        risk_zones_file = None
+        print("No risk zones config specified")
 
     # Load base drone hardware configuration
     drones_file = PathJoinSubstitution([pkg_share, 'config', 'drone_hardware.yaml'])
@@ -208,10 +208,10 @@ def create_drone_nodes(context, *args, **kwargs):
         # No additional remapping needed - formation_targets now uses topic_prefix directly
         all_remaps = remaps
 
-        # Build parameter list with optional threat zones
+        # Build parameter list with optional risk zones
         replan_params = [params, obstacles_file, optimizer_file, drones_file, map_file]
-        if threat_zones_file:
-            replan_params.append(threat_zones_file)
+        if risk_zones_file:
+            replan_params.append(risk_zones_file)
 
         replan_nodes.append(
             Node(
@@ -301,9 +301,9 @@ def create_drone_nodes(context, *args, **kwargs):
         optimizer_file,
         map_file,
     ]
-    # Add threat zones if specified
-    if threat_zones_file:
-        viz_params.append(threat_zones_file)
+    # Add risk zones if specified
+    if risk_zones_file:
+        viz_params.append(risk_zones_file)
     # Add start_point overrides from scenario
     start_point_params = {}
     for i in range(num_drones):
@@ -441,12 +441,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'map_config',
             default_value='map',
-            description='Map configuration file (default: map, or map_threat_zones, etc.)'
+            description='Map configuration file (default: map, or map_risk_zones, etc.)'
         ),
         DeclareLaunchArgument(
-            'threat_zones',
+            'risk_zones',
             default_value='',
-            description='Threat zones configuration file (e.g., threat_zones)'
+            description='Risk zones configuration file (e.g., risk_zones)'
         ),
         DeclareLaunchArgument(
             'jfi_port',

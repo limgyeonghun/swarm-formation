@@ -1,7 +1,7 @@
-// Path shortening with SDF visibility and optional threat avoidance.
+// Path shortening with SDF visibility and optional risk avoidance.
 // Drops an intermediate waypoint only when the straight connection between
 // its neighbours is (a) clear of obstacles in SDF and (b) outside the
-// detection range of every supplied threat zone.
+// detection range of every supplied risk zone.
 
 #ifndef PATH_PLANNER_SDF_PATH_SHORTENING_H_
 #define PATH_PLANNER_SDF_PATH_SHORTENING_H_
@@ -16,9 +16,9 @@ namespace path_planner {
 namespace sdf {
 
 // True iff the straight [a, b] segment stays clear of SDF obstacles and
-// outside every threat detection radius.
+// outside every risk detection radius.
 inline bool segmentClear(const SDFManager& sdf,
-                          const std::vector<ThreatZoneLite>* threats,
+                          const std::vector<RiskZoneLite>* risks,
                           const Eigen::Vector3d& a,
                           const Eigen::Vector3d& b,
                           double safety_margin,
@@ -31,8 +31,8 @@ inline bool segmentClear(const SDFManager& sdf,
     Eigen::Vector3d p = a + t * (b - a);
     float d = sdf.getDistance(p);
     if (!std::isfinite(d) || d < safety_margin) return false;
-    if (threats) {
-      for (const auto& tz : *threats) {
+    if (risks) {
+      for (const auto& tz : *risks) {
         if ((p - tz.center).norm() < tz.detection_range) return false;
       }
     }
@@ -45,7 +45,7 @@ inline std::vector<Eigen::Vector3d> shortenPath(
     const SDFManager& sdf,
     const std::vector<Eigen::Vector3d>& path,
     double safety_margin,
-    const std::vector<ThreatZoneLite>* threats = nullptr,
+    const std::vector<RiskZoneLite>* risks = nullptr,
     double step_m = -1.0) {
   if (path.size() <= 2) return path;
   if (step_m <= 0.0) step_m = sdf.voxelSize();
@@ -61,7 +61,7 @@ inline std::vector<Eigen::Vector3d> shortenPath(
     while (i + 1 < out.size()) {
       const Eigen::Vector3d& prev = next.back();
       const Eigen::Vector3d& nxt = out[i + 1];
-      if (segmentClear(sdf, threats, prev, nxt, safety_margin, step_m)) {
+      if (segmentClear(sdf, risks, prev, nxt, safety_margin, step_m)) {
         i += 1;
         changed = true;
       } else {

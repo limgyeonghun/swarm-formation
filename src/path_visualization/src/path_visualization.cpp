@@ -113,13 +113,13 @@ PathVisualization::PathVisualization() : Node("path_visualization")
     publishObstacles(); // Initial publish
   }
 
-  // Load and visualize threat zones
-  loadThreatZoneParameters();
-  if (!threat_zones_.empty()) {
-    threat_zone_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("threat_field", 10);
-    threat_zone_timer_ = this->create_wall_timer(2000ms, std::bind(&PathVisualization::publishThreatZones, this));
-    publishThreatZones();
-    RCLCPP_INFO(this->get_logger(), "Threat zone visualization: %zu zones loaded", threat_zones_.size());
+  // Load and visualize risk zones
+  loadRiskZoneParameters();
+  if (!risk_zones_.empty()) {
+    risk_zone_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("risk_field", 10);
+    risk_zone_timer_ = this->create_wall_timer(2000ms, std::bind(&PathVisualization::publishRiskZones, this));
+    publishRiskZones();
+    RCLCPP_INFO(this->get_logger(), "Risk zone visualization: %zu zones loaded", risk_zones_.size());
   }
 
 }
@@ -208,18 +208,34 @@ void PathVisualization::loadObstacleParameters()
       {
         int shape_type = static_cast<int>(obstacle_params[i + 3]);
 
-        if (shape_type == 0 && i + 4 < obstacle_params.size())
+        if (shape_type == 0 && i + 4 < obstacle_params.size())  // CIRCLE
         {
           double radius = obstacle_params[i + 4];
-          obstacle_centers_.emplace_back(center, radius);
-          i += 5;
+          if (i + 5 < obstacle_params.size() &&
+              static_cast<int>(obstacle_params[i + 5]) != 0 &&
+              static_cast<int>(obstacle_params[i + 5]) != 1) {
+            double height = obstacle_params[i + 5];
+            obstacle_centers_.emplace_back(center, radius, height, true);
+            i += 6;
+          } else {
+            obstacle_centers_.emplace_back(center, radius);
+            i += 5;
+          }
         }
-        else if (shape_type == 1 && i + 5 < obstacle_params.size())
+        else if (shape_type == 1 && i + 5 < obstacle_params.size())  // RECTANGLE
         {
           double width = obstacle_params[i + 4];
-          double height = obstacle_params[i + 5];
-          obstacle_centers_.emplace_back(center, width, height);
-          i += 6;
+          double length = obstacle_params[i + 5];
+          if (i + 6 < obstacle_params.size() &&
+              static_cast<int>(obstacle_params[i + 6]) != 0 &&
+              static_cast<int>(obstacle_params[i + 6]) != 1) {
+            double height = obstacle_params[i + 6];
+            obstacle_centers_.emplace_back(center, width, length, height);
+            i += 7;
+          } else {
+            obstacle_centers_.emplace_back(center, width, length);
+            i += 6;
+          }
         }
         else
         {
@@ -589,9 +605,12 @@ void PathVisualization::publishObstacles()
     marker.color.g = 1.0;
     marker.color.b = 0.0;
 
+    // Marker uses CENTER for its pose; we keep obs.center as the BASE so the
+    // column sits on z=center.z. When z_extent > 0, render the true height.
+    double z_extent = (obs.z_extent > 0.0) ? obs.z_extent : 2.0;
     marker.pose.position.x = obs.center.x();
     marker.pose.position.y = obs.center.y();
-    marker.pose.position.z = obs.center.z();
+    marker.pose.position.z = obs.center.z() + z_extent * 0.5;
     marker.pose.orientation.w = 1.0;
 
     if (obs.shape == ObstacleShape::CIRCLE)
@@ -600,14 +619,14 @@ void PathVisualization::publishObstacles()
       double radius = (obs.param1 > 0) ? obs.param1 : 1.0;
       marker.scale.x = radius * 2.0;
       marker.scale.y = radius * 2.0;
-      marker.scale.z = 2.0;
+      marker.scale.z = z_extent;
     }
     else if (obs.shape == ObstacleShape::RECTANGLE)
     {
       marker.type = visualization_msgs::msg::Marker::CUBE;
       marker.scale.x = obs.param1;
       marker.scale.y = obs.param2;
-      marker.scale.z = 2.0;
+      marker.scale.z = z_extent;
     }
 
     marker_pub_->publish(marker);
@@ -642,43 +661,43 @@ void PathVisualization::publishTraveledPaths()
   }
 }
 
-void PathVisualization::loadThreatZoneParameters()
+void PathVisualization::loadRiskZoneParameters()
 {
-  this->declare_parameter("threat_zones", std::vector<double>{});
+  this->declare_parameter("risk_zones", std::vector<double>{});
   std::vector<double> tz_params;
-  this->get_parameter("threat_zones", tz_params);
-  RCLCPP_INFO(this->get_logger(), "Threat zone params size: %zu", tz_params.size());
+  this->get_parameter("risk_zones", tz_params);
+  RCLCPP_INFO(this->get_logger(), "Risk zone params size: %zu", tz_params.size());
   if (tz_params.size() >= 5 && tz_params.size() % 5 == 0) {
     for (size_t i = 0; i < tz_params.size(); i += 5) {
-      VisThreatZone tz;
+      VisRiskZone tz;
       tz.center = Eigen::Vector3d(tz_params[i], tz_params[i+1], tz_params[i+2]);
       tz.detection_range = tz_params[i+3];
-      tz.max_threat_level = tz_params[i+4];
-      threat_zones_.push_back(tz);
-      RCLCPP_INFO(this->get_logger(), "  ThreatZone #%zu: center=(%.1f,%.1f,%.1f) detect=%.1f threat=%.1f",
-          threat_zones_.size()-1, tz.center.x(), tz.center.y(), tz.center.z(),
-          tz.detection_range, tz.max_threat_level);
+      tz.max_risk_level = tz_params[i+4];
+      risk_zones_.push_back(tz);
+      RCLCPP_INFO(this->get_logger(), "  RiskZone #%zu: center=(%.1f,%.1f,%.1f) detect=%.1f risk=%.1f",
+          risk_zones_.size()-1, tz.center.x(), tz.center.y(), tz.center.z(),
+          tz.detection_range, tz.max_risk_level);
     }
   } else if (!tz_params.empty()) {
-    RCLCPP_WARN(this->get_logger(), "Invalid threat_zones param size: %zu (must be multiple of 5)", tz_params.size());
+    RCLCPP_WARN(this->get_logger(), "Invalid risk_zones param size: %zu (must be multiple of 5)", tz_params.size());
   }
 }
 
-void PathVisualization::publishThreatZones()
+void PathVisualization::publishRiskZones()
 {
-  if (threat_zones_.empty() || !threat_zone_pub_) return;
+  if (risk_zones_.empty() || !risk_zone_pub_) return;
 
   int marker_id = 0;
-  for (size_t zi = 0; zi < threat_zones_.size(); ++zi) {
-    const auto &tz = threat_zones_[zi];
+  for (size_t zi = 0; zi < risk_zones_.size(); ++zi) {
+    const auto &tz = risk_zones_[zi];
 
-    // Single threat sphere (detection range, red semi-transparent).
-    // Represents the unified threat volume — danger decays smoothly from center.
+    // Single risk sphere (detection range, red semi-transparent).
+    // Represents the unified risk volume — danger decays smoothly from center.
     {
       visualization_msgs::msg::Marker m;
       m.header.frame_id = "map";
       m.header.stamp = this->now();
-      m.ns = "threat_zone";
+      m.ns = "risk_zone";
       m.id = marker_id++;
       m.type = visualization_msgs::msg::Marker::SPHERE;
       m.action = visualization_msgs::msg::Marker::ADD;
@@ -688,10 +707,10 @@ void PathVisualization::publishThreatZones()
       m.pose.orientation.w = 1.0;
       double d = tz.detection_range * 2.0;
       m.scale.x = d; m.scale.y = d; m.scale.z = d;
-      float alpha = std::min(0.4f, static_cast<float>(tz.max_threat_level / 250.0));
+      float alpha = std::min(0.4f, static_cast<float>(tz.max_risk_level / 250.0));
       m.color.r = 1.0; m.color.g = 0.0; m.color.b = 0.0; m.color.a = alpha;
       m.lifetime = rclcpp::Duration(0, 0);
-      threat_zone_pub_->publish(m);
+      risk_zone_pub_->publish(m);
     }
 
     // Center marker (radar base - small cylinder)
@@ -699,7 +718,7 @@ void PathVisualization::publishThreatZones()
       visualization_msgs::msg::Marker m;
       m.header.frame_id = "map";
       m.header.stamp = this->now();
-      m.ns = "threat_center";
+      m.ns = "risk_center";
       m.id = marker_id++;
       m.type = visualization_msgs::msg::Marker::CYLINDER;
       m.action = visualization_msgs::msg::Marker::ADD;
@@ -710,7 +729,7 @@ void PathVisualization::publishThreatZones()
       m.scale.x = 1.0; m.scale.y = 1.0; m.scale.z = 0.5;
       m.color.r = 0.8; m.color.g = 0.0; m.color.b = 0.0; m.color.a = 1.0;
       m.lifetime = rclcpp::Duration(0, 0);
-      threat_zone_pub_->publish(m);
+      risk_zone_pub_->publish(m);
     }
 
     // Text label
@@ -718,7 +737,7 @@ void PathVisualization::publishThreatZones()
       visualization_msgs::msg::Marker m;
       m.header.frame_id = "map";
       m.header.stamp = this->now();
-      m.ns = "threat_label";
+      m.ns = "risk_label";
       m.id = marker_id++;
       m.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
       m.action = visualization_msgs::msg::Marker::ADD;
@@ -729,10 +748,10 @@ void PathVisualization::publishThreatZones()
       m.scale.z = 1.5;
       m.color.r = 1.0; m.color.g = 0.2; m.color.b = 0.2; m.color.a = 1.0;
       std::ostringstream ss;
-      ss << "SAM #" << zi << " (T=" << std::fixed << std::setprecision(0) << tz.max_threat_level << ")";
+      ss << "restricted zone #" << zi << " (T=" << std::fixed << std::setprecision(0) << tz.max_risk_level << ")";
       m.text = ss.str();
       m.lifetime = rclcpp::Duration(0, 0);
-      threat_zone_pub_->publish(m);
+      risk_zone_pub_->publish(m);
     }
   }
 }

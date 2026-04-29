@@ -1,7 +1,5 @@
 /**:
   ros__parameters:
-    # SAM Defense Penetration scenario
-    # Air defense network with overlapping SAM and AAA coverage
 
     # Obstacle Format:
     # Basic: [x, y, z] - uses default inflation

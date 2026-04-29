@@ -1,7 +1,7 @@
 // RRT* query adapter backed by SDFManager.
 // Replaces ObstacleQueryAdapter: instead of per-query obstacle loop,
 // uses precomputed ESDF for O(1) collision check.
-// Threat zones are kept separate (not baked into SDF).
+// Risk zones are kept separate (not baked into SDF).
 
 #ifndef PATH_PLANNER_SDF_QUERY_ADAPTER_H_
 #define PATH_PLANNER_SDF_QUERY_ADAPTER_H_
@@ -15,17 +15,17 @@
 namespace path_planner {
 namespace sdf {
 
-struct ThreatZoneLite {
+struct RiskZoneLite {
   Eigen::Vector3d center;
   double detection_range;
-  double max_threat_level;
+  double max_risk_level;
 };
 
 struct SDFQueryAdapter {
   const SDFManager *sdf = nullptr;
-  const std::vector<ThreatZoneLite> *threat_zones = nullptr;
+  const std::vector<RiskZoneLite> *risk_zones = nullptr;
   double safety_margin = 0.5;
-  double threat_weight = 10.0;
+  double risk_weight = 10.0;
 
   // Hard collision: 1 if obstacle (SDF <= safety_margin), 0 if free.
   int query(const Eigen::Vector3d &pos) const {
@@ -35,22 +35,22 @@ struct SDFQueryAdapter {
     return (d < safety_margin) ? 1 : 0;
   }
 
-  double getThreatLevel(const Eigen::Vector3d &pos) const {
-    if (!threat_zones || threat_zones->empty()) return 0.0;
+  double getRiskLevel(const Eigen::Vector3d &pos) const {
+    if (!risk_zones || risk_zones->empty()) return 0.0;
     double total = 0.0;
-    for (const auto &tz : *threat_zones) {
+    for (const auto &tz : *risk_zones) {
       double dist = (pos - tz.center).norm();
       if (dist < tz.detection_range) {
-        double sigma = tz.detection_range / 2.0;
-        total += tz.max_threat_level *
+        double sigma = tz.detection_range / 3.0;
+        total += tz.max_risk_level *
                  std::exp(-0.5 * (dist / sigma) * (dist / sigma));
       }
     }
     return total;
   }
 
-  double getThreatCostMultiplier(const Eigen::Vector3d &pos) const {
-    return 1.0 + threat_weight * getThreatLevel(pos);
+  double getRiskCostMultiplier(const Eigen::Vector3d &pos) const {
+    return 1.0 + risk_weight * getRiskLevel(pos);
   }
 };
 

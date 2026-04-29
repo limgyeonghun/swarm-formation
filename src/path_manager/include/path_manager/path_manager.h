@@ -34,23 +34,26 @@ namespace path_manager
   };
 
   struct Obstacle {
-    Eigen::Vector3d center;
+    Eigen::Vector3d center;       // base (bottom) position, xy at the axis
     ObstacleShape shape;
-    double param1;  // Circle: radius, Rectangle: width
-    double param2;  // Circle: unused, Rectangle: height
+    double param1;  // Circle: radius, Rectangle: width (x-extent)
+    double param2;  // Circle: unused, Rectangle: length (y-extent)
+    double z_extent;  // vertical height above center.z; 0 = "infinite column" (back-compat)
 
-    Obstacle() : center(0, 0, 0), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0) {}
-    Obstacle(const Eigen::Vector3d& c) : center(c), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0) {}
-    Obstacle(const Eigen::Vector3d& c, double radius) : center(c), shape(ObstacleShape::CIRCLE), param1(radius), param2(0.0) {}
-    Obstacle(const Eigen::Vector3d& c, double width, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(height) {}
+    Obstacle() : center(0, 0, 0), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0), z_extent(0.0) {}
+    Obstacle(const Eigen::Vector3d& c) : center(c), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0), z_extent(0.0) {}
+    Obstacle(const Eigen::Vector3d& c, double radius) : center(c), shape(ObstacleShape::CIRCLE), param1(radius), param2(0.0), z_extent(0.0) {}
+    Obstacle(const Eigen::Vector3d& c, double radius, double height, bool /*circle_with_height*/) : center(c), shape(ObstacleShape::CIRCLE), param1(radius), param2(0.0), z_extent(height) {}
+    Obstacle(const Eigen::Vector3d& c, double width, double length) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(length), z_extent(0.0) {}
+    Obstacle(const Eigen::Vector3d& c, double width, double length, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(length), z_extent(height) {}
   };
 
-  // Air defense threat zone. Single Gaussian centered at `center` with
-  // support out to `detection_range` (sigma = range/3). Peak = max_threat_level.
-  struct ThreatZone {
+  // Single Gaussian centered at `center` with
+  // support out to `detection_range` (sigma = range/3). Peak = max_risk_level.
+  struct RiskZone {
     Eigen::Vector3d center;
     double detection_range;
-    double max_threat_level;
+    double max_risk_level;
   };
 
   // Terrain elevation data extracted from GridMap
@@ -202,23 +205,37 @@ namespace path_manager
     std::shared_ptr<rclcpp::Node> node_;
     std::vector<Eigen::Vector3d> simple_path_;
     std::vector<Obstacle> obstacle_centers_;
-    std::vector<ThreatZone> threat_zones_;
-    double threat_weight_;
+    std::vector<RiskZone> risk_zones_;
+    double risk_weight_;
     Eigen::Vector3d map_lower_bound_;
     Eigen::Vector3d map_upper_bound_;
     std::vector<LocalTrajData> swarm_traj_;
     double max_vel_;
     double max_acc_;
     double length_per_piece_ = 2.0;
-    double obstacle_clearance_ = 0.5;
+    double obstacle_clearance_ = 1.0;
+    // Virtual ground / ceiling planes. If set ≥ 0, these altitudes are
+    // voxelised as solid obstacle layers when the SDF is built, so the
+    // optimizer naturally treats "flying below ground" or "above ceiling"
+    // as collision (with a smooth lateral gradient). A value < 0 (e.g.
+    // the default -0.1) disables that plane. Without these, L-BFGS can
+    // drift the trajectory below the start altitude to dodge obstacles,
+    // which is non-physical.
+    double ground_height_ = -0.1;    // m (absolute world z)
+    double virtual_ceil_height_ = -0.1;  // m (absolute world z)
     TerrainData terrain_data_;
 
     // ESDF map for SDF-based RRT* queries (phase 3).
     // Built from terrain + obstacle_centers_ inside planGlobalTraj.
     path_planner::sdf::SDFManager sdf_manager_;
     double sdf_voxel_size_ = 1.0;  // m
+    // A* search step size (meters between neighboring path nodes). Kept
+    // independent of sdf_voxel_size_ so we can coarsen A* path density
+    // without touching SDF resolution. Must be a multiple of voxel size
+    // for the grid-aligned neighbor set to make sense.
+    double astar_step_size_ = 1.0;  // m
 
-    // 3D A* front-end. Uses ESDF for collision, threat_zones_ for soft cost.
+    // 3D A* front-end. Uses ESDF for collision, risk_zones_ for soft cost.
     path_planner::astar::AStar astar_;
     bool astar_initialized_ = false;
     Eigen::Vector3i astar_pool_size_ = Eigen::Vector3i(120, 120, 40);
@@ -254,6 +271,10 @@ namespace path_manager
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr shorten_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr init_minco_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr esdf_occ_pub_;
+    // Inner points = MINCO piece boundaries; these are the variables L-BFGS
+    // actually moves. Publishing pre/post gives a visual diff of optimizer work.
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr inner_pts_init_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr inner_pts_opt_pub_;
 
     std::shared_ptr<swarm_formation::LogManager> log_manager_;
     bool enable_debug_logs_;

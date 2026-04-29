@@ -7,8 +7,6 @@
       start_point_z: 0.0
 
 
-# Mission: Strike target located at the center of a SAM site
-# (protected high-value target, penetration required).
 scenario:
   mission:
     commands:
@@ -16,4 +14,4 @@ scenario:
           formation_scale: 0.0
           distance_threshold: 3.0
           waypoints:
-            - [40.0, 0.0, 0.0]
+            - [100.0, 0.0, 0.0]

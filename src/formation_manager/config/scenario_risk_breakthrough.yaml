@@ -7,9 +7,7 @@
       start_point_z: 0.0
 
 
-# Mission scenario - Air defense BREAKTHROUGH
-# Goal (50, 0, 0) is surrounded by four threat zones.
-# RRT* must find the weakest overlap to penetrate.
+# Goal (50, 0, 0) is surrounded by four risk zones.
 scenario:
   mission:
     commands:

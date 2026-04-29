@@ -43,11 +43,11 @@ using LogManager = swarm_formation::LogManager;
 
 namespace ego_planner
 {
-  // Air defense threat zone (shared definition with path_manager).
-  struct ThreatZone {
+  // risk zone (shared definition with path_manager).
+  struct RiskZone {
     Eigen::Vector3d center;
     double detection_range;
-    double max_threat_level;
+    double max_risk_level;
   };
 
   enum FORMATION_TYPE
@@ -110,7 +110,7 @@ namespace ego_planner
     double wei_time_;
     double wei_formation_;
     double wei_formation_base_;  // Base formation weight (from config)
-    double wei_threat_;          // Threat zone cost weight for trajectory optimization
+    double wei_risk_;          // Risk zone cost weight for trajectory optimization
 
     double swarm_clearance_;
     double max_vel_, max_acc_;
@@ -132,9 +132,14 @@ namespace ego_planner
     const path_planner::sdf::SDFManager *sdf_manager_{nullptr};
     double obstacle_clearance_{0.5};  // safety margin used by SDF penalty
 
-    // Threat zone data for trajectory optimization.
-    std::vector<ThreatZone> threat_zones_;
-    bool use_threat_zones_{false};
+    // Hard half-space constraints applied outside the SDF so the clearance
+    // band does not contaminate them. Sentinel: ≤ -0.5 disables the plane.
+    double ground_height_{-1.0};
+    double virtual_ceil_height_{-1.0};
+
+    // Risk zone data for trajectory optimization.
+    std::vector<RiskZone> risk_zones_;
+    bool use_risk_zones_{false};
 
   public:
     PolyTrajOptimizer() {}
@@ -145,14 +150,16 @@ namespace ego_planner
     void setLogManager(swarm_formation::LogManager::Ptr log_manager);
     void setSDFManager(const path_planner::sdf::SDFManager *sdf) { sdf_manager_ = sdf; }
     void setObstacleClearance(double c) { obstacle_clearance_ = c; }
+    void setGroundHeight(double h)      { ground_height_ = h; }
+    void setVirtualCeilHeight(double h) { virtual_ceil_height_ = h; }
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
     void setDroneId(const int drone_id);
     void setFormation(const std::vector<Eigen::Vector3d>& formation_positions, int formation_size);
     void setMaxVel(double vel) { max_vel_ = vel; }
-    void setThreatZones(const std::vector<ThreatZone> &zones) {
-        threat_zones_ = zones;
-        use_threat_zones_ = !zones.empty();
+    void setRiskZones(const std::vector<RiskZone> &zones) {
+        risk_zones_ = zones;
+        use_risk_zones_ = !zones.empty();
     }
 
     inline ConstrainPoints getControlPoints() { return cps_; }
@@ -216,13 +223,13 @@ namespace ego_planner
                              double &grad_prev_t,
                              double &costp);
 
-    bool threatGradCostP(const int i_dp,
+    bool RiskGradCostP(const int i_dp,
                          const Eigen::Vector3d &p,
                          Eigen::Vector3d &gradp,
                          double &costp);
 
-    double getThreatLevel(const Eigen::Vector3d &pos) const;
-    Eigen::Vector3d getThreatGradient(const Eigen::Vector3d &pos) const;
+    double getRiskLevel(const Eigen::Vector3d &pos) const;
+    Eigen::Vector3d getRiskGradient(const Eigen::Vector3d &pos) const;
 
     bool feasibilityGradCostV(const Eigen::Vector3d &v,
                               Eigen::Vector3d &gradv,

@@ -70,11 +70,11 @@ namespace sfc_gen
         return true;
     }
 
-    // Compute threat-weighted edge cost along segment a→b
+    // Compute risk-weighted edge cost along segment a→b
     // cost = ∫ (1 + α·T(x)) ds ≈ dist × avg_multiplier
     // Uses trapezoidal sampling for accuracy
     template <typename Map>
-    inline double segmentThreatCost(const Eigen::Vector3d &a,
+    inline double segmentRiskCost(const Eigen::Vector3d &a,
                                     const Eigen::Vector3d &b,
                                     const Map *mapPtr,
                                     const int n_samples = 3)
@@ -87,7 +87,7 @@ namespace sfc_gen
             const double t = (double)i / (double)n_samples;
             const Eigen::Vector3d p = a + t * (b - a);
             double w = (i == 0 || i == n_samples) ? 0.5 : 1.0;
-            sum += w * mapPtr->getThreatCostMultiplier(p);
+            sum += w * mapPtr->getRiskCostMultiplier(p);
         }
         return dist * sum / n_samples;
     }
@@ -135,25 +135,25 @@ namespace sfc_gen
 
         int best_goal_idx = -1;
         double best_cost = INFINITY;
-        bool has_threat = false;
+        bool has_Risk = false;
         bool direct_solution_valid = false;  // true iff best is direct s→g line
 
         // If direct connection is collision-free, use it as initial reference.
-        // When threat cost exists, let RRT* try to find a cheaper detour.
+        // When risk cost exists, let RRT* try to find a cheaper detour.
         if (isSegmentFree(s, g, mapPtr, step_size * 0.5))
         {
-            double direct_cost = segmentThreatCost(s, g, mapPtr);
+            double direct_cost = segmentRiskCost(s, g, mapPtr);
             double pure_dist = (g - s).norm();
-            // No threat along direct path: return immediately (it's optimal)
+            // No risk along direct path: return immediately (it's optimal)
             if (direct_cost <= pure_dist * 1.01) {
                 p.clear();
                 p.push_back(s);
                 p.push_back(g);
                 return direct_cost;
             }
-            // Otherwise: direct path has threat cost; set as initial best.
+            // Otherwise: direct path has risk cost; set as initial best.
             // Do NOT inject goal into tree — its high cost would corrupt rewiring.
-            has_threat = true;
+            has_Risk = true;
             best_cost = direct_cost;
             direct_solution_valid = true;
         }
@@ -168,8 +168,8 @@ namespace sfc_gen
             if (elapsed > timeout && best_goal_idx >= 0)
                 break;
 
-            // Sample random point with goal bias and threat-aware lateral bias.
-            // Lateral bias (informed-sampling style) stabilizes RRT* when threat
+            // Sample random point with goal bias and risk-aware lateral bias.
+            // Lateral bias (informed-sampling style) stabilizes RRT* when risk
             // zones force detours through narrow lateral corridors; without it
             // uniform sampling yields high-variance results (Gammell et al. 2014).
             Eigen::Vector3d rand_pt;
@@ -178,7 +178,7 @@ namespace sfc_gen
             {
                 rand_pt = g;
             }
-            else if (has_threat && r < 0.30)
+            else if (has_Risk && r < 0.30)
             {
                 // Sample along start-goal axis with lateral offset
                 double t_along = dist_01(rng);
@@ -233,11 +233,11 @@ namespace sfc_gen
 
             // Find neighbors for rewiring
             // Use larger fixed radius; the log(n)/n formula underestimates for large n
-            // With threat zones, extra radius helps find cheaper detour parents
-            const double rewire_radius = has_threat ? step_size * 6.0 : step_size * 3.0;
+            // With risk zones, extra radius helps find cheaper detour parents
+            const double rewire_radius = has_Risk ? step_size * 6.0 : step_size * 3.0;
 
             int best_parent = nearest_idx;
-            double best_new_cost = tree[nearest_idx].cost + segmentThreatCost(tree[nearest_idx].pos, new_pt, mapPtr);
+            double best_new_cost = tree[nearest_idx].cost + segmentRiskCost(tree[nearest_idx].pos, new_pt, mapPtr);
 
             std::vector<int> near_idxs;
             for (int i = 0; i < (int)tree.size(); ++i)
@@ -251,7 +251,7 @@ namespace sfc_gen
                         continue;
                     if (isSegmentFree(tree[i].pos, new_pt, mapPtr, step_size * 0.5))
                     {
-                        double potential_cost = tree[i].cost + segmentThreatCost(tree[i].pos, new_pt, mapPtr);
+                        double potential_cost = tree[i].cost + segmentRiskCost(tree[i].pos, new_pt, mapPtr);
                         if (potential_cost < best_new_cost)
                         {
                             best_parent = i;
@@ -274,7 +274,7 @@ namespace sfc_gen
                     continue;
                 if (isSegmentFree(new_pt, tree[ni].pos, mapPtr, step_size * 0.5))
                 {
-                    double potential_cost = best_new_cost + segmentThreatCost(new_pt, tree[ni].pos, mapPtr);
+                    double potential_cost = best_new_cost + segmentRiskCost(new_pt, tree[ni].pos, mapPtr);
                     if (potential_cost < tree[ni].cost)
                     {
                         // Remove ni from old parent's children
@@ -300,7 +300,7 @@ namespace sfc_gen
                             {
                                 // Recompute actual cost: parent cost + edge cost
                                 tree[cid].cost = tree[pid].cost +
-                                    segmentThreatCost(tree[pid].pos, tree[cid].pos, mapPtr);
+                                    segmentRiskCost(tree[pid].pos, tree[cid].pos, mapPtr);
                                 queue.push_back(cid);
                             }
                         }
@@ -314,7 +314,7 @@ namespace sfc_gen
             {
                 if (isSegmentFree(new_pt, g, mapPtr, step_size * 0.5))
                 {
-                    double goal_cost = best_new_cost + segmentThreatCost(new_pt, g, mapPtr);
+                    double goal_cost = best_new_cost + segmentRiskCost(new_pt, g, mapPtr);
                     if (goal_cost < best_cost)
                     {
                         best_cost = goal_cost;
@@ -350,7 +350,7 @@ namespace sfc_gen
         }
         std::reverse(p.begin(), p.end());
 
-        // Shortcutting removed: downstream path_shortening (SDF + threat)
+        // Shortcutting removed: downstream path_shortening (SDF + risk)
         // handles redundant-waypoint removal with better information. Keeping
         // RRT*'s raw tree path preserves waypoint density so MINCO/L-BFGS
         // have enough inner points to shape the trajectory.

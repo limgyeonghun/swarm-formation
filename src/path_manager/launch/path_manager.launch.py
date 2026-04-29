@@ -290,7 +290,7 @@ def create_drone_nodes(context, *args, **kwargs):
 
     # NOTE: formation_manager is run separately (not part of this launch file)
     # Start it manually in another terminal:
-    #   ros2 run formation_manager formation_manager_node --ros-args -p num_drones:=1 -p scenario:=threat_zones
+    #   ros2 run formation_manager formation_manager_node --ros-args -p num_drones:=1 -p scenario:=risk_zones
 
     immediate_actions = [visualization_node] + rover_nodes + jfi_nodes
 

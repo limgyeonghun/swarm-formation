@@ -36,14 +36,27 @@ namespace ego_planner
     // L-BFGS parameter setup — GCOPTER-style global one-shot planning.
     // Converge by relative cost delta only; no iteration cap, no gradient
     // norm test. Large Hessian memory for long trajectories.
+    // L-BFGS parameters — Swarm-Formation reference scaled up for global
+    // planning. The reference values (mem_size 16, g_epsilon 0.1,
+    // max_iter 60) were tuned for local replan on ~20 variables; dev runs
+    // global plans with several hundred variables and more diverse cost
+    // landscapes, so we:
+    //   * raise mem_size so the Hessian approximation can actually capture
+    //     the curvature across that many variables (but not so high that
+    //     stale curvature info from early iterations gets mixed in and
+    //     breaks line-search — the GCOPTER-style 256 was too many and
+    //     caused -1005 line-search failures before);
+    //   * keep the gradient-norm stopping rule but loosen it a touch,
+    //     since with many variables the aggregate ||G|| never drops as
+    //     low as in the short local problem;
+    //   * raise max_iter accordingly so real convergence has room to
+    //     happen, with a hard cap to avoid runaway.
     lbfgs::lbfgs_parameter_t lbfgs_params;
     lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
-    lbfgs_params.mem_size       = 256;
-    lbfgs_params.g_epsilon      = 0.0;     // disable gradient norm test
-    lbfgs_params.past           = 3;       // compare cost with 3 iters ago
-    lbfgs_params.delta          = 1.0e-5;  // stop when relative cost change < 1e-5
-    lbfgs_params.min_step       = 1.0e-32;
-    lbfgs_params.max_iterations = 0;       // unlimited — delta is the stopping rule
+    lbfgs_params.mem_size       = 64;       // ref 16 → 64 (global scale)
+    lbfgs_params.g_epsilon      = 0.05;     // ref 0.1 → 0.05 (slightly tighter)
+    lbfgs_params.min_step       = 1e-32;
+    lbfgs_params.max_iterations = 300;      // ref 60 → 300 (global scale)
 
     if (!use_formation)
     {
@@ -84,6 +97,7 @@ namespace ego_planner
     // the optimized trajectory even when it clips obstacles.
     if (enable_obstacles_) (void)checkCollision();
     bool occ = false;
+    // bool occ = enable_obstacles_ ? checkCollision() : false;
 
     t2 = node_->get_clock()->now();
     double time_ms = (t2 - t1).seconds() * 1000;
@@ -240,7 +254,7 @@ namespace ego_planner
         opt->log_manager_->infof("  obstacle_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(0), opt->wei_obs_);
         opt->log_manager_->infof("  swarm_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(1), opt->wei_swarm_);
         opt->log_manager_->infof("  formation_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(2), opt->wei_formation_);
-        opt->log_manager_->infof("  threat_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(3), opt->wei_threat_);
+        opt->log_manager_->infof("  risk_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(3), opt->wei_risk_);
         opt->log_manager_->infof("  feasibility_cost=%.6f (weight=%.3f)", obs_swarm_feas_qvar_costs(4), opt->wei_feas_);
         opt->log_manager_->infof("  time_cost=%.6f (weight=%.3f)", time_cost, opt->wei_time_);
 
@@ -406,8 +420,8 @@ namespace ego_planner
             }
         }
 
-        // Threat zone cost calculation (soft constraint for air defense penetration)
-        if (use_threat_zones_ && threatGradCostP(i_dp, pos, gradp, costp)) {
+        // Risk zone cost calculation (soft constraint)
+        if (use_risk_zones_ && RiskGradCostP(i_dp, pos, gradp, costp)) {
             gradViolaPc = beta0 * gradp.transpose();
             gradViolaPt = alpha * gradp.transpose() * vel;
             jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
@@ -571,23 +585,39 @@ namespace ego_planner
                                         Eigen::Vector3d &gradp,
                                         double &costp)
   {
-    (void)i_dp;  // guard removed: consider all control points.
+    (void)i_dp;
     gradp.setZero();
     costp = 0;
 
-    if (!sdf_manager_ || !sdf_manager_->hasData()) return false;
-
     float d = 0.0f;
     Eigen::Vector3d grad_d = Eigen::Vector3d::Zero();
-    if (!sdf_manager_->getDistanceAndGradient(p, &d, &grad_d)) return false;
-    if (!std::isfinite(d)) return false;
 
-    double violation = obstacle_clearance_ - static_cast<double>(d);
+    // Ground / ceiling hard half-spaces. Past the plane we report a
+    // *negative* signed distance equal to the crossing depth, so the
+    // downstream cubic penalty (violation = clearance − d) grows as
+    // (clearance + depth)³. That is strictly larger than staying just
+    // above the plane, so L-BFGS can never trade a shallow dive for a
+    // cheap obstacle escape. The outward-pointing unit gradient keeps
+    // pushing the trajectory back across the plane no matter how deep it
+    // ended up.
+    if (ground_height_ > -0.5 && p.z() < ground_height_) {
+      const double depth = ground_height_ - p.z();
+      d = static_cast<float>(-depth);
+      grad_d = Eigen::Vector3d(0.0, 0.0, 1.0);  // ∇dist points up
+    } else if (virtual_ceil_height_ > -0.5 && p.z() > virtual_ceil_height_) {
+      const double depth = p.z() - virtual_ceil_height_;
+      d = static_cast<float>(-depth);
+      grad_d = Eigen::Vector3d(0.0, 0.0, -1.0);  // ∇dist points down
+    } else {
+      if (!sdf_manager_ || !sdf_manager_->hasData()) return false;
+      if (!sdf_manager_->getDistanceAndGradient(p, &d, &grad_d)) return false;
+      if (!std::isfinite(d)) return false;
+    }
+
+    const double violation = obstacle_clearance_ - static_cast<double>(d);
     if (violation <= 0.0) return false;
 
     costp = wei_obs_ * violation * violation * violation;
-    // d(cost)/d(p) = wei_obs_ * 3 * violation^2 * d(violation)/d(p)
-    //              = wei_obs_ * 3 * violation^2 * (-grad_d)
     gradp = -wei_obs_ * 3.0 * violation * violation * grad_d;
     return true;
   }
@@ -700,44 +730,44 @@ namespace ego_planner
     return false;
   }
 
-  // Continuous Gaussian threat over detection range.
-  // Matches ObstacleQueryAdapter::getThreatLevel in path_manager.h.
-  // Threat reporting (for logging / RRT* compatibility).
+  // Continuous Gaussian risk over detection range.
+  // Matches ObstacleQueryAdapter::getRiskLevel in path_manager.h.
+  // Risk reporting (for logging / RRT* compatibility).
   // Smooth Gaussian bell used only for informational queries.
-  double PolyTrajOptimizer::getThreatLevel(const Eigen::Vector3d &pos) const
+  double PolyTrajOptimizer::getRiskLevel(const Eigen::Vector3d &pos) const
   {
-    double total_threat = 0.0;
-    for (const auto &tz : threat_zones_) {
+    double total_Risk = 0.0;
+    for (const auto &tz : risk_zones_) {
       double dist = (pos - tz.center).norm();
       if (dist < tz.detection_range) {
-        double sigma = tz.detection_range / 2.0;
-        total_threat += tz.max_threat_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
+        double sigma = tz.detection_range / 3.0;
+        total_Risk += tz.max_risk_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
       }
     }
-    return total_threat;
+    return total_Risk;
   }
 
-  Eigen::Vector3d PolyTrajOptimizer::getThreatGradient(const Eigen::Vector3d &pos) const
+  Eigen::Vector3d PolyTrajOptimizer::getRiskGradient(const Eigen::Vector3d &pos) const
   {
     Eigen::Vector3d grad = Eigen::Vector3d::Zero();
-    for (const auto &tz : threat_zones_) {
+    for (const auto &tz : risk_zones_) {
       Eigen::Vector3d diff = pos - tz.center;
       double dist = diff.norm();
       if (dist < 1e-6) continue;
       if (dist < tz.detection_range) {
-        double sigma = tz.detection_range / 2.0;
+        double sigma = tz.detection_range / 3.0;
         double sigma2 = sigma * sigma;
-        double gauss = tz.max_threat_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
+        double gauss = tz.max_risk_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
         grad += gauss * (-1.0 / sigma2) * diff;
       }
     }
     return grad;
   }
 
-  // Gaussian-based threat penalty (matches main-branch threatGradCostP).
-  // Quadratic cost on the smooth Gaussian threat level, so gradient stays
+  // Gaussian-based risk penalty (matches main-branch RiskGradCostP).
+  // Quadratic cost on the smooth Gaussian risk level, so gradient stays
   // smooth everywhere (no hard boundary at detection_range).
-  bool PolyTrajOptimizer::threatGradCostP(const int i_dp,
+  bool PolyTrajOptimizer::RiskGradCostP(const int i_dp,
                                            const Eigen::Vector3d &p,
                                            Eigen::Vector3d &gradp,
                                            double &costp)
@@ -746,12 +776,12 @@ namespace ego_planner
     gradp.setZero();
     costp = 0.0;
 
-    double threat = getThreatLevel(p);
-    if (threat <= 0.01) return false;
+    double risk = getRiskLevel(p);
+    if (risk <= 0.01) return false;
 
-    Eigen::Vector3d threat_grad = getThreatGradient(p);
-    costp = wei_threat_ * threat * threat;
-    gradp = wei_threat_ * 2.0 * threat * threat_grad;
+    Eigen::Vector3d risk_grad = getRiskGradient(p);
+    costp = wei_risk_ * risk * risk;
+    gradp = wei_risk_ * 2.0 * risk * risk_grad;
     return true;
   }
 
@@ -890,8 +920,8 @@ namespace ego_planner
     node_->get_parameter("optimization/weight_formation", wei_formation_);
     wei_formation_base_ = wei_formation_;  // Store base weight for adaptive adjustment
 
-    node_->declare_parameter("optimization/weight_threat", 0.0);
-    node_->get_parameter("optimization/weight_threat", wei_threat_);
+    node_->declare_parameter("optimization/weight_Risk", 0.0);
+    node_->get_parameter("optimization/weight_Risk", wei_risk_);
 
     node_->declare_parameter("optimization/swarm_clearance", 0.5);
     node_->get_parameter("optimization/swarm_clearance", swarm_clearance_);

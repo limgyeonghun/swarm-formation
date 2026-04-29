@@ -15,10 +15,10 @@ constexpr double inf = 1e20;
 
 namespace path_planner { namespace astar {
 
-struct ThreatZoneLite {
+struct RiskZoneLite {
     Eigen::Vector3d center;
     double detection_range;
-    double max_threat_level;
+    double max_risk_level;
 };
 
 struct GridNode;
@@ -59,9 +59,17 @@ private:
     // SDF query backend. We do not need a separate occupancy map: a voxel is
     // considered blocked when sdf_distance < obstacle_margin_.
     path_planner::sdf::SDFManager *sdf_ = nullptr;
-    const std::vector<ThreatZoneLite> *threat_zones_ = nullptr;
+    const std::vector<RiskZoneLite> *risk_zones_ = nullptr;
     double obstacle_margin_ = 0.5;  // meters
-    double threat_weight_ = 0.1;
+    // When true, the A* graph expansion ignores obstacles (every voxel is
+    // traversable); shortcut / downstream checks still use obstacle_margin_.
+    bool search_ignores_obstacles_ = false;
+    // Hard ground / ceiling for A* expansion. Cells at or below
+    // ground_height_ (and at or above virtual_ceil_height_) are rejected
+    // just like SDF-occupied voxels. Sentinel: ≤ -0.5 disables the plane.
+    double ground_height_ = -1.0;
+    double virtual_ceil_height_ = -1.0;
+    double risk_weight_ = 0.1;
     double map_resolution_ = 1.0;
     Eigen::Vector3d map_origin_ = Eigen::Vector3d::Zero();
     Eigen::Vector3d map_size_ = Eigen::Vector3d::Zero();
@@ -78,7 +86,7 @@ private:
     inline Eigen::Vector3d Index2Coord(const Eigen::Vector3i &index) const;
     inline bool Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector3i &idx) const;
 
-    // Collision / threat queries backed by SDF.
+    // Collision / risk queries backed by SDF.
     inline bool checkOccupancy_esdf(const Eigen::Vector3d &pos) {
         if (!sdf_ || !sdf_->hasData()) return false;
         float d = sdf_->getDistance(pos);
@@ -89,18 +97,34 @@ private:
         return checkOccupancy_esdf(pos);
     }
 
-    inline double getThreatCost(const Eigen::Vector3d &pos) {
-        if (!threat_zones_ || threat_zones_->empty()) return 0.0;
+    inline double getRiskCost(const Eigen::Vector3d &pos) {
+        if (!risk_zones_ || risk_zones_->empty()) return 0.0;
         double level = 0.0;
-        for (const auto &tz : *threat_zones_) {
+        for (const auto &tz : *risk_zones_) {
             double dist = (pos - tz.center).norm();
             if (dist >= tz.detection_range) continue;
             double sigma = tz.detection_range / 3.0;
             double g = std::exp(-(dist * dist) / (2.0 * sigma * sigma));
-            level += tz.max_threat_level * g;
+            level += tz.max_risk_level * g;
         }
-        return level * threat_weight_;
+        double cost = level * risk_weight_;
+        // DEBUG: track how often risk cost actually fires during A* expansion.
+        ++dbg_risk_queries_;
+        if (cost > 0.0) {
+            ++dbg_risk_nonzero_;
+            if (cost > dbg_risk_max_) {
+                dbg_risk_max_ = cost;
+                dbg_risk_max_pos_ = pos;
+            }
+        }
+        return cost;
     }
+
+    // DEBUG counters — reset before each search, dumped by dumpRiskDebug().
+    mutable size_t dbg_risk_queries_ = 0;
+    mutable size_t dbg_risk_nonzero_ = 0;
+    mutable double dbg_risk_max_ = 0.0;
+    mutable Eigen::Vector3d dbg_risk_max_pos_ = Eigen::Vector3d::Zero();
 
     std::vector<GridNodePtr> retrievePath(GridNodePtr current);
 
@@ -133,9 +157,12 @@ public:
         map_size_ = size;
         map_resolution_ = resolution;
     }
-    void setThreatZones(const std::vector<ThreatZoneLite> *zones) { threat_zones_ = zones; }
+    void setRiskZones(const std::vector<RiskZoneLite> *zones) { risk_zones_ = zones; }
     void setObstacleMargin(double m) { obstacle_margin_ = m; }
-    void setThreatWeight(double w) { threat_weight_ = w; }
+    void setSearchIgnoresObstacles(bool b) { search_ignores_obstacles_ = b; }
+    void setGroundHeight(double h)      { ground_height_ = h; }
+    void setVirtualCeilHeight(double h) { virtual_ceil_height_ = h; }
+    void setRiskWeight(double w) { risk_weight_ = w; }
 
     void initGridMap(const Eigen::Vector3i &pool_size);
     // Free the existing pool (if any) and allocate a new one. Use when the

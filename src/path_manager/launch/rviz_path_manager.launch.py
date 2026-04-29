@@ -11,7 +11,7 @@ def generate_launch_description():
     Automatically sets: real=false, rviz_simulation=true, enable_visualization=true
 
     Usage:
-        ros2 launch path_manager rviz_path_manager.launch.py scenario:=scenario_sam_defense
+        ros2 launch path_manager rviz_path_manager.launch.py scenario:=scenario_basic
     """
 
     pkg_share = FindPackageShare('path_manager')
@@ -21,12 +21,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'scenario',
             default_value='scenario_basic',
-            description='Scenario configuration file (e.g., scenario_basic, scenario_sam_defense, scenario_complex)'
+            description='Scenario configuration file (e.g., scenario_basic, scenario_complex)'
         ),
         DeclareLaunchArgument(
             'map_config',
-            default_value='map_threat_zones',
-            description='Map configuration file (default: map_threat_zones)'
+            default_value='map_risk_zones',
+            description='Map configuration file (default: map_risk_zones)'
         ),
         DeclareLaunchArgument(
             'drone_id',

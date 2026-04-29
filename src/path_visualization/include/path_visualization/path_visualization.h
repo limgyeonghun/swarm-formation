@@ -24,17 +24,20 @@ struct Obstacle {
   ObstacleShape shape;
   double param1;
   double param2;
+  double z_extent;  // vertical height above center.z; 0 = infinite column (back-compat)
 
-  Obstacle() : center(0, 0, 0), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0) {}
-  Obstacle(const Eigen::Vector3d& c) : center(c), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0) {}
-  Obstacle(const Eigen::Vector3d& c, double radius) : center(c), shape(ObstacleShape::CIRCLE), param1(radius), param2(0.0) {}
-  Obstacle(const Eigen::Vector3d& c, double width, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(height) {}
+  Obstacle() : center(0, 0, 0), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0), z_extent(0.0) {}
+  Obstacle(const Eigen::Vector3d& c) : center(c), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0), z_extent(0.0) {}
+  Obstacle(const Eigen::Vector3d& c, double radius) : center(c), shape(ObstacleShape::CIRCLE), param1(radius), param2(0.0), z_extent(0.0) {}
+  Obstacle(const Eigen::Vector3d& c, double radius, double height, bool /*circle_with_height*/) : center(c), shape(ObstacleShape::CIRCLE), param1(radius), param2(0.0), z_extent(height) {}
+  Obstacle(const Eigen::Vector3d& c, double width, double length) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(length), z_extent(0.0) {}
+  Obstacle(const Eigen::Vector3d& c, double width, double length, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(length), z_extent(height) {}
 };
 
-struct VisThreatZone {
+struct VisRiskZone {
   Eigen::Vector3d center;
   double detection_range;
-  double max_threat_level;
+  double max_risk_level;
 };
 
 class PathVisualization : public rclcpp::Node {
@@ -66,15 +69,15 @@ private:
   void publishObstacles();
   void simplePathCallback(const nav_msgs::msg::Path::SharedPtr msg, int drone_id);
   void publishTraveledPaths();
-  void loadThreatZoneParameters();
-  void publishThreatZones();
+  void loadRiskZoneParameters();
+  void publishRiskZones();
 
   int num_drones_;
   bool enable_obstacles_;
   std::vector<Obstacle> obstacle_centers_;
-  std::vector<VisThreatZone> threat_zones_;
-  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr threat_zone_pub_;
-  rclcpp::TimerBase::SharedPtr threat_zone_timer_;
+  std::vector<VisRiskZone> risk_zones_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr risk_zone_pub_;
+  rclcpp::TimerBase::SharedPtr risk_zone_timer_;
 
   std::vector<DroneParams> drone_params_;
   std::vector<DroneData> drone_data_;

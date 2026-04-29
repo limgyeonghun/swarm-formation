@@ -6,9 +6,6 @@
       start_point_y: 0.0
       start_point_z: 0.0
 
-
-# Mission: Deep strike through Pyongyang-style SAM blanket
-# Entire route area is covered by overlapping threats.
 scenario:
   mission:
     commands:
@@ -16,4 +13,4 @@ scenario:
           formation_scale: 0.0
           distance_threshold: 3.0
           waypoints:
-            - [80.0, 0.0, 0.0]
+            - [40.0, 0.0, 0.0]

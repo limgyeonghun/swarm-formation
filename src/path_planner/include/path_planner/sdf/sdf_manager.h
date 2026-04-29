@@ -1,6 +1,6 @@
 // SDFManager: CPU ESDF (Felzenszwalb-Huttenlocher + OpenMP) with flat
 // binary save/load. ESDF encodes only static obstacles (terrain, buildings).
-// SAM zones are handled separately as threat cost in the optimizer.
+// restricted zone zones are handled separately as risk cost in the optimizer.
 
 #ifndef PATH_PLANNER_SDF_MANAGER_H_
 #define PATH_PLANNER_SDF_MANAGER_H_
@@ -49,6 +49,11 @@ class SDFManager {
   bool hasData() const;
   double voxelSize() const;
   size_t numAllocatedBlocks() const;
+
+  // Grid extent in cells along x/y/z. Zero if no data.
+  Eigen::Vector3i shape() const;
+  // World-frame origin (lower corner of voxel (0,0,0)).
+  Eigen::Vector3d origin() const;
 
  private:
   std::unique_ptr<SDFManagerImpl> impl_;
