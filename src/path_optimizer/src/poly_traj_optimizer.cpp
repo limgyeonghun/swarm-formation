@@ -36,14 +36,27 @@ namespace ego_planner
     // L-BFGS parameter setup — GCOPTER-style global one-shot planning.
     // Converge by relative cost delta only; no iteration cap, no gradient
     // norm test. Large Hessian memory for long trajectories.
+    // L-BFGS parameters — Swarm-Formation reference scaled up for global
+    // planning. The reference values (mem_size 16, g_epsilon 0.1,
+    // max_iter 60) were tuned for local replan on ~20 variables; dev runs
+    // global plans with several hundred variables and more diverse cost
+    // landscapes, so we:
+    //   * raise mem_size so the Hessian approximation can actually capture
+    //     the curvature across that many variables (but not so high that
+    //     stale curvature info from early iterations gets mixed in and
+    //     breaks line-search — the GCOPTER-style 256 was too many and
+    //     caused -1005 line-search failures before);
+    //   * keep the gradient-norm stopping rule but loosen it a touch,
+    //     since with many variables the aggregate ||G|| never drops as
+    //     low as in the short local problem;
+    //   * raise max_iter accordingly so real convergence has room to
+    //     happen, with a hard cap to avoid runaway.
     lbfgs::lbfgs_parameter_t lbfgs_params;
     lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
-    lbfgs_params.mem_size       = 256;
-    lbfgs_params.g_epsilon      = 0.0;     // disable gradient norm test
-    lbfgs_params.past           = 3;       // compare cost with 3 iters ago
-    lbfgs_params.delta          = 1.0e-5;  // stop when relative cost change < 1e-5
-    lbfgs_params.min_step       = 1.0e-32;
-    lbfgs_params.max_iterations = 0;       // unlimited — delta is the stopping rule
+    lbfgs_params.mem_size       = 64;       // ref 16 → 64 (global scale)
+    lbfgs_params.g_epsilon      = 0.05;     // ref 0.1 → 0.05 (slightly tighter)
+    lbfgs_params.min_step       = 1e-32;
+    lbfgs_params.max_iterations = 300;      // ref 60 → 300 (global scale)
 
     if (!use_formation)
     {
@@ -84,6 +97,7 @@ namespace ego_planner
     // the optimized trajectory even when it clips obstacles.
     if (enable_obstacles_) (void)checkCollision();
     bool occ = false;
+    // bool occ = enable_obstacles_ ? checkCollision() : false;
 
     t2 = node_->get_clock()->now();
     double time_ms = (t2 - t1).seconds() * 1000;
@@ -571,23 +585,39 @@ namespace ego_planner
                                         Eigen::Vector3d &gradp,
                                         double &costp)
   {
-    (void)i_dp;  // guard removed: consider all control points.
+    (void)i_dp;
     gradp.setZero();
     costp = 0;
 
-    if (!sdf_manager_ || !sdf_manager_->hasData()) return false;
-
     float d = 0.0f;
     Eigen::Vector3d grad_d = Eigen::Vector3d::Zero();
-    if (!sdf_manager_->getDistanceAndGradient(p, &d, &grad_d)) return false;
-    if (!std::isfinite(d)) return false;
 
-    double violation = obstacle_clearance_ - static_cast<double>(d);
+    // Ground / ceiling hard half-spaces. Past the plane we report a
+    // *negative* signed distance equal to the crossing depth, so the
+    // downstream cubic penalty (violation = clearance − d) grows as
+    // (clearance + depth)³. That is strictly larger than staying just
+    // above the plane, so L-BFGS can never trade a shallow dive for a
+    // cheap obstacle escape. The outward-pointing unit gradient keeps
+    // pushing the trajectory back across the plane no matter how deep it
+    // ended up.
+    if (ground_height_ > -0.5 && p.z() < ground_height_) {
+      const double depth = ground_height_ - p.z();
+      d = static_cast<float>(-depth);
+      grad_d = Eigen::Vector3d(0.0, 0.0, 1.0);  // ∇dist points up
+    } else if (virtual_ceil_height_ > -0.5 && p.z() > virtual_ceil_height_) {
+      const double depth = p.z() - virtual_ceil_height_;
+      d = static_cast<float>(-depth);
+      grad_d = Eigen::Vector3d(0.0, 0.0, -1.0);  // ∇dist points down
+    } else {
+      if (!sdf_manager_ || !sdf_manager_->hasData()) return false;
+      if (!sdf_manager_->getDistanceAndGradient(p, &d, &grad_d)) return false;
+      if (!std::isfinite(d)) return false;
+    }
+
+    const double violation = obstacle_clearance_ - static_cast<double>(d);
     if (violation <= 0.0) return false;
 
     costp = wei_obs_ * violation * violation * violation;
-    // d(cost)/d(p) = wei_obs_ * 3 * violation^2 * d(violation)/d(p)
-    //              = wei_obs_ * 3 * violation^2 * (-grad_d)
     gradp = -wei_obs_ * 3.0 * violation * violation * grad_d;
     return true;
   }
@@ -710,7 +740,7 @@ namespace ego_planner
     for (const auto &tz : threat_zones_) {
       double dist = (pos - tz.center).norm();
       if (dist < tz.detection_range) {
-        double sigma = tz.detection_range / 2.0;
+        double sigma = tz.detection_range / 3.0;
         total_threat += tz.max_threat_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
       }
     }
@@ -725,7 +755,7 @@ namespace ego_planner
       double dist = diff.norm();
       if (dist < 1e-6) continue;
       if (dist < tz.detection_range) {
-        double sigma = tz.detection_range / 2.0;
+        double sigma = tz.detection_range / 3.0;
         double sigma2 = sigma * sigma;
         double gauss = tz.max_threat_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
         grad += gauss * (-1.0 / sigma2) * diff;

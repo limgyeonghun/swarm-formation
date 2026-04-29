@@ -208,18 +208,34 @@ void PathVisualization::loadObstacleParameters()
       {
         int shape_type = static_cast<int>(obstacle_params[i + 3]);
 
-        if (shape_type == 0 && i + 4 < obstacle_params.size())
+        if (shape_type == 0 && i + 4 < obstacle_params.size())  // CIRCLE
         {
           double radius = obstacle_params[i + 4];
-          obstacle_centers_.emplace_back(center, radius);
-          i += 5;
+          if (i + 5 < obstacle_params.size() &&
+              static_cast<int>(obstacle_params[i + 5]) != 0 &&
+              static_cast<int>(obstacle_params[i + 5]) != 1) {
+            double height = obstacle_params[i + 5];
+            obstacle_centers_.emplace_back(center, radius, height, true);
+            i += 6;
+          } else {
+            obstacle_centers_.emplace_back(center, radius);
+            i += 5;
+          }
         }
-        else if (shape_type == 1 && i + 5 < obstacle_params.size())
+        else if (shape_type == 1 && i + 5 < obstacle_params.size())  // RECTANGLE
         {
           double width = obstacle_params[i + 4];
-          double height = obstacle_params[i + 5];
-          obstacle_centers_.emplace_back(center, width, height);
-          i += 6;
+          double length = obstacle_params[i + 5];
+          if (i + 6 < obstacle_params.size() &&
+              static_cast<int>(obstacle_params[i + 6]) != 0 &&
+              static_cast<int>(obstacle_params[i + 6]) != 1) {
+            double height = obstacle_params[i + 6];
+            obstacle_centers_.emplace_back(center, width, length, height);
+            i += 7;
+          } else {
+            obstacle_centers_.emplace_back(center, width, length);
+            i += 6;
+          }
         }
         else
         {
@@ -589,9 +605,12 @@ void PathVisualization::publishObstacles()
     marker.color.g = 1.0;
     marker.color.b = 0.0;
 
+    // Marker uses CENTER for its pose; we keep obs.center as the BASE so the
+    // column sits on z=center.z. When z_extent > 0, render the true height.
+    double z_extent = (obs.z_extent > 0.0) ? obs.z_extent : 2.0;
     marker.pose.position.x = obs.center.x();
     marker.pose.position.y = obs.center.y();
-    marker.pose.position.z = obs.center.z();
+    marker.pose.position.z = obs.center.z() + z_extent * 0.5;
     marker.pose.orientation.w = 1.0;
 
     if (obs.shape == ObstacleShape::CIRCLE)
@@ -600,14 +619,14 @@ void PathVisualization::publishObstacles()
       double radius = (obs.param1 > 0) ? obs.param1 : 1.0;
       marker.scale.x = radius * 2.0;
       marker.scale.y = radius * 2.0;
-      marker.scale.z = 2.0;
+      marker.scale.z = z_extent;
     }
     else if (obs.shape == ObstacleShape::RECTANGLE)
     {
       marker.type = visualization_msgs::msg::Marker::CUBE;
       marker.scale.x = obs.param1;
       marker.scale.y = obs.param2;
-      marker.scale.z = 2.0;
+      marker.scale.z = z_extent;
     }
 
     marker_pub_->publish(marker);

@@ -132,6 +132,11 @@ namespace ego_planner
     const path_planner::sdf::SDFManager *sdf_manager_{nullptr};
     double obstacle_clearance_{0.5};  // safety margin used by SDF penalty
 
+    // Hard half-space constraints applied outside the SDF so the clearance
+    // band does not contaminate them. Sentinel: ≤ -0.5 disables the plane.
+    double ground_height_{-1.0};
+    double virtual_ceil_height_{-1.0};
+
     // Threat zone data for trajectory optimization.
     std::vector<ThreatZone> threat_zones_;
     bool use_threat_zones_{false};
@@ -145,6 +150,8 @@ namespace ego_planner
     void setLogManager(swarm_formation::LogManager::Ptr log_manager);
     void setSDFManager(const path_planner::sdf::SDFManager *sdf) { sdf_manager_ = sdf; }
     void setObstacleClearance(double c) { obstacle_clearance_ = c; }
+    void setGroundHeight(double h)      { ground_height_ = h; }
+    void setVirtualCeilHeight(double h) { virtual_ceil_height_ = h; }
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
     void setDroneId(const int drone_id);

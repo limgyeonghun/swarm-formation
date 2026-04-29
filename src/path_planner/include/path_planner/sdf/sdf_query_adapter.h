@@ -41,7 +41,7 @@ struct SDFQueryAdapter {
     for (const auto &tz : *threat_zones) {
       double dist = (pos - tz.center).norm();
       if (dist < tz.detection_range) {
-        double sigma = tz.detection_range / 2.0;
+        double sigma = tz.detection_range / 3.0;
         total += tz.max_threat_level *
                  std::exp(-0.5 * (dist / sigma) * (dist / sigma));
       }

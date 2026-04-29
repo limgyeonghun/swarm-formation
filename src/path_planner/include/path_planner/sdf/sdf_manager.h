@@ -50,6 +50,11 @@ class SDFManager {
   double voxelSize() const;
   size_t numAllocatedBlocks() const;
 
+  // Grid extent in cells along x/y/z. Zero if no data.
+  Eigen::Vector3i shape() const;
+  // World-frame origin (lower corner of voxel (0,0,0)).
+  Eigen::Vector3d origin() const;
+
  private:
   std::unique_ptr<SDFManagerImpl> impl_;
 };

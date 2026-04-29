@@ -1,0 +1,25 @@
+/**:
+  ros__parameters:
+    # =============================================================
+    # Scenario 1: Midway SAM gauntlet
+    # Pairs with formation_manager/config/scenario_sdf_test1.yaml
+    # start = (610.59, 108.07), goal = (155.60, 854.72)
+    #
+    # Four SAMs placed on/beside the direct line so the drone has to
+    # weave at the 25/50/75 % checkpoints. None of them are clustered
+    # around the goal itself.
+    # =============================================================
+
+    obstacles: [0.0, -9999.0, 0.0]
+
+    # [cx, cy, cz, detection_range, max_threat_level]
+    threat_zones: [
+      # 25% checkpoint, slightly off the corridor → forces first dodge
+      495.0, 295.0, 0.0, 120.0, 100.0,
+      # 50% checkpoint, dead center on the corridor → main blocker
+      383.0, 481.0, 0.0, 100.0, 100.0,
+      # 50% checkpoint, opposite side → narrows the detour options
+      410.0, 600.0, 0.0, 90.0, 100.0,
+      # 75% checkpoint, slightly off the corridor → last dodge
+      325.0, 706.0, 0.0, 110.0, 100.0
+    ]

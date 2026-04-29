@@ -107,6 +107,22 @@ vector<GridNodePtr> AStar::retrievePath(GridNodePtr current)
         path.push_back(current);
         current = current->cameFrom;
     }
+    // DEBUG: print gScore trace back from goal → start. If threat was
+    // added per cell, gScore jumps should match the threat cost of each
+    // cell; if any node has a suspiciously low gScore the issue is in
+    // the expansion / update rule.
+    if (log_manager_ && threat_zones_ && !threat_zones_->empty()) {
+        log_manager_->infof("[A* RETRIEVE] path length=%zu (listed goal→start)", path.size());
+        int stride = std::max(1, (int)path.size() / 20);
+        for (size_t i = 0; i < path.size(); i += stride) {
+            GridNodePtr n = path[i];
+            Eigen::Vector3d w = Index2Coord(n->index);
+            double tc = getThreatCost(w);
+            log_manager_->infof("[A* RETRIEVE] i=%zu idx=(%d,%d,%d) world=(%.2f,%.2f,%.2f) g=%.3f threat_here=%.3f",
+                i, n->index(0), n->index(1), n->index(2),
+                w.x(), w.y(), w.z(), n->gScore, tc);
+        }
+    }
 
     return path;
 }
@@ -169,12 +185,39 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
     ++rounds_;
     
     if (log_manager_) {
-        log_manager_->infof("3D A* 검색 시작 - Round: %d, Step size: %.3f, ESDF 사용: %s", 
+        log_manager_->infof("3D A* 검색 시작 - Round: %d, Step size: %.3f, ESDF 사용: %s",
                            rounds_, step_size, use_esdf_check ? "Yes" : "No");
-        log_manager_->infof("시작점: (%.2f,%.2f,%.2f), 도착점: (%.2f,%.2f,%.2f)", 
+        log_manager_->infof("시작점: (%.2f,%.2f,%.2f), 도착점: (%.2f,%.2f,%.2f)",
                            start_pt(0), start_pt(1), start_pt(2), end_pt(0), end_pt(1), end_pt(2));
+        // DEBUG: threat binding at entry.
+        size_t tz_n = threat_zones_ ? threat_zones_->size() : 0;
+        log_manager_->infof("[A* DBG] threat_zones_ptr=%p size=%zu weight=%.3f",
+                           (const void*)threat_zones_, tz_n, threat_weight_);
+        if (threat_zones_) {
+            for (size_t i = 0; i < threat_zones_->size(); ++i) {
+                const auto &tz = (*threat_zones_)[i];
+                log_manager_->infof("[A* DBG]  tz[%zu] c=(%.2f,%.2f,%.2f) R=%.2f L=%.2f",
+                    i, tz.center.x(), tz.center.y(), tz.center.z(),
+                    tz.detection_range, tz.max_threat_level);
+                // Direct probe: what does getThreatCost(center) return? If
+                // the zone is really there it should be max_threat_level *
+                // threat_weight_.
+                double probe = getThreatCost(tz.center);
+                log_manager_->infof("[A* DBG]  tz[%zu] probe@center cost=%.3f (expected=%.3f)",
+                    i, probe, tz.max_threat_level * threat_weight_);
+                // Off-by-one checks: 1m step towards goal from center.
+                Eigen::Vector3d off_pos = tz.center + Eigen::Vector3d(1.0, 0.0, 0.0);
+                log_manager_->infof("[A* DBG]  tz[%zu] probe@center+1mX cost=%.3f",
+                    i, getThreatCost(off_pos));
+            }
+        }
     }
-    
+    // Reset threat-query counters for this search.
+    dbg_threat_queries_ = 0;
+    dbg_threat_nonzero_ = 0;
+    dbg_threat_max_ = 0.0;
+    dbg_threat_max_pos_ = Eigen::Vector3d::Zero();
+
     step_size_ = step_size;
     inv_step_size_ = 1 / step_size;
     center_ = (start_pt + end_pt) / 2;
@@ -239,6 +282,12 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
             auto elapsed = time_2 - time_1;
             if (log_manager_) {
                 log_manager_->infof("3D A* 검색 성공! 반복: %d회, 시간: %.3fms", num_iter, elapsed.seconds()*1000);
+                // DEBUG: threat firing stats + best neighbor cost vs final path gScore.
+                log_manager_->infof("[A* DBG] threat_queries=%zu nonzero=%zu max_cost=%.3f at (%.2f,%.2f,%.2f)",
+                    dbg_threat_queries_, dbg_threat_nonzero_, dbg_threat_max_,
+                    dbg_threat_max_pos_.x(), dbg_threat_max_pos_.y(), dbg_threat_max_pos_.z());
+                log_manager_->infof("[A* DBG] goal fScore=%.3f gScore=%.3f",
+                    current->fScore, current->gScore);
             }
             printf("\033[34mA star iter:%d, time:%.3f\033[0m\n", num_iter, elapsed.seconds()*1000);
             gridPath_ = retrievePath(current);
@@ -296,19 +345,70 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
 
             neighborPtr->rounds = rounds_;
 
-            if(use_esdf_check){
-                if (checkOccupancy_esdf(Index2Coord(neighborPtr->index)))
-                    continue;
-            } else {
-                if (checkOccupancy(Index2Coord(neighborPtr->index)))
-                    continue;
+            {
+                const Eigen::Vector3d nw = Index2Coord(neighborPtr->index);
+                // Hard ground / ceiling gate. Applies regardless of the
+                // search_ignores_obstacles_ debug flag — flying below the
+                // ground or above the ceiling is never allowed.
+                if (ground_height_ > -0.5 && nw.z() < ground_height_) continue;
+                if (virtual_ceil_height_ > -0.5 && nw.z() > virtual_ceil_height_) continue;
+            }
+
+            if (!search_ignores_obstacles_) {
+                if(use_esdf_check){
+                    if (checkOccupancy_esdf(Index2Coord(neighborPtr->index)))
+                        continue;
+                } else {
+                    if (checkOccupancy(Index2Coord(neighborPtr->index)))
+                        continue;
+                }
             }
 
             double static_cost = neighbor_costs_ordered[i];
 
-            // Add threat cost if threat zones are enabled
-            double threat_cost = getThreatCost(Index2Coord(neighborPtr->index));
-            tentative_gScore = current->gScore + static_cost + threat_cost;
+            // Threat-aware edge cost: multiply distance by (1 + threat) so
+            // the threat integral scales with travel length. With the
+            // additive form (static + threat) the distance component is
+            // swamped inside a high-threat zone, making diagonal and axial
+            // steps almost indistinguishable; the multiplicative form keeps
+            // shorter paths cheaper even inside threat regions and matches
+            // the main-branch / swarm-formation RRT* reference.
+            Eigen::Vector3d neigh_world = Index2Coord(neighborPtr->index);
+            double threat_cost = getThreatCost(neigh_world);
+            tentative_gScore = current->gScore + static_cost * (1.0 + threat_cost);
+
+            // DEBUG: log first few expansions + any expansion into a threat
+            // zone. Shows whether A* actually queries cells near SAM centers
+            // and what world-coord each cell index maps to.
+            if (log_manager_ && threat_zones_ && !threat_zones_->empty()) {
+                static thread_local int dbg_expand_count = 0;
+                // reset at start of a new search: rounds_ comparator.
+                static thread_local int dbg_last_round = -1;
+                if (dbg_last_round != rounds_) {
+                    dbg_expand_count = 0;
+                    dbg_last_round = rounds_;
+                }
+                bool inside_zone = false;
+                for (const auto &tz : *threat_zones_) {
+                    if ((neigh_world - tz.center).norm() < tz.detection_range) {
+                        inside_zone = true;
+                        break;
+                    }
+                }
+                bool log_it = (dbg_expand_count < 10) ||
+                              (inside_zone && dbg_expand_count < 200);
+                if (log_it) {
+                    log_manager_->infof(
+                        "[A* EXPAND] #%d idx=(%d,%d,%d) world=(%.3f,%.3f,%.3f) "
+                        "static=%.3f threat=%.3f g=%.3f inside_zone=%d",
+                        dbg_expand_count, neighborPtr->index(0),
+                        neighborPtr->index(1), neighborPtr->index(2),
+                        neigh_world.x(), neigh_world.y(), neigh_world.z(),
+                        static_cost, threat_cost, tentative_gScore,
+                        inside_zone ? 1 : 0);
+                    ++dbg_expand_count;
+                }
+            }
 
             if (!flag_explored)
             {
@@ -332,7 +432,7 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
         // 10 s cap: global (one-shot) planning can afford a long front-end
         // search; the 0.5 s limit in the upstream code was tuned for on-board
         // real-time local replan.
-        if (elapsed.seconds() > 10.0)
+        if (elapsed.seconds() > 20.0)
         {
             if (log_manager_) {
                 log_manager_->warnf("3D A* 검색 시간 초과 - %.3fms 경과, 반복: %d회", elapsed.seconds()*1000, num_iter);
@@ -484,90 +584,89 @@ vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vect
         return path;
     }
 
-    vector<Vector3d> simple_path;
-    int end_idx = 1;
-    Vector3d cut_start = path[0];
-    simple_path.push_back(cut_start);
+    // Threat-aware shortcut (ported from the pre-A* RRT* pipeline).
+    // Precompute cumulative edge cost (straight-line distance + Gaussian
+    // threat integral) along the raw path. When trying to collapse points
+    // i..j into a single straight segment, accept only if the segment is
+    // (a) occupancy-free and (b) costs no more than 5 % over the detour
+    // cost the A* search actually paid. This way:
+    //   - clear corridors: fully shortcut to a straight line
+    //   - threat detour    : original avoidance is preserved
+    //   - forced breakthrough: detour_cost ≈ shortcut_cost, shortcut allowed
+    const double kShortcutMargin = 1.05;
+    const int    kThreatSamples  = 4;  // trapezoidal samples per segment
 
-    bool finish = false;
-    int safety_counter = 0;
-    const int MAX_ITERATIONS = 1000;
-    int prev_end_idx = -1;
-
-    while (!finish && safety_counter < MAX_ITERATIONS) {
-        safety_counter++;
-
-        // Detect infinite loop
-        if (end_idx == prev_end_idx) {
-            if (log_manager_) {
-                log_manager_->warnf("드론 %d: 단순화에서 정체 감지 (idx=%d) - 강제 진행", drone_id, end_idx);
-            }
-            if (end_idx < size - 1) {
-                simple_path.push_back(path[end_idx]);
-                end_idx++;
-            } else {
-                finish = true;
-            }
-            continue;
+    auto segmentThreatCost = [&](const Vector3d &a, const Vector3d &b) {
+        double d = (b - a).norm();
+        if (d < 1e-6) return 0.0;
+        double sum = 0.0;
+        for (int si = 0; si <= kThreatSamples; ++si) {
+            double t = (double)si / (double)kThreatSamples;
+            Vector3d p = a + t * (b - a);
+            double w = (si == 0 || si == kThreatSamples) ? 0.5 : 1.0;
+            // (1 + threat) multiplier form matches the RRT* reference.
+            sum += w * (1.0 + getThreatCost(p));
         }
-        prev_end_idx = end_idx;
+        return d * sum / (double)kThreatSamples;
+    };
 
-        bool made_progress = false;
-        for (int i = end_idx; i < size; i++) {
-            bool is_safe = true;
-            Vector3d check_pt = path[i];
-
-            // 3D collision checking along the straight line
-            int check_num = ceil((check_pt - cut_start).norm() / 0.01);
-
-            for (int j = 0; j <= check_num; j++) {
-                double alpha = double(1.0 / check_num) * j;
-                Vector3d check_safe_pt = (1 - alpha) * cut_start + alpha * check_pt;
-
-                // Full 3D occupancy check (Z coordinate is naturally interpolated)
-                if (checkOccupancy_esdf(check_safe_pt)) {
-                    is_safe = false;
-                    break;
-                }
-            }
-
-            if (is_safe && i == (size - 1)) {
-                finish = true;
-                simple_path.push_back(check_pt);
-                made_progress = true;
-                break;
-            }
-
-            if (is_safe) {
-                continue;  // Keep checking farther points
-            } else {
-                // Found collision - add previous safe point
-                made_progress = true;
-                if (i == end_idx) {
-                    cut_start = path[i];
-                    simple_path.push_back(cut_start);
-                    end_idx = i + 1;
-                } else {
-                    cut_start = path[i - 1];
-                    simple_path.push_back(cut_start);
-                    end_idx = i;
-                }
-                break;
-            }
+    // Shortcut visibility uses the same obstacle margin as A* search so the
+    // two stages stay consistent under debugging (e.g. setting margin very
+    // low to probe whether shortcut is producing obstacle-clipping straights).
+    auto segmentOccFree = [&](const Vector3d &a, const Vector3d &b) {
+        int n = std::max(1, (int)std::ceil((b - a).norm() / 0.5));
+        for (int k = 0; k <= n; ++k) {
+            double t = (double)k / (double)n;
+            Vector3d p = a + t * (b - a);
+            if (checkOccupancy_esdf(p)) return false;
         }
+        return true;
+    };
 
-        if (!made_progress && end_idx >= size - 1) {
-            finish = true;
+    // Reject shortcuts that pass through a threat zone with non-trivial
+    // threat level. A* already chose to detour around such zones; the 1.05
+    // cost-ratio filter below is too permissive (a long straight through a
+    // small zone may still fit under 5 %), so we gate it with a hard
+    // threat-presence check sampled along the segment. This keeps genuine
+    // clear-corridor shortcuts but blocks "shortcut through the SAM" ones.
+    const double kThreatRejectLevel = 1.0;
+    auto segmentThreatFree = [&](const Vector3d &a, const Vector3d &b) {
+        if (!threat_zones_ || threat_zones_->empty()) return true;
+        int n = std::max(1, (int)std::ceil((b - a).norm() / 0.5));
+        for (int k = 0; k <= n; ++k) {
+            double t = (double)k / (double)n;
+            Vector3d p = a + t * (b - a);
+            if (getThreatCost(p) > kThreatRejectLevel) return false;
         }
+        return true;
+    };
+
+    std::vector<double> cum_cost(path.size(), 0.0);
+    for (size_t k = 1; k < path.size(); ++k) {
+        cum_cost[k] = cum_cost[k - 1] + segmentThreatCost(path[k - 1], path[k]);
     }
 
-    if (safety_counter >= MAX_ITERATIONS) {
-        if (log_manager_) {
-            log_manager_->errorf("드론 %d: 경로 단순화 무한 루프 감지 - 원본 경로 반환", drone_id);
+    vector<Vector3d> simple_path;
+    simple_path.push_back(path.front());
+    size_t i = 0;
+    while (i + 1 < path.size()) {
+        size_t farthest = i + 1;
+        for (size_t j = path.size() - 1; j > i + 1; --j) {
+            if (!segmentOccFree(path[i], path[j])) continue;
+            if (!segmentThreatFree(path[i], path[j])) continue;
+            double shortcut_cost = segmentThreatCost(path[i], path[j]);
+            double detour_cost   = cum_cost[j] - cum_cost[i];
+            if (shortcut_cost <= detour_cost * kShortcutMargin) {
+                farthest = j;
+                break;
+            }
         }
-        RCLCPP_ERROR(rclcpp::get_logger("astar"),
-                     "Drone %d: Infinite loop in path simplification - returning original path", drone_id);
-        return path;
+        simple_path.push_back(path[farthest]);
+        i = farthest;
+    }
+    if (log_manager_) {
+        log_manager_->infof("[A* SHORTCUT] raw=%zu → simple=%zu (threat-aware, margin=%.2f)",
+            path.size(), simple_path.size(), kShortcutMargin);
     }
 
     // Remove near points (3D distance)
@@ -588,31 +687,6 @@ vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vect
             }
         }
     } while (near_flag);
-
-    // Split long segments (3D distance). For segments longer than the
-    // threshold we insert enough equally-spaced points in one pass — the
-    // previous "midpoint bisection + retry" loop bailed out at 10 iterations
-    // and left ~15m jumps on long diagonals, which then placed the MINCO
-    // initial trajectory inside obstacles.
-    const double length_threshold = 1.5;
-    {
-        std::vector<Vector3d> densified;
-        densified.reserve(simple_path.size() * 2);
-        for (size_t i = 0; i + 1 < simple_path.size(); ++i) {
-            densified.push_back(simple_path[i]);
-            double leng = (simple_path[i + 1] - simple_path[i]).norm();
-            if (leng > length_threshold) {
-                int n_splits = static_cast<int>(std::ceil(leng / length_threshold));
-                for (int s = 1; s < n_splits; ++s) {
-                    double alpha = static_cast<double>(s) / n_splits;
-                    densified.push_back(
-                        simple_path[i] * (1.0 - alpha) + simple_path[i + 1] * alpha);
-                }
-            }
-        }
-        densified.push_back(simple_path.back());
-        simple_path = std::move(densified);
-    }
 
     if (log_manager_) {
         log_manager_->infof("드론 %d: 3D 경로 단순화 완료 - %zu점 -> %zu점",

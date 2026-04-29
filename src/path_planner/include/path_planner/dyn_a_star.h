@@ -61,6 +61,14 @@ private:
     path_planner::sdf::SDFManager *sdf_ = nullptr;
     const std::vector<ThreatZoneLite> *threat_zones_ = nullptr;
     double obstacle_margin_ = 0.5;  // meters
+    // When true, the A* graph expansion ignores obstacles (every voxel is
+    // traversable); shortcut / downstream checks still use obstacle_margin_.
+    bool search_ignores_obstacles_ = false;
+    // Hard ground / ceiling for A* expansion. Cells at or below
+    // ground_height_ (and at or above virtual_ceil_height_) are rejected
+    // just like SDF-occupied voxels. Sentinel: ≤ -0.5 disables the plane.
+    double ground_height_ = -1.0;
+    double virtual_ceil_height_ = -1.0;
     double threat_weight_ = 0.1;
     double map_resolution_ = 1.0;
     Eigen::Vector3d map_origin_ = Eigen::Vector3d::Zero();
@@ -99,8 +107,24 @@ private:
             double g = std::exp(-(dist * dist) / (2.0 * sigma * sigma));
             level += tz.max_threat_level * g;
         }
-        return level * threat_weight_;
+        double cost = level * threat_weight_;
+        // DEBUG: track how often threat cost actually fires during A* expansion.
+        ++dbg_threat_queries_;
+        if (cost > 0.0) {
+            ++dbg_threat_nonzero_;
+            if (cost > dbg_threat_max_) {
+                dbg_threat_max_ = cost;
+                dbg_threat_max_pos_ = pos;
+            }
+        }
+        return cost;
     }
+
+    // DEBUG counters — reset before each search, dumped by dumpThreatDebug().
+    mutable size_t dbg_threat_queries_ = 0;
+    mutable size_t dbg_threat_nonzero_ = 0;
+    mutable double dbg_threat_max_ = 0.0;
+    mutable Eigen::Vector3d dbg_threat_max_pos_ = Eigen::Vector3d::Zero();
 
     std::vector<GridNodePtr> retrievePath(GridNodePtr current);
 
@@ -135,6 +159,9 @@ public:
     }
     void setThreatZones(const std::vector<ThreatZoneLite> *zones) { threat_zones_ = zones; }
     void setObstacleMargin(double m) { obstacle_margin_ = m; }
+    void setSearchIgnoresObstacles(bool b) { search_ignores_obstacles_ = b; }
+    void setGroundHeight(double h)      { ground_height_ = h; }
+    void setVirtualCeilHeight(double h) { virtual_ceil_height_ = h; }
     void setThreatWeight(double w) { threat_weight_ = w; }
 
     void initGridMap(const Eigen::Vector3i &pool_size);

@@ -24,11 +24,14 @@ struct Obstacle {
   ObstacleShape shape;
   double param1;
   double param2;
+  double z_extent;  // vertical height above center.z; 0 = infinite column (back-compat)
 
-  Obstacle() : center(0, 0, 0), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0) {}
-  Obstacle(const Eigen::Vector3d& c) : center(c), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0) {}
-  Obstacle(const Eigen::Vector3d& c, double radius) : center(c), shape(ObstacleShape::CIRCLE), param1(radius), param2(0.0) {}
-  Obstacle(const Eigen::Vector3d& c, double width, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(height) {}
+  Obstacle() : center(0, 0, 0), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0), z_extent(0.0) {}
+  Obstacle(const Eigen::Vector3d& c) : center(c), shape(ObstacleShape::CIRCLE), param1(-1.0), param2(0.0), z_extent(0.0) {}
+  Obstacle(const Eigen::Vector3d& c, double radius) : center(c), shape(ObstacleShape::CIRCLE), param1(radius), param2(0.0), z_extent(0.0) {}
+  Obstacle(const Eigen::Vector3d& c, double radius, double height, bool /*circle_with_height*/) : center(c), shape(ObstacleShape::CIRCLE), param1(radius), param2(0.0), z_extent(height) {}
+  Obstacle(const Eigen::Vector3d& c, double width, double length) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(length), z_extent(0.0) {}
+  Obstacle(const Eigen::Vector3d& c, double width, double length, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(length), z_extent(height) {}
 };
 
 struct VisThreatZone {

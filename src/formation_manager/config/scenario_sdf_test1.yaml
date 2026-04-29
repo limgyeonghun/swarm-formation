@@ -11,7 +11,6 @@
 scenario:
   mission:
     commands:
-        # Direct penetration through threat zones
         - formation_type: "none"
           formation_scale: 0.0
           distance_threshold: 3.0

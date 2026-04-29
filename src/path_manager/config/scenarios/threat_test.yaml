@@ -6,15 +6,19 @@
     # =============================================================
 
     # Physical obstacles (hard constraints - walls)
-    # No physical obstacles in this scenario — only threat zones
-    obstacles: [0.0, -9999.0, 0.0]
+    # 7-field format: [cx, cy, cz, shape, p1, p2, height]
+    #   shape=0 (circle):    p1=radius, p2=0
+    #   shape=1 (rectangle): p1=width,  p2=length
+    #   height=0 → infinite column
+    obstacles: [125.0, 0.5, -2.0, 0.0, 2.5, 0.0, 4.0]
+
 
     # Threat zones (soft constraints - high cost but penetrable)
     # Format: [cx, cy, cz, detection_range, max_threat_level]
     #   detection_range:   Gaussian support radius (sigma = range/3)
     #   max_threat_level:  peak threat intensity at center
     threat_zones: [
-      25.0, 0.0, 0.0,  15.0, 100.0,
+      25.0, 0.0, 0.0,  4.5, 100.0,
       # 40.0, -5.0, 0.0, 0.1, 100.0,
-      40.0, 10.0, 0.0, 10.0, 100.0
+      40.0, 10.0, 0.0, 3.0, 100.0
     ]

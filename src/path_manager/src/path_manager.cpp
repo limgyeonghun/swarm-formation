@@ -28,10 +28,18 @@ namespace path_manager
         node_->declare_parameter("manager/max_acc", -1.0);
         node_->declare_parameter("manager/length_per_piece", 3.0);
         node_->declare_parameter("manager/threat_weight", 10.0);
+        node_->declare_parameter("manager/astar_step_size", 1.0);
+        node_->declare_parameter("manager/sdf_voxel_size", 1.0);
+        node_->declare_parameter("manager/ground_height", -0.1);
+        node_->declare_parameter("manager/virtual_ceil_height", -0.1);
         node_->get_parameter("manager/max_vel", max_vel_);
         node_->get_parameter("manager/max_acc", max_acc_);
         node_->get_parameter("manager/length_per_piece", length_per_piece_);
         node_->get_parameter("manager/threat_weight", threat_weight_);
+        node_->get_parameter("manager/astar_step_size", astar_step_size_);
+        node_->get_parameter("manager/sdf_voxel_size", sdf_voxel_size_);
+        node_->get_parameter("manager/ground_height", ground_height_);
+        node_->get_parameter("manager/virtual_ceil_height", virtual_ceil_height_);
 
         // Optional precomputed terrain ESDF file.
         // save: after first successful buildSDFForBounds, dump to this path.
@@ -72,38 +80,53 @@ namespace path_manager
         // Basic: [x, y, z] - uses default inflation
         // Circle: [x, y, z, 0, radius]
         // Rectangle: [x, y, z, 1, width, height]
+        // Primary obstacle format — 7 fixed fields per entry (ambiguity-free):
+        //   Circle:    [cx, cy, cz, 0, radius, 0,      height]
+        //   Rectangle: [cx, cy, cz, 1, width,  length, height]
+        // `height == 0` means infinite column (legacy semantics).
+        //
+        // Legacy accepted:
+        //   [x, y, z]  — plain point (also used as "no-obstacle" sentinel)
+        //
+        // Entries are dispatched by peeking at obstacle_params[i + 3]: a
+        // recognized shape_type (0 or 1) starts a 7-field record; anything
+        // else (including list end) falls back to the 3-field legacy form.
+        constexpr size_t kObsFields = 7;
         size_t i = 0;
-        while (i < obstacle_params.size())
-        {
-            if (i + 2 >= obstacle_params.size()) break;
+        while (i + 3 <= obstacle_params.size()) {
+            Eigen::Vector3d center(obstacle_params[i + 0],
+                                   obstacle_params[i + 1],
+                                   obstacle_params[i + 2]);
 
-            Eigen::Vector3d center(obstacle_params[i], obstacle_params[i + 1], obstacle_params[i + 2]);
+            const bool have_shape_field = (i + 3 < obstacle_params.size());
+            const int shape_type = have_shape_field
+                ? static_cast<int>(obstacle_params[i + 3])
+                : -1;
+            const bool is_full_record =
+                have_shape_field &&
+                (shape_type == 0 || shape_type == 1) &&
+                (i + kObsFields <= obstacle_params.size());
 
-            if (i + 3 < obstacle_params.size())
-            {
-                int shape_type = static_cast<int>(obstacle_params[i + 3]);
-
-                if (shape_type == 0 && i + 4 < obstacle_params.size())  // CIRCLE
-                {
-                    double radius = obstacle_params[i + 4];
-                    obstacle_centers_.emplace_back(center, radius);
-                    i += 5;
+            if (is_full_record) {
+                const double p1     = obstacle_params[i + 4];
+                const double p2     = obstacle_params[i + 5];
+                const double height = obstacle_params[i + 6];
+                if (shape_type == 0) {  // CIRCLE: p1=radius, p2 unused
+                    if (height > 0.0) {
+                        obstacle_centers_.emplace_back(center, p1, height, true);
+                    } else {
+                        obstacle_centers_.emplace_back(center, p1);
+                    }
+                } else {  // RECTANGLE: p1=width, p2=length
+                    if (height > 0.0) {
+                        obstacle_centers_.emplace_back(center, p1, p2, height);
+                    } else {
+                        obstacle_centers_.emplace_back(center, p1, p2);
+                    }
                 }
-                else if (shape_type == 1 && i + 5 < obstacle_params.size())  // RECTANGLE
-                {
-                    double width = obstacle_params[i + 4];
-                    double height = obstacle_params[i + 5];
-                    obstacle_centers_.emplace_back(center, width, height);
-                    i += 6;
-                }
-                else
-                {
-                    obstacle_centers_.emplace_back(center);
-                    i += 3;
-                }
-            }
-            else
-            {
+                i += kObsFields;
+            } else {
+                // Legacy 3-field entry: plain point.
                 obstacle_centers_.emplace_back(center);
                 i += 3;
             }
@@ -121,6 +144,10 @@ namespace path_manager
             "/drone_" + std::to_string(drone_id) + "/init_minco_path", 10);
         esdf_occ_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
             "/drone_" + std::to_string(drone_id) + "/esdf_occupied", 1);
+        inner_pts_init_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/drone_" + std::to_string(drone_id) + "/inner_pts_init", 10);
+        inner_pts_opt_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/drone_" + std::to_string(drone_id) + "/inner_pts_opt", 10);
     }
 
     void PathManager::updateRobotState(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& local_target_pt)
@@ -166,6 +193,8 @@ namespace path_manager
             // Wire SDF-based obstacle avoidance into the optimizer.
             poly_traj_opt_->setSDFManager(&sdf_manager_);
             poly_traj_opt_->setObstacleClearance(obstacle_clearance_);
+            poly_traj_opt_->setGroundHeight(ground_height_);
+            poly_traj_opt_->setVirtualCeilHeight(virtual_ceil_height_);
 
             // Pass threat zones to optimizer for trajectory fine-tuning (2nd stage)
             if (!threat_zones_.empty()) {
@@ -238,6 +267,12 @@ namespace path_manager
 
         // Extend bounds to include all waypoints with margin
         double bound_margin_xy = 10.0;
+        // Z margin below the lowest waypoint. Without this the map bottom
+        // sits exactly on the start altitude, meaning obstacles anchored at
+        // that altitude touch the map floor — their SDF gradient looks
+        // asymmetric (no voxels below, voxels above), which tricks L-BFGS
+        // into attempting a vertical-only escape that smoothness then blocks.
+        const double bound_margin_z_below = 5.0;
 
         // If threat zones exist, expand margin to allow routing around them
         for (const auto &tz : threat_zones_) {
@@ -247,6 +282,7 @@ namespace path_manager
         for (const auto& pt : all_points) {
             map_lower_bound_.x() = std::min(map_lower_bound_.x(), pt.x() - bound_margin_xy);
             map_lower_bound_.y() = std::min(map_lower_bound_.y(), pt.y() - bound_margin_xy);
+            map_lower_bound_.z() = std::min(map_lower_bound_.z(), pt.z() - bound_margin_z_below);
             map_upper_bound_.x() = std::max(map_upper_bound_.x(), pt.x() + bound_margin_xy);
             map_upper_bound_.y() = std::max(map_upper_bound_.y(), pt.y() + bound_margin_xy);
         }
@@ -409,27 +445,37 @@ namespace path_manager
         Eigen::Vector3d map_size = map_upper_bound_ - map_lower_bound_;
         astar_.setLogManager(log_manager_);
         astar_.setSDF(&sdf_manager_, map_lower_bound_, map_size, sdf_voxel_size_);
-        astar_.setThreatZones(astar_threats.empty() ? nullptr : &astar_threats);
-        // A* margin is larger than the L-BFGS obstacle_clearance so the
-        // front-end picks a "chunky" path that stays well away from terrain,
-        // while the optimizer keeps a tighter safety margin as a last-resort
-        // guard. Extra padding covers voxel quantization (worst case
-        // sqrt(3)/2 * voxel_size) plus a comfortable buffer.
-        const double astar_extra_margin = 1.0;
-        astar_.setObstacleMargin(obstacle_clearance_ + astar_extra_margin);
+        const std::vector<path_planner::astar::ThreatZoneLite> *astar_tz_ptr =
+            astar_threats.empty() ? nullptr : &astar_threats;
+        astar_.setThreatZones(astar_tz_ptr);
+        log_manager_->infof("[PM DBG] setThreatZones: %zu zones (ptr=%p) weight=%.3f",
+            astar_threats.size(), (const void*)astar_tz_ptr, threat_weight_);
+        // A* must see obstacles so the simple_path it returns is already an
+        // avoidance path. Feeding that into MINCO makes the initial inner
+        // points sit OUTSIDE the obstacle, and L-BFGS only has to smooth the
+        // detour — no saddle problem. If A* is blinded (search_ignores=true)
+        // the optimiser gets a straight line through the obstacle centre and
+        // the cylinder's rotational symmetry pins it at a zero-gradient
+        // saddle, which matches what main-branch would also suffer under the
+        // same debug configuration.
+        astar_.setObstacleMargin(obstacle_clearance_);
+        astar_.setSearchIgnoresObstacles(false);
+        astar_.setGroundHeight(ground_height_);
+        astar_.setVirtualCeilHeight(virtual_ceil_height_);
         astar_.setThreatWeight(threat_weight_);
 
-        // Ensure the search pool can cover the longest segment in world
-        // units. Pool cells use sdf_voxel_size_ (= A* step); pad a bit.
+        // Size the A* search pool to cover the entire SDF so any detour is
+        // reachable regardless of the start/goal pair. A* centers the pool
+        // on the midpoint of each query; as long as pool_size ≥ sdf shape,
+        // the full map is inside the search region. Allocated once on the
+        // first plan and reused for all later missions.
         {
-            double max_span = 0.0;
-            for (size_t i = 0; i + 1 < all_points.size(); ++i) {
-                max_span = std::max(max_span,
-                    (all_points[i + 1] - all_points[i]).cwiseAbs().maxCoeff());
+            Eigen::Vector3i sdf_shape = sdf_manager_.shape();
+            if (sdf_shape.minCoeff() <= 0) {
+                log_manager_->errorf("SDF shape not available, cannot size A* pool");
+                return false;
             }
-            int needed = static_cast<int>(std::ceil(max_span / sdf_voxel_size_)) + 20;
-            needed = std::max(needed, 80);
-            Eigen::Vector3i desired(needed, needed, std::min(60, needed));
+            Eigen::Vector3i desired = sdf_shape;
             if (!astar_initialized_) {
                 astar_pool_size_ = desired;
                 astar_.initGridMap(astar_pool_size_);
@@ -451,7 +497,7 @@ namespace path_manager
         {
             std::vector<Eigen::Vector3d> seg_path =
                 astar_.astarSearchAndGetSimplePath(
-                    sdf_voxel_size_, all_points[seg], all_points[seg + 1],
+                    astar_step_size_, all_points[seg], all_points[seg + 1],
                     traj_.local_traj.drone_id);
 
             log_manager_->infof("A* segment %zu: simple_path_size=%zu",
@@ -480,9 +526,32 @@ namespace path_manager
         log_manager_->infof("A* route: %zu waypoints (%.1f ms)",
             full_route.size(),
             std::chrono::duration<double, std::milli>(t_rrt_end - t_astar_start).count());
+        // DEBUG: annotate each A* waypoint with per-zone distance and the
+        // Gaussian threat_cost that getThreatCost() would return there. If
+        // a waypoint sits inside a zone but its cost is ~0 we know the
+        // threat data passed to A* is wrong. If cost is huge but A* still
+        // picked the waypoint we know the detour weight vs heuristic is off.
         for (size_t ri = 0; ri < full_route.size(); ++ri) {
             const auto &p = full_route[ri];
-            log_manager_->infof("  A*[%zu]: (%.2f, %.2f, %.2f)", ri, p.x(), p.y(), p.z());
+            double total = 0.0;
+            std::string per_zone;
+            for (size_t zi = 0; zi < threat_zones_.size(); ++zi) {
+                const auto &tz = threat_zones_[zi];
+                double dist = (p - tz.center).norm();
+                double zone_cost = 0.0;
+                if (dist < tz.detection_range) {
+                    double sigma = tz.detection_range / 3.0;
+                    double g = std::exp(-(dist * dist) / (2.0 * sigma * sigma));
+                    zone_cost = tz.max_threat_level * g * threat_weight_;
+                }
+                total += zone_cost;
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), " tz%zu(d=%.2f,c=%.2f)",
+                              zi, dist, zone_cost);
+                per_zone += buf;
+            }
+            log_manager_->infof("  A*[%zu]: (%.2f, %.2f, %.2f) total_threat=%.3f%s",
+                ri, p.x(), p.y(), p.z(), total, per_zone.c_str());
         }
 
         // Publish simple path for visualization
@@ -538,15 +607,72 @@ namespace path_manager
             rrt_path_pub_->publish(dots);
         }
 
-        // === STEP 3: Feed RRT* waypoints directly to MINCO. ===
-        // RRT* already avoids obstacles at each vertex; keeping those vertices
-        // as piece boundaries (with straight-line interpolation between them)
-        // guarantees the initial trajectory stays on the safe side of the
-        // obstacle margin. Any smoothing attempt (B-spline, greedy shortening)
-        // risks cutting corners inside the obstacle clearance.
-        std::vector<Eigen::Vector3d> clean_path = full_route;
-        log_manager_->infof("Using RRT* path directly: %zu waypoints -> MINCO",
-            clean_path.size());
+        // === STEP 3: Corner-adaptive densification of the A* shortcut. ===
+        // A single uniform spacing cannot satisfy both requirements at
+        // once: small spacing keeps the trajectory glued to the A* polyline
+        // (stiff), large spacing lets MINCO's 5th-order polynomials
+        // overshoot at direction changes (loops).  We split the spacing
+        // into two regimes based on how sharp each shortcut vertex is:
+        //
+        //   * near a sharp corner → dense (length_per_piece_) so a bunch
+        //     of small piece-boundary kinks absorb the direction change
+        //     without letting the polynomial curl back on itself;
+        //   * in long straights    → coarse (length_per_piece_ × k) so
+        //     L-BFGS has big, loosely-linked pieces to reshape freely
+        //     around terrain / threats.
+        //
+        // Concretely, each shortcut segment is split by linear
+        // interpolation, with the step chosen per position:
+        //   step(α) = dense   if α is within `corner_band` of either end
+        //                       AND an actual corner is there,
+        //           = coarse  otherwise.
+        const double dense_step  = std::max(0.5, length_per_piece_);
+        const double coarse_step = std::max(dense_step, length_per_piece_ * 4.0);
+        const double corner_band = 6.0 * dense_step;   // m around each corner
+        const double corner_angle_thresh_deg = 20.0;   // "sharp" if ≥ this
+
+        auto is_sharp_corner = [&](size_t i) -> bool {
+            if (i == 0 || i + 1 >= full_route.size()) return false;
+            Eigen::Vector3d v_in  = (full_route[i]     - full_route[i - 1]).normalized();
+            Eigen::Vector3d v_out = (full_route[i + 1] - full_route[i]    ).normalized();
+            double c = std::clamp(v_in.dot(v_out), -1.0, 1.0);
+            double ang_deg = std::acos(c) * 180.0 / M_PI;
+            return ang_deg >= corner_angle_thresh_deg;
+        };
+
+        std::vector<Eigen::Vector3d> clean_path;
+        clean_path.reserve(full_route.size() * 8);
+        clean_path.push_back(full_route.front());
+
+        for (size_t i = 0; i + 1 < full_route.size(); ++i) {
+            const Eigen::Vector3d &a = full_route[i];
+            const Eigen::Vector3d &b = full_route[i + 1];
+            const double seg_len = (b - a).norm();
+            if (seg_len < 1e-6) continue;
+
+            const bool corner_start = is_sharp_corner(i);
+            const bool corner_end   = is_sharp_corner(i + 1);
+
+            // Walk from a to b in variable-size steps.  We pick the step
+            // length at the current distance-along-segment so corner bands
+            // shrink it on both ends.
+            double t = 0.0;
+            while (t < seg_len - 1e-6) {
+                double d_to_start = t;
+                double d_to_end   = seg_len - t;
+                bool near_start = corner_start && d_to_start < corner_band;
+                bool near_end   = corner_end   && d_to_end   < corner_band;
+                double step = (near_start || near_end) ? dense_step : coarse_step;
+                double t_next = std::min(seg_len, t + step);
+                double alpha  = t_next / seg_len;
+                clean_path.push_back(a + alpha * (b - a));
+                t = t_next;
+            }
+        }
+        log_manager_->infof(
+            "A* shortcut %zu pts → corner-adaptive %zu pts "
+            "(dense %.2f m @ corners, coarse %.2f m on straights)",
+            full_route.size(), clean_path.size(), dense_step, coarse_step);
 
         // Publish initial path for RViz (orange).
         if (shorten_path_pub_) {
@@ -574,24 +700,36 @@ namespace path_manager
         }
 
         // === STEP 4: MINCO initial trajectory from clean_path ===
+        // Swarm-Formation style: each shortcut vertex becomes one MINCO
+        // piece boundary directly. clean_path was already densified so
+        // every segment is ≤ length_per_piece_; there is no extra
+        // per-segment splitting here. This keeps every piece roughly the
+        // same length, which is what stops the 5th-order polynomial from
+        // overshooting at direction changes (the loop/twist artefact).
         auto t_minco_start = std::chrono::steady_clock::now();
-        const int seg_count = static_cast<int>(clean_path.size()) - 1;
-        Eigen::VectorXi pieceIdx(seg_count);
-        for (int i = 0; i < seg_count; ++i) {
-            double seg_len = (clean_path[i + 1] - clean_path[i]).norm();
-            pieceIdx(i) = std::max(1, static_cast<int>(std::ceil(seg_len / length_per_piece_)));
+
+        // Degenerate single-segment path → insert a midpoint so MINCO
+        // still has at least two pieces.
+        if (static_cast<int>(clean_path.size()) < 3) {
+            Eigen::Vector3d mid =
+                0.5 * (clean_path.front() + clean_path.back());
+            clean_path.insert(clean_path.begin() + 1, mid);
         }
-        int piece_num = pieceIdx.sum();
 
-        Eigen::Matrix3Xd clean_mat(3, clean_path.size());
-        for (size_t i = 0; i < clean_path.size(); ++i) clean_mat.col(i) = clean_path[i];
+        int piece_num = static_cast<int>(clean_path.size()) - 1;
+        Eigen::MatrixXd innerPts(3, piece_num - 1);
+        for (int i = 0; i < piece_num - 1; ++i) {
+            innerPts.col(i) = clean_path[i + 1];
+        }
 
-        // Use max_vel directly — the "* 3.0" factor was inflating the initial
-        // speed so MINCO started at ~3×max_vel and forced L-BFGS to stretch
-        // duration by ~25× to satisfy the feasibility penalty.
-        Eigen::Matrix3Xd innerPts;
-        Eigen::VectorXd time_vec;
-        setInitialFromPath(clean_mat, max_vel_, pieceIdx, innerPts, time_vec);
+        // Per-piece duration from segment length and max_vel (matches the
+        // Swarm-Formation reference).
+        const double des_vel = max_vel_;
+        Eigen::VectorXd time_vec(piece_num);
+        for (int i = 0; i < piece_num; ++i) {
+            double seg_len = (clean_path[i + 1] - clean_path[i]).norm();
+            time_vec(i) = std::max(0.05, seg_len / des_vel);
+        }
 
         Eigen::Vector3d approach_dir =
             (clean_path.back() - clean_path[clean_path.size() - 2]).normalized();
@@ -662,6 +800,37 @@ namespace path_manager
             Eigen::MatrixXd all_pos = initTraj.getPositions();
             Eigen::MatrixXd optInnerPts = all_pos.block(0, 1, 3, PN - 1);
 
+            // Publish initial inner points (orange spheres) — MINCO piece
+            // boundaries before L-BFGS starts.
+            if (inner_pts_init_pub_ && optInnerPts.cols() > 0) {
+                visualization_msgs::msg::MarkerArray arr;
+                const auto stamp = node_->get_clock()->now();
+                visualization_msgs::msg::Marker del;
+                del.action = visualization_msgs::msg::Marker::DELETEALL;
+                del.header.frame_id = "map";
+                del.header.stamp = stamp;
+                arr.markers.push_back(del);
+                for (int i = 0; i < optInnerPts.cols(); ++i) {
+                    visualization_msgs::msg::Marker s;
+                    s.header.frame_id = "map";
+                    s.header.stamp = stamp;
+                    s.ns = "inner_pts_init";
+                    s.id = i;
+                    s.type = visualization_msgs::msg::Marker::SPHERE;
+                    s.action = visualization_msgs::msg::Marker::ADD;
+                    s.pose.position.x = optInnerPts(0, i);
+                    s.pose.position.y = optInnerPts(1, i);
+                    s.pose.position.z = optInnerPts(2, i);
+                    s.pose.orientation.w = 1.0;
+                    s.scale.x = 0.6; s.scale.y = 0.6; s.scale.z = 0.6;
+                    s.color.r = 1.0f; s.color.g = 0.55f; s.color.b = 0.0f; s.color.a = 0.9f;
+                    arr.markers.push_back(s);
+                }
+                inner_pts_init_pub_->publish(arr);
+                log_manager_->infof("Published %d initial inner points (orange)",
+                                    (int)optInnerPts.cols());
+            }
+
             // Run L-BFGS optimization (single shot, no replan)
             Eigen::MatrixXd optimal_points;
             bool use_formation = true;
@@ -679,56 +848,67 @@ namespace path_manager
                 log_manager_->infof("L-BFGS optimization SUCCESS: duration=%.3f, max_vel=%.3f",
                     optTraj.getTotalDuration(), optTraj.getMaxVelRate());
 
-                // === Control points 시각화 ===
-                {
-                    visualization_msgs::msg::MarkerArray arr;
-                    const auto stamp = node_->get_clock()->now();
+                // Publish optimized inner points (yellow spheres with labels)
+                // — same piece boundaries after L-BFGS has moved them.
+                if (inner_pts_opt_pub_) {
+                    int PNo = optTraj.getPieceNum();
+                    Eigen::MatrixXd all_pos_opt = optTraj.getPositions();
+                    if (PNo >= 2) {
+                        Eigen::MatrixXd optInnerOpt = all_pos_opt.block(0, 1, 3, PNo - 1);
+                        visualization_msgs::msg::MarkerArray arr;
+                        const auto stamp = node_->get_clock()->now();
+                        visualization_msgs::msg::Marker del;
+                        del.action = visualization_msgs::msg::Marker::DELETEALL;
+                        del.header.frame_id = "map";
+                        del.header.stamp = stamp;
+                        arr.markers.push_back(del);
+                        for (int i = 0; i < optInnerOpt.cols(); ++i) {
+                            visualization_msgs::msg::Marker s;
+                            s.header.frame_id = "map";
+                            s.header.stamp = stamp;
+                            s.ns = "inner_pts_opt";
+                            s.id = i;
+                            s.type = visualization_msgs::msg::Marker::SPHERE;
+                            s.action = visualization_msgs::msg::Marker::ADD;
+                            s.pose.position.x = optInnerOpt(0, i);
+                            s.pose.position.y = optInnerOpt(1, i);
+                            s.pose.position.z = optInnerOpt(2, i);
+                            s.pose.orientation.w = 1.0;
+                            s.scale.x = 0.7; s.scale.y = 0.7; s.scale.z = 0.7;
+                            s.color.r = 1.0f; s.color.g = 1.0f; s.color.b = 0.0f; s.color.a = 1.0f;
+                            arr.markers.push_back(s);
 
-                    visualization_msgs::msg::Marker del;
-                    del.action = visualization_msgs::msg::Marker::DELETEALL;
-                    del.header.frame_id = "map";
-                    del.header.stamp = stamp;
-                    arr.markers.push_back(del);
-
-                    for (int ci = 0; ci < optimal_points.cols(); ++ci) {
-                        visualization_msgs::msg::Marker s;
-                        s.header.frame_id = "map";
-                        s.header.stamp = stamp;
-                        s.ns = "ctrl_points";
-                        s.id = ci;
-                        s.type = visualization_msgs::msg::Marker::SPHERE;
-                        s.action = visualization_msgs::msg::Marker::ADD;
-                        s.pose.position.x = optimal_points(0, ci);
-                        s.pose.position.y = optimal_points(1, ci);
-                        s.pose.position.z = optimal_points(2, ci);
-                        s.pose.orientation.w = 1.0;
-                        s.scale.x = 0.4; s.scale.y = 0.4; s.scale.z = 0.4;
-                        s.color.r = 1.0f; s.color.g = 0.3f; s.color.b = 1.0f; s.color.a = 1.0f;
-                        arr.markers.push_back(s);
-
-                        visualization_msgs::msg::Marker t;
-                        t.header.frame_id = "map";
-                        t.header.stamp = stamp;
-                        t.ns = "ctrl_points_label";
-                        t.id = ci;
-                        t.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-                        t.action = visualization_msgs::msg::Marker::ADD;
-                        t.pose.position.x = optimal_points(0, ci);
-                        t.pose.position.y = optimal_points(1, ci);
-                        t.pose.position.z = optimal_points(2, ci) + 0.6;
-                        t.pose.orientation.w = 1.0;
-                        t.scale.z = 0.5;
-                        t.color.r = 1.0f; t.color.g = 1.0f; t.color.b = 1.0f; t.color.a = 1.0f;
-                        t.text = "cp" + std::to_string(ci);
-                        arr.markers.push_back(t);
-                    }
-                    ctrl_points_pub_->publish(arr);
-                    log_manager_->infof("Published %d control points", (int)optimal_points.cols());
-                    for (int ci = 0; ci < optimal_points.cols(); ++ci) {
-                        log_manager_->infof("  CP[%d]: (%.2f, %.2f, %.2f)",
-                            ci, optimal_points(0, ci), optimal_points(1, ci), optimal_points(2, ci));
+                            visualization_msgs::msg::Marker lbl;
+                            lbl.header.frame_id = "map";
+                            lbl.header.stamp = stamp;
+                            lbl.ns = "inner_pts_opt_label";
+                            lbl.id = i;
+                            lbl.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+                            lbl.action = visualization_msgs::msg::Marker::ADD;
+                            lbl.pose.position.x = optInnerOpt(0, i);
+                            lbl.pose.position.y = optInnerOpt(1, i);
+                            lbl.pose.position.z = optInnerOpt(2, i) + 0.9;
+                            lbl.pose.orientation.w = 1.0;
+                            lbl.scale.z = 0.5;
+                            lbl.color.r = 1.0f; lbl.color.g = 1.0f; lbl.color.b = 1.0f; lbl.color.a = 1.0f;
+                            lbl.text = "ip" + std::to_string(i);
+                            arr.markers.push_back(lbl);
+                        }
+                        inner_pts_opt_pub_->publish(arr);
+                        log_manager_->infof("Published %d optimized inner points (yellow)",
+                                            (int)optInnerOpt.cols());
+                        for (int i = 0; i < optInnerOpt.cols(); ++i) {
+                            log_manager_->infof("  IP[%d]: (%.2f, %.2f, %.2f)",
+                                i, optInnerOpt(0, i), optInnerOpt(1, i), optInnerOpt(2, i));
+                        }
                     }
                 }
+
+                // Control-point visualisation removed. For km-scale missions
+                // the CP count (≈ pieces × cps_num_prePiece) easily hits 10k,
+                // which stalls RViz. Inner points (inner_pts_opt) carry the
+                // same optimisation information and are orders of magnitude
+                // fewer, so they cover the debugging need.
 
                 // Terrain collision is now handled implicitly by the SDF
                 // penalty in the optimizer (phase 5). No post-check needed.
@@ -1162,8 +1342,31 @@ bool PathManager::buildSDFForBounds(const Eigen::Vector3d &lo,
     }
 
     // Geometry obstacles.
+    auto compute_z_range = [&](const Obstacle &obs, int &zi_lo, int &zi_hi) {
+        // z_extent == 0 means "infinite column" for back-compat.
+        if (obs.z_extent <= 0.0) {
+            zi_lo = 0;
+            zi_hi = nz;
+        } else {
+            zi_lo = std::max(0,  (int)std::floor((obs.center.z() - lo.z()) / res));
+            zi_hi = std::min(nz, (int)std::ceil ((obs.center.z() + obs.z_extent - lo.z()) / res));
+        }
+    };
+
     for (const auto &obs : obstacle_centers_) {
+        int zi_lo, zi_hi;
+        compute_z_range(obs, zi_lo, zi_hi);
+        if (zi_hi <= zi_lo) continue;
+
         if (obs.shape == ObstacleShape::CIRCLE) {
+            // Cube (L∞) inflation matching main-branch behaviour: the "radius"
+            // is interpreted as a half-side. A perfect analytic cylinder
+            // (dx² + dy² ≤ r²) has full rotational symmetry and produces
+            // exactly-zero horizontal SDF gradients on its axis, which pins
+            // L-BFGS at a saddle point. The cube breaks that symmetry
+            // (corners are farther than face midpoints) and gives the
+            // optimiser a usable horizontal descent direction even when the
+            // trajectory lies on the obstacle's centre axis.
             double r = (obs.param1 > 0) ? obs.param1 : 0.5;
             int xi_lo = std::max(0,   (int)std::floor((obs.center.x() - r - lo.x()) / res));
             int xi_hi = std::min(nx,  (int)std::ceil ((obs.center.x() + r - lo.x()) / res));
@@ -1175,8 +1378,8 @@ bool PathManager::buildSDFForBounds(const Eigen::Vector3d &lo,
                     double wy = lo.y() + (yi + 0.5) * res;
                     double dx = wx - obs.center.x();
                     double dy = wy - obs.center.y();
-                    if (dx * dx + dy * dy > r * r) continue;
-                    for (int zi = 0; zi < nz; ++zi) occ[idx(xi, yi, zi)] = 1;
+                    if (std::max(std::abs(dx), std::abs(dy)) > r) continue;
+                    for (int zi = zi_lo; zi < zi_hi; ++zi) occ[idx(xi, yi, zi)] = 1;
                 }
             }
         } else if (obs.shape == ObstacleShape::RECTANGLE) {
@@ -1188,11 +1391,19 @@ bool PathManager::buildSDFForBounds(const Eigen::Vector3d &lo,
             int yi_hi = std::min(ny, (int)std::ceil ((obs.center.y() + hh - lo.y()) / res));
             for (int xi = xi_lo; xi < xi_hi; ++xi) {
                 for (int yi = yi_lo; yi < yi_hi; ++yi) {
-                    for (int zi = 0; zi < nz; ++zi) occ[idx(xi, yi, zi)] = 1;
+                    for (int zi = zi_lo; zi < zi_hi; ++zi) occ[idx(xi, yi, zi)] = 1;
                 }
             }
         }
     }
+
+    // NOTE: ground and virtual ceiling are NOT voxelised here. Folding them
+    // into the SDF would drag the clearance band above/below the actual
+    // plane, so the trajectory would be pushed off a `-0.1` floor by up to
+    // `obstacle_clearance` metres. Instead they are enforced as hard
+    // half-space constraints inside the optimizer (sdfGradCostP), which
+    // applies a unit upward/downward gradient only when the query point
+    // crosses the plane — no clearance band, no lateral contamination.
 
     if (!sdf_manager_.isInitialized()) {
         sdf_manager_.initialize(res);
