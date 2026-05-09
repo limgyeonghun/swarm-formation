@@ -10,7 +10,7 @@
 std_msgs/Header header
 
 # Mission sequencing for robustness
-int32 sequence                # Incrementing sequence number (0, 1, 2, ...) for duplicate detection
+int32 sequence                # Incrementing sequence number (0, 1, 2, ...) for duplicate check
 string current_mission_id     # Current mission identifier (e.g., "waypoint_1", "formation_A")
 string next_mission_id        # Next mission identifier (e.g., "waypoint_2", "MISSION_END")
 bool is_final                 # True if this is the last mission

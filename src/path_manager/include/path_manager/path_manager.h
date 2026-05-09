@@ -49,10 +49,10 @@ namespace path_manager
   };
 
   // Single Gaussian centered at `center` with
-  // support out to `detection_range` (sigma = range/3). Peak = max_risk_level.
+  // support out to `sensing_range` (sigma = range/3). Peak = max_risk_level.
   struct RiskZone {
     Eigen::Vector3d center;
-    double detection_range;
+    double sensing_range;
     double max_risk_level;
   };
 
@@ -177,6 +177,13 @@ namespace path_manager
     void setTerrainData(const grid_map_msgs::msg::GridMap::SharedPtr &msg);
     bool hasTerrainData() const { return terrain_data_.valid; }
 
+    // Dynamic obstacle interface (RViz-driven). Patches are layered on top of
+    // the static terrain ESDF; the next plan picks them up via min(static,dyn).
+    // Returns patch id (>= 0) on success, -1 if SDF not built yet or out of map.
+    int  addDynamicSphere(const Eigen::Vector3d& center, double radius);
+    void clearDynamicObstacles();
+    size_t numDynamicObstacles() const { return sdf_manager_.numActiveObstacles(); }
+
   private:
     // Helper functions for outer/inner line calculation
     std::vector<Eigen::Vector3d> adjustWaypointsForFormation(
@@ -275,6 +282,13 @@ namespace path_manager
     // actually moves. Publishing pre/post gives a visual diff of optimizer work.
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr inner_pts_init_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr inner_pts_opt_pub_;
+    // Dynamic obstacle visualization (one MarkerArray republished on every add/clear).
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr dyn_obstacle_pub_;
+    // Tracks live patch ids so clearObstacles + visualization stay in sync.
+    std::vector<int> dyn_patch_ids_;
+    std::vector<Eigen::Vector3d> dyn_patch_centers_;
+    std::vector<double> dyn_patch_radii_;
+    void publishDynamicObstacles();
 
     std::shared_ptr<swarm_formation::LogManager> log_manager_;
     bool enable_debug_logs_;

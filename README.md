@@ -27,5 +27,5 @@ ros2 run formation_manager formation_manager_node \
 | `rviz_simulation` | RViz 시각화 활성화 | false |
 | `enable_visualization` | 경로 시각화 노드 활성화 | false |
 | `map_config` | 맵 설정 파일 (map, map_risk_zones) | map |
-| `risk_zones` | 위협 지역 설정 파일 | (없음) |
+| `risk_zones` | 리스크 영역 설정 파일 | (없음) |
 | `drone_id` | 실행할 드론 ID (실제 하드웨어 모드) | 1 |

@@ -3,7 +3,7 @@
 
     obstacles: [0.0, -9999.0, 0.0]
 
-    # [cx, cy, cz, detection_range, max_risk_level]
+    # [cx, cy, cz, sensing_range, max_risk_level]
     risk_zones: [
        # Main restricted zone protecting the goal itself (goal is inside!)
        40.0,   0.0, 0.0, 12.0, 150.0,

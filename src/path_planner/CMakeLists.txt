@@ -17,7 +17,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   # when matrices flowed between packages compiled with different vector ISA.
   # All packages sharing Eigen types need identical flags or this breaks.
   # -ffast-math intentionally omitted: SDFManager uses std::isfinite to
-  # detect out-of-map / unobserved voxels, which -ffast-math may constant-fold.
+  # identify out-of-map / unobserved voxels, which -ffast-math may constant-fold.
 endif()
 
 find_package(ament_cmake REQUIRED)
@@ -82,6 +82,10 @@ target_link_libraries(${PROJECT_NAME}_lib ${PROJECT_NAME}_sdf)
 add_executable(sdf_tool src/sdf/sdf_tool.cpp)
 target_link_libraries(sdf_tool PRIVATE ${PROJECT_NAME}_sdf)
 
+# sdf_dynamic_test : exercises the dynamic obstacle layer (addObstacle/...)
+add_executable(sdf_dynamic_test src/sdf/sdf_dynamic_test.cpp)
+target_link_libraries(sdf_dynamic_test PRIVATE ${PROJECT_NAME}_sdf)
+
 # =====================================================================
 # Install
 # =====================================================================
@@ -100,6 +104,9 @@ install(TARGETS ${PROJECT_NAME}_sdf
 )
 
 install(TARGETS sdf_tool
+    DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS sdf_dynamic_test
     DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY include/

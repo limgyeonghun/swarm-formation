@@ -1,7 +1,7 @@
 // Path shortening with SDF visibility and optional risk avoidance.
 // Drops an intermediate waypoint only when the straight connection between
 // its neighbours is (a) clear of obstacles in SDF and (b) outside the
-// detection range of every supplied risk zone.
+// sensing range of every supplied risk zone.
 
 #ifndef PATH_PLANNER_SDF_PATH_SHORTENING_H_
 #define PATH_PLANNER_SDF_PATH_SHORTENING_H_
@@ -16,7 +16,7 @@ namespace path_planner {
 namespace sdf {
 
 // True iff the straight [a, b] segment stays clear of SDF obstacles and
-// outside every risk detection radius.
+// outside every risk sensing radius.
 inline bool segmentClear(const SDFManager& sdf,
                           const std::vector<RiskZoneLite>* risks,
                           const Eigen::Vector3d& a,
@@ -33,7 +33,7 @@ inline bool segmentClear(const SDFManager& sdf,
     if (!std::isfinite(d) || d < safety_margin) return false;
     if (risks) {
       for (const auto& tz : *risks) {
-        if ((p - tz.center).norm() < tz.detection_range) return false;
+        if ((p - tz.center).norm() < tz.sensing_range) return false;
       }
     }
   }

@@ -17,7 +17,7 @@ namespace path_planner { namespace astar {
 
 struct RiskZoneLite {
     Eigen::Vector3d center;
-    double detection_range;
+    double sensing_range;
     double max_risk_level;
 };
 
@@ -102,8 +102,8 @@ private:
         double level = 0.0;
         for (const auto &tz : *risk_zones_) {
             double dist = (pos - tz.center).norm();
-            if (dist >= tz.detection_range) continue;
-            double sigma = tz.detection_range / 3.0;
+            if (dist >= tz.sensing_range) continue;
+            double sigma = tz.sensing_range / 3.0;
             double g = std::exp(-(dist * dist) / (2.0 * sigma * sigma));
             level += tz.max_risk_level * g;
         }

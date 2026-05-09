@@ -1,8 +1,8 @@
 /**:
   ros__parameters:
     # ============================================================
-    # Format: [center_x, center_y, center_z, detection_range, max_risk_level]
-    # - detection_range: Gaussian support radius (sigma = range/3).
+    # Format: [center_x, center_y, center_z, sensing_range, max_risk_level]
+    # - sensing_range: Gaussian support radius (sigma = range/3).
     # - max_risk_level: peak risk at center.
     # ============================================================
 
@@ -13,6 +13,5 @@
       # restricted zone Site 2
       40.0, -5.0, 0.0, 20.0, 100.0,
 
-      # AAA Site 1
       40.0, 10.0, 10.0, 10.0, 100.0
     ]

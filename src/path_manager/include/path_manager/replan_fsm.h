@@ -5,6 +5,8 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <grid_map_msgs/msg/grid_map.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
+#include <std_msgs/msg/empty.hpp>
 #include <Eigen/Dense>
 #include <mutex>
 #include <map>
@@ -78,6 +80,10 @@ public:
     void formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg);
     void trajectoryCommandCallback(const formation_msgs::msg::TrajectoryCommand::SharedPtr msg);
     void terrainCallback(const grid_map_msgs::msg::GridMap::SharedPtr msg);
+    // RViz-driven dynamic obstacle layer. Click in RViz with the "Publish Point"
+    // tool → /clicked_point → spawn a fixed-radius sphere obstacle into the SDF.
+    void clickedPointCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg);
+    void clearObstaclesCallback(const std_msgs::msg::Empty::SharedPtr msg);
     void polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     void globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     // Callback groups:
@@ -113,6 +119,9 @@ private:
     rclcpp::Subscription<path_manager::msg::FormationTarget>::SharedPtr formation_target_sub_;
     rclcpp::Subscription<formation_msgs::msg::TrajectoryCommand>::SharedPtr trajectory_cmd_sub_;
     rclcpp::Subscription<grid_map_msgs::msg::GridMap>::SharedPtr terrain_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr clicked_point_sub_;
+    rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr clear_obstacles_sub_;
+    double dynamic_obstacle_radius_;  // m, applied to clicked-point spheres
     rclcpp::Publisher<path_manager::msg::FormationTarget>::SharedPtr formation_target_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr waypoint_marker_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
@@ -156,7 +165,7 @@ private:
     bool has_formation_command_;
 
     // Mission sequencing for robustness
-    int last_received_sequence_;        // Last received sequence number to detect duplicates
+    int last_received_sequence_;        // Last received sequence number to check duplicates
     std::string current_mission_id_;    // Current mission being executed
     std::string next_mission_id_;       // Next mission to execute
     bool is_final_mission_;             // True if no more missions after current

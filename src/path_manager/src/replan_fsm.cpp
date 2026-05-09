@@ -216,6 +216,19 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         "/terrain/grid_map", terrain_qos,
         std::bind(&ReplanFSM::terrainCallback, this, std::placeholders::_1));
 
+    // Dynamic obstacle injection: each click in RViz spawns a fixed-radius sphere.
+    if (!node_->has_parameter("manager/dynamic_obstacle_radius")) {
+        node_->declare_parameter<double>("manager/dynamic_obstacle_radius", 5.0);
+    }
+    dynamic_obstacle_radius_ =
+        node_->get_parameter("manager/dynamic_obstacle_radius").as_double();
+    clicked_point_sub_ = node_->create_subscription<geometry_msgs::msg::PointStamped>(
+        "/clicked_point", 10,
+        std::bind(&ReplanFSM::clickedPointCallback, this, std::placeholders::_1));
+    clear_obstacles_sub_ = node_->create_subscription<std_msgs::msg::Empty>(
+        "/dynamic_obstacles/clear", 1,
+        std::bind(&ReplanFSM::clearObstaclesCallback, this, std::placeholders::_1));
+
     timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this), timer_callback_group_);
     FSM_LOG_INFO("FSM timer created with dedicated callback group (10ms period)");
 }
@@ -399,13 +412,13 @@ void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::S
     new_pos(1) = msg->y + offset_pt_(1);
     new_pos(2) = offset_pt_(2);
 
-    // Sanity check: detect position jumps (likely from PX4 sensor glitches)
+    // Sanity check: identify position jumps (likely from PX4 sensor glitches)
     if (have_position_) {
         double position_jump = (new_pos - current_pos_).norm();
         const double MAX_POSITION_JUMP = 50.0;  // 50m threshold
 
         if (position_jump > MAX_POSITION_JUMP) {
-            FSM_LOG_WARN("PX4 position jump detected! Distance: %.2fm, rejecting update. "
+            FSM_LOG_WARN("PX4 position jump found! Distance: %.2fm, rejecting update. "
                         "Old: (%.2f, %.2f, %.2f), New: (%.2f, %.2f, %.2f)",
                         position_jump,
                         current_pos_(0), current_pos_(1), current_pos_(2),
@@ -1094,6 +1107,29 @@ void ReplanFSM::terrainCallback(const grid_map_msgs::msg::GridMap::SharedPtr msg
         path_manager_->setTerrainData(msg);
         FSM_LOG_INFO("Terrain data received and forwarded to PathManager");
     }
+}
+
+void ReplanFSM::clickedPointCallback(
+    const geometry_msgs::msg::PointStamped::SharedPtr msg)
+{
+    if (!path_manager_) return;
+    Eigen::Vector3d c(msg->point.x, msg->point.y, msg->point.z);
+    int id = path_manager_->addDynamicSphere(c, dynamic_obstacle_radius_);
+    if (id < 0) {
+        FSM_LOG_WARN("Clicked-point obstacle rejected at (%.2f,%.2f,%.2f) "
+                     "(SDF not built yet?)", c.x(), c.y(), c.z());
+    } else {
+        FSM_LOG_INFO("Dynamic obstacle id=%d at (%.2f,%.2f,%.2f) r=%.2f",
+                     id, c.x(), c.y(), c.z(), dynamic_obstacle_radius_);
+    }
+}
+
+void ReplanFSM::clearObstaclesCallback(
+    const std_msgs::msg::Empty::SharedPtr /*msg*/)
+{
+    if (!path_manager_) return;
+    path_manager_->clearDynamicObstacles();
+    FSM_LOG_INFO("Dynamic obstacles cleared on request");
 }
 
 }  // namespace path_manager

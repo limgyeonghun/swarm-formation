@@ -17,7 +17,7 @@ namespace sdf {
 
 struct RiskZoneLite {
   Eigen::Vector3d center;
-  double detection_range;
+  double sensing_range;
   double max_risk_level;
 };
 
@@ -40,8 +40,8 @@ struct SDFQueryAdapter {
     double total = 0.0;
     for (const auto &tz : *risk_zones) {
       double dist = (pos - tz.center).norm();
-      if (dist < tz.detection_range) {
-        double sigma = tz.detection_range / 3.0;
+      if (dist < tz.sensing_range) {
+        double sigma = tz.sensing_range / 3.0;
         total += tz.max_risk_level *
                  std::exp(-0.5 * (dist / sigma) * (dist / sigma));
       }

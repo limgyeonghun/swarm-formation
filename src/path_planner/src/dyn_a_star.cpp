@@ -198,7 +198,7 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
                 const auto &tz = (*risk_zones_)[i];
                 log_manager_->infof("[A* DBG]  tz[%zu] c=(%.2f,%.2f,%.2f) R=%.2f L=%.2f",
                     i, tz.center.x(), tz.center.y(), tz.center.z(),
-                    tz.detection_range, tz.max_risk_level);
+                    tz.sensing_range, tz.max_risk_level);
                 // Direct probe: what does getRiskCost(center) return? If
                 // the zone is really there it should be max_risk_level *
                 // risk_weight_.
@@ -390,7 +390,7 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
                 }
                 bool inside_zone = false;
                 for (const auto &tz : *risk_zones_) {
-                    if ((neigh_world - tz.center).norm() < tz.detection_range) {
+                    if ((neigh_world - tz.center).norm() < tz.sensing_range) {
                         inside_zone = true;
                         break;
                     }

@@ -730,7 +730,7 @@ namespace ego_planner
     return false;
   }
 
-  // Continuous Gaussian risk over detection range.
+  // Continuous Gaussian risk over sensing range.
   // Matches ObstacleQueryAdapter::getRiskLevel in path_manager.h.
   // Risk reporting (for logging / RRT* compatibility).
   // Smooth Gaussian bell used only for informational queries.
@@ -739,8 +739,8 @@ namespace ego_planner
     double total_Risk = 0.0;
     for (const auto &tz : risk_zones_) {
       double dist = (pos - tz.center).norm();
-      if (dist < tz.detection_range) {
-        double sigma = tz.detection_range / 3.0;
+      if (dist < tz.sensing_range) {
+        double sigma = tz.sensing_range / 3.0;
         total_Risk += tz.max_risk_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
       }
     }
@@ -754,8 +754,8 @@ namespace ego_planner
       Eigen::Vector3d diff = pos - tz.center;
       double dist = diff.norm();
       if (dist < 1e-6) continue;
-      if (dist < tz.detection_range) {
-        double sigma = tz.detection_range / 3.0;
+      if (dist < tz.sensing_range) {
+        double sigma = tz.sensing_range / 3.0;
         double sigma2 = sigma * sigma;
         double gauss = tz.max_risk_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
         grad += gauss * (-1.0 / sigma2) * diff;
@@ -766,7 +766,7 @@ namespace ego_planner
 
   // Gaussian-based risk penalty (matches main-branch RiskGradCostP).
   // Quadratic cost on the smooth Gaussian risk level, so gradient stays
-  // smooth everywhere (no hard boundary at detection_range).
+  // smooth everywhere (no hard boundary at sensing_range).
   bool PolyTrajOptimizer::RiskGradCostP(const int i_dp,
                                            const Eigen::Vector3d &p,
                                            Eigen::Vector3d &gradp,
@@ -1000,7 +1000,7 @@ namespace ego_planner
         // NONE mode: disable formation cost
         use_formation_ = false;
         wei_formation_ = 0.0;
-        LOG_INFO("NONE mode detected - formation cost DISABLED (weight=0)");
+        LOG_INFO("NONE mode found - formation cost DISABLED (weight=0)");
       } else {
         // Normal formation mode
         swarm_graph_->setDesiredForm(adjusted_formation);

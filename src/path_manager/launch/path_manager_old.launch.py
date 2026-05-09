@@ -63,7 +63,7 @@ def create_drone_nodes(context, *args, **kwargs):
 
     if jfi_port_arg == 'auto':
         jfi_port = find_serial_port()
-        print(f"Auto-detected JFI Port: {jfi_port}")
+        print(f"Auto-discovered JFI Port: {jfi_port}")
     else:
         jfi_port = jfi_port_arg
         print(f"Manual JFI Port: {jfi_port}")
@@ -451,7 +451,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'jfi_port',
             default_value='auto',
-            description='JFI serial port device path (use "auto" for auto-detection)'
+            description='JFI serial port device path (use "auto" for auto-discovery)'
         ),
         DeclareLaunchArgument(
             'jfi_baud_rate',

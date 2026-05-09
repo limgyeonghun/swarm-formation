@@ -36,7 +36,7 @@ struct Obstacle {
 
 struct VisRiskZone {
   Eigen::Vector3d center;
-  double detection_range;
+  double sensing_range;
   double max_risk_level;
 };
 

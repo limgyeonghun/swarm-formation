@@ -49,7 +49,7 @@ namespace path_manager
         node_->get_parameter("manager/save_terrain_esdf", save_terrain_esdf_path_);
         node_->get_parameter("manager/load_terrain_esdf", load_terrain_esdf_path_);
 
-        // Parse risk zones: [cx, cy, cz, detection_range, max_risk_level, ...]
+        // Parse risk zones: [cx, cy, cz, sensing_range, max_risk_level, ...]
         node_->declare_parameter("risk_zones", std::vector<double>{});
         std::vector<double> tz_params;
         node_->get_parameter("risk_zones", tz_params);
@@ -58,12 +58,12 @@ namespace path_manager
             for (size_t ti = 0; ti < tz_params.size(); ti += 5) {
                 RiskZone tz;
                 tz.center = Eigen::Vector3d(tz_params[ti], tz_params[ti+1], tz_params[ti+2]);
-                tz.detection_range = tz_params[ti+3];
+                tz.sensing_range = tz_params[ti+3];
                 tz.max_risk_level = tz_params[ti+4];
                 risk_zones_.push_back(tz);
-                log_manager_->infof("  RiskZone #%zu: center=(%.1f,%.1f,%.1f) detect=%.1f risk=%.1f",
+                log_manager_->infof("  RiskZone #%zu: center=(%.1f,%.1f,%.1f) range=%.1f risk=%.1f",
                     risk_zones_.size()-1, tz.center.x(), tz.center.y(), tz.center.z(),
-                    tz.detection_range, tz.max_risk_level);
+                    tz.sensing_range, tz.max_risk_level);
             }
             log_manager_->infof("Loaded %zu risk zones (risk_weight=%.1f)", risk_zones_.size(), risk_weight_);
         } else if (tz_params.empty()) {
@@ -148,6 +148,12 @@ namespace path_manager
             "/drone_" + std::to_string(drone_id) + "/inner_pts_init", 10);
         inner_pts_opt_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/drone_" + std::to_string(drone_id) + "/inner_pts_opt", 10);
+        // TRANSIENT_LOCAL so RViz, joining late, still gets the latest set.
+        rclcpp::QoS dyn_qos(1);
+        dyn_qos.reliability(rclcpp::ReliabilityPolicy::Reliable);
+        dyn_qos.durability(rclcpp::DurabilityPolicy::TransientLocal);
+        dyn_obstacle_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/drone_" + std::to_string(drone_id) + "/dynamic_obstacles", dyn_qos);
     }
 
     void PathManager::updateRobotState(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& local_target_pt)
@@ -202,7 +208,7 @@ namespace path_manager
                 for (const auto &tz : risk_zones_) {
                     ego_planner::RiskZone oz;
                     oz.center = tz.center;
-                    oz.detection_range = tz.detection_range;
+                    oz.sensing_range = tz.sensing_range;
                     oz.max_risk_level = tz.max_risk_level;
                     opt_zones.push_back(oz);
                 }
@@ -253,7 +259,7 @@ namespace path_manager
         std::vector<path_planner::sdf::RiskZoneLite> sdf_risk_zones;
         sdf_risk_zones.reserve(risk_zones_.size());
         for (const auto &tz : risk_zones_) {
-            sdf_risk_zones.push_back({tz.center, tz.detection_range, tz.max_risk_level});
+            sdf_risk_zones.push_back({tz.center, tz.sensing_range, tz.max_risk_level});
         }
         path_planner::sdf::SDFQueryAdapter map_adapter;
         map_adapter.sdf = &sdf_manager_;
@@ -276,7 +282,7 @@ namespace path_manager
 
         // If risk zones exist, expand margin to allow routing around them
         for (const auto &tz : risk_zones_) {
-            bound_margin_xy = std::max(bound_margin_xy, tz.detection_range + 5.0);
+            bound_margin_xy = std::max(bound_margin_xy, tz.sensing_range + 5.0);
         }
 
         for (const auto& pt : all_points) {
@@ -289,7 +295,7 @@ namespace path_manager
 
         // Also extend bounds to include risk zone coverage areas
         for (const auto &tz : risk_zones_) {
-            double r = tz.detection_range + 5.0;
+            double r = tz.sensing_range + 5.0;
             map_lower_bound_.x() = std::min(map_lower_bound_.x(), tz.center.x() - r);
             map_lower_bound_.y() = std::min(map_lower_bound_.y(), tz.center.y() - r);
             map_upper_bound_.x() = std::max(map_upper_bound_.x(), tz.center.x() + r);
@@ -440,7 +446,7 @@ namespace path_manager
         std::vector<path_planner::astar::RiskZoneLite> astar_risks;
         astar_risks.reserve(risk_zones_.size());
         for (const auto &tz : risk_zones_) {
-            astar_risks.push_back({tz.center, tz.detection_range, tz.max_risk_level});
+            astar_risks.push_back({tz.center, tz.sensing_range, tz.max_risk_level});
         }
         Eigen::Vector3d map_size = map_upper_bound_ - map_lower_bound_;
         astar_.setLogManager(log_manager_);
@@ -539,8 +545,8 @@ namespace path_manager
                 const auto &tz = risk_zones_[zi];
                 double dist = (p - tz.center).norm();
                 double zone_cost = 0.0;
-                if (dist < tz.detection_range) {
-                    double sigma = tz.detection_range / 3.0;
+                if (dist < tz.sensing_range) {
+                    double sigma = tz.sensing_range / 3.0;
                     double g = std::exp(-(dist * dist) / (2.0 * sigma * sigma));
                     zone_cost = tz.max_risk_level * g * risk_weight_;
                 }
@@ -1039,6 +1045,96 @@ void PathManager::setTerrainData(const grid_map_msgs::msg::GridMap::SharedPtr &m
         terrain_data_.cols, terrain_data_.rows, terrain_data_.resolution,
         terrain_data_.origin_x, terrain_data_.origin_y,
         terrain_data_.center_x, terrain_data_.center_y);
+
+    // Eager-load the cached terrain ESDF as soon as terrain arrives, so the
+    // dynamic-obstacle layer can accept clicks before any mission runs. Without
+    // this, addDynamicSphere rejects with "SDF not built yet" until the first
+    // planGlobalTraj() is invoked.
+    if (!sdf_loaded_from_file_ && !load_terrain_esdf_path_.empty()) {
+        Eigen::Vector3d lo, hi;
+        if (computeTerrainBBox(&lo, &hi)) {
+            if (!sdf_manager_.isInitialized()) sdf_manager_.initialize(sdf_voxel_size_);
+            if (sdf_manager_.loadFromFile(load_terrain_esdf_path_, lo, hi)) {
+                sdf_loaded_from_file_ = true;
+                log_manager_->infof("SDF eagerly loaded from %s",
+                                    load_terrain_esdf_path_.c_str());
+            }
+        }
+    }
+}
+
+int PathManager::addDynamicSphere(const Eigen::Vector3d& center, double radius)
+{
+    if (!sdf_manager_.hasData()) {
+        log_manager_->warnf("addDynamicSphere: SDF not built yet, ignoring "
+                            "(center=%.2f,%.2f,%.2f r=%.2f)",
+                            center.x(), center.y(), center.z(), radius);
+        return -1;
+    }
+    path_planner::sdf::PrimitiveSpec spec;
+    spec.kind = path_planner::sdf::PrimitiveKind::kSphere;
+    spec.center = center;
+    const double d = 2.0 * radius;
+    spec.size = Eigen::Vector3d(d, d, d);
+
+    int id = sdf_manager_.addObstacle(spec);
+    if (id < 0) {
+        log_manager_->warnf("addDynamicSphere: addObstacle failed "
+                            "(center=%.2f,%.2f,%.2f r=%.2f)",
+                            center.x(), center.y(), center.z(), radius);
+        return -1;
+    }
+    dyn_patch_ids_.push_back(id);
+    dyn_patch_centers_.push_back(center);
+    dyn_patch_radii_.push_back(radius);
+    log_manager_->infof("Dynamic sphere added: id=%d center=(%.2f,%.2f,%.2f) r=%.2f, total=%zu",
+                        id, center.x(), center.y(), center.z(), radius,
+                        sdf_manager_.numActiveObstacles());
+    publishDynamicObstacles();
+    return id;
+}
+
+void PathManager::clearDynamicObstacles()
+{
+    sdf_manager_.clearObstacles();
+    dyn_patch_ids_.clear();
+    dyn_patch_centers_.clear();
+    dyn_patch_radii_.clear();
+    log_manager_->infof("Dynamic obstacles cleared");
+    publishDynamicObstacles();
+}
+
+void PathManager::publishDynamicObstacles()
+{
+    if (!dyn_obstacle_pub_) return;
+    visualization_msgs::msg::MarkerArray arr;
+
+    // Single DELETEALL marker first so removed patches disappear in RViz.
+    visualization_msgs::msg::Marker clear_marker;
+    clear_marker.header.frame_id = "map";
+    clear_marker.header.stamp = node_->now();
+    clear_marker.ns = "dynamic_obstacles";
+    clear_marker.action = visualization_msgs::msg::Marker::DELETEALL;
+    arr.markers.push_back(clear_marker);
+
+    for (size_t i = 0; i < dyn_patch_centers_.size(); ++i) {
+        visualization_msgs::msg::Marker m;
+        m.header.frame_id = "map";
+        m.header.stamp = node_->now();
+        m.ns = "dynamic_obstacles";
+        m.id = dyn_patch_ids_[i];
+        m.type = visualization_msgs::msg::Marker::SPHERE;
+        m.action = visualization_msgs::msg::Marker::ADD;
+        m.pose.position.x = dyn_patch_centers_[i].x();
+        m.pose.position.y = dyn_patch_centers_[i].y();
+        m.pose.position.z = dyn_patch_centers_[i].z();
+        m.pose.orientation.w = 1.0;
+        const double d = 2.0 * dyn_patch_radii_[i];
+        m.scale.x = d; m.scale.y = d; m.scale.z = d;
+        m.color.r = 1.0f; m.color.g = 0.3f; m.color.b = 0.0f; m.color.a = 0.6f;
+        arr.markers.push_back(m);
+    }
+    dyn_obstacle_pub_->publish(arr);
 }
 
 double PathManager::computePathCurvature(const Eigen::Vector3d& p1,
@@ -1124,7 +1220,7 @@ std::vector<Eigen::Vector3d> PathManager::adjustWaypointsForFormation(
     bool is_none_mode = (current_formation_type_ == "none" || current_formation_type_ == "NONE");
     if (is_none_mode) {
         RCLCPP_INFO(node_->get_logger(),
-                   "NONE mode detected: returning original waypoints without any formation adjustments");
+                   "NONE mode found: returning original waypoints without any formation adjustments");
         return waypoints;
     }
 
@@ -1133,7 +1229,7 @@ std::vector<Eigen::Vector3d> PathManager::adjustWaypointsForFormation(
 
     if (is_line_formation) {
         RCLCPP_INFO(node_->get_logger(),
-                   "Line formation detected: using simple offset without outer/inner line");
+                   "Line formation found: using simple offset without outer/inner line");
         return adjustWaypointsForLineFormation(waypoints, start_pos);
     } else {
         RCLCPP_INFO(node_->get_logger(),
@@ -1217,7 +1313,7 @@ std::vector<Eigen::Vector3d> PathManager::adjustWaypointsWithCurvature(
             // For curved sections, adjust the offset distance
             // Outer line (positive lateral_offset on CCW turn) needs larger radius
             // Inner line (negative lateral_offset on CCW turn) needs smaller radius
-            double curvature_threshold = 0.01;  // Threshold to detect significant curves
+            double curvature_threshold = 0.01;  // Threshold to identify significant curves
 
             if (std::abs(curvature) > curvature_threshold) {
                 // In curved section: apply additional offset based on curvature

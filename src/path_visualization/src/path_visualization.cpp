@@ -385,7 +385,7 @@ void PathVisualization::optimizedPathCallback(const path_manager::msg::PolyTraj:
   // Handle large jumps by resetting to trajectory start
   if (min_dist > 2.0)
   {
-    // RCLCPP_WARN(this->get_logger(), "Drone %d: Large jump detected (%.2f m), resetting to trajectory start", drone_id, min_dist);
+    // RCLCPP_WARN(this->get_logger(), "Drone %d: Large jump found (%.2f m), resetting to trajectory start", drone_id, min_dist);
     data.start_pt = Eigen::Vector3d(
         msg->coef_x[0], // Start point is just the first coefficient for position
         msg->coef_y[0],
@@ -671,12 +671,12 @@ void PathVisualization::loadRiskZoneParameters()
     for (size_t i = 0; i < tz_params.size(); i += 5) {
       VisRiskZone tz;
       tz.center = Eigen::Vector3d(tz_params[i], tz_params[i+1], tz_params[i+2]);
-      tz.detection_range = tz_params[i+3];
+      tz.sensing_range = tz_params[i+3];
       tz.max_risk_level = tz_params[i+4];
       risk_zones_.push_back(tz);
-      RCLCPP_INFO(this->get_logger(), "  RiskZone #%zu: center=(%.1f,%.1f,%.1f) detect=%.1f risk=%.1f",
+      RCLCPP_INFO(this->get_logger(), "  RiskZone #%zu: center=(%.1f,%.1f,%.1f) range=%.1f risk=%.1f",
           risk_zones_.size()-1, tz.center.x(), tz.center.y(), tz.center.z(),
-          tz.detection_range, tz.max_risk_level);
+          tz.sensing_range, tz.max_risk_level);
     }
   } else if (!tz_params.empty()) {
     RCLCPP_WARN(this->get_logger(), "Invalid risk_zones param size: %zu (must be multiple of 5)", tz_params.size());
@@ -691,7 +691,7 @@ void PathVisualization::publishRiskZones()
   for (size_t zi = 0; zi < risk_zones_.size(); ++zi) {
     const auto &tz = risk_zones_[zi];
 
-    // Single risk sphere (detection range, red semi-transparent).
+    // Single risk sphere (sensing range, red semi-transparent).
     // Represents the unified risk volume — danger decays smoothly from center.
     {
       visualization_msgs::msg::Marker m;
@@ -705,7 +705,7 @@ void PathVisualization::publishRiskZones()
       m.pose.position.y = tz.center.y();
       m.pose.position.z = tz.center.z();
       m.pose.orientation.w = 1.0;
-      double d = tz.detection_range * 2.0;
+      double d = tz.sensing_range * 2.0;
       m.scale.x = d; m.scale.y = d; m.scale.z = d;
       float alpha = std::min(0.4f, static_cast<float>(tz.max_risk_level / 250.0));
       m.color.r = 1.0; m.color.g = 0.0; m.color.b = 0.0; m.color.a = alpha;
@@ -713,7 +713,6 @@ void PathVisualization::publishRiskZones()
       risk_zone_pub_->publish(m);
     }
 
-    // Center marker (radar base - small cylinder)
     {
       visualization_msgs::msg::Marker m;
       m.header.frame_id = "map";
@@ -743,7 +742,7 @@ void PathVisualization::publishRiskZones()
       m.action = visualization_msgs::msg::Marker::ADD;
       m.pose.position.x = tz.center.x();
       m.pose.position.y = tz.center.y();
-      m.pose.position.z = tz.center.z() + tz.detection_range + 1.0;
+      m.pose.position.z = tz.center.z() + tz.sensing_range + 1.0;
       m.pose.orientation.w = 1.0;
       m.scale.z = 1.5;
       m.color.r = 1.0; m.color.g = 0.2; m.color.b = 0.2; m.color.a = 1.0;
