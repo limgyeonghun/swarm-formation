@@ -21,9 +21,6 @@ struct RiskZoneLite {
     double max_risk_level;
 };
 
-struct GridNode;
-typedef GridNode *GridNodePtr;
-
 struct GridNode
 {
     enum enum_state
@@ -34,23 +31,24 @@ struct GridNode
     };
 
     int rounds{0};
-    enum enum_state state
-    {
-        UNDEFINED
-    };
-    Eigen::Vector3i index;
-
+    int state{UNDEFINED};
     double gScore{inf}, fScore{inf};
-    GridNodePtr cameFrom{NULL};
+    int cameFromFlat{-1};
 };
+
+class AStar;
 
 class NodeComparator
 {
 public:
-    bool operator()(GridNodePtr node1, GridNodePtr node2)
+    NodeComparator() = default;
+    explicit NodeComparator(const std::vector<GridNode> *pool) : pool_(pool) {}
+    bool operator()(int a, int b) const
     {
-        return node1->fScore > node2->fScore;
+        return (*pool_)[a].fScore > (*pool_)[b].fScore;
     }
+private:
+    const std::vector<GridNode> *pool_ = nullptr;
 };
 
 class AStar
@@ -76,10 +74,10 @@ private:
 
     swarm_formation::LogManager::Ptr log_manager_;
 
-    double getDiagHeu(GridNodePtr node1, GridNodePtr node2);
-    double getManhHeu(GridNodePtr node1, GridNodePtr node2);
-    double getEuclHeu(GridNodePtr node1, GridNodePtr node2);
-    inline double getHeu(GridNodePtr node1, GridNodePtr node2);
+    double getDiagHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2);
+    double getManhHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2);
+    double getEuclHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2);
+    inline double getHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2);
 
     bool ConvertToIndexAndAdjustStartEndPoints(const Eigen::Vector3d start_pt, const Eigen::Vector3d end_pt, Eigen::Vector3i &start_idx, Eigen::Vector3i &end_idx);
 
@@ -126,7 +124,7 @@ private:
     mutable double dbg_risk_max_ = 0.0;
     mutable Eigen::Vector3d dbg_risk_max_pos_ = Eigen::Vector3d::Zero();
 
-    std::vector<GridNodePtr> retrievePath(GridNodePtr current);
+    std::vector<int> retrievePath(int current_flat);
 
     double step_size_, inv_step_size_;
     Eigen::Vector3d center_;
@@ -134,10 +132,26 @@ private:
     const double tie_breaker_ = 1.0 + 1.0 / 10000;
     const int max_iterations_ = 50000;
 
-    std::vector<GridNodePtr> gridPath_;
+    std::vector<int> gridPath_;
 
-    GridNodePtr ***GridNodeMap_ = nullptr;
-    std::priority_queue<GridNodePtr, std::vector<GridNodePtr>, NodeComparator> openSet_;
+    std::vector<GridNode> pool_;
+    int nx_{0}, ny_{0}, nz_{0};
+    std::priority_queue<int, std::vector<int>, NodeComparator> openSet_;
+
+    // Flat 1D index helpers. Row-major: i fastest, k slowest.
+    inline int flatIdx(int i, int j, int k) const {
+        return i + nx_ * (j + ny_ * k);
+    }
+    inline int flatIdx(const Eigen::Vector3i &idx) const {
+        return idx(0) + nx_ * (idx(1) + ny_ * idx(2));
+    }
+    inline Eigen::Vector3i flatToIdx(int flat) const {
+        int k = flat / (nx_ * ny_);
+        int r = flat - k * (nx_ * ny_);
+        int j = r / nx_;
+        int i = r - j * nx_;
+        return Eigen::Vector3i(i, j, k);
+    }
     int rounds_{0};
 
 public:
@@ -179,9 +193,9 @@ public:
     Eigen::Vector3d getMapSize() const { return map_size_; }
 };
 
-inline double AStar::getHeu(GridNodePtr node1, GridNodePtr node2)
+inline double AStar::getHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
 {
-    return tie_breaker_ * getDiagHeu(node1, node2);
+    return tie_breaker_ * getDiagHeu(i1, i2);
 }
 
 inline Eigen::Vector3d AStar::Index2Coord(const Eigen::Vector3i &index) const

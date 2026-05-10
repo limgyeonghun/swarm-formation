@@ -8,56 +8,61 @@ using namespace Eigen;
 
 namespace path_planner { namespace astar {
 
-static void freePool(GridNodePtr ***&map, const Eigen::Vector3i &size) {
-    if (!map) return;
-    for (int i = 0; i < size(0); i++)
-        for (int j = 0; j < size(1); j++)
-            for (int k = 0; k < size(2); k++)
-                delete map[i][j][k];
-    for (int i = 0; i < size(0); i++) {
-        for (int j = 0; j < size(1); j++) delete[] map[i][j];
-        delete[] map[i];
-    }
-    delete[] map;
-    map = nullptr;
-}
-
-AStar::~AStar()
-{
-    freePool(GridNodeMap_, POOL_SIZE_);
-}
+AStar::~AStar() = default;
 
 void AStar::initGridMap(const Eigen::Vector3i &pool_size)
 {
     POOL_SIZE_ = pool_size;
     CENTER_IDX_ = pool_size / 2;
+    nx_ = pool_size(0);
+    ny_ = pool_size(1);
+    nz_ = pool_size(2);
+    const size_t N = static_cast<size_t>(nx_) * ny_ * nz_;
+    pool_.assign(N, GridNode{});
+    // openSet_ comparator binds to pool_ for fScore lookup.
+    openSet_ = std::priority_queue<int, std::vector<int>, NodeComparator>(
+        NodeComparator(&pool_));
 
-    GridNodeMap_ = new GridNodePtr **[POOL_SIZE_(0)];
-    for (int i = 0; i < POOL_SIZE_(0); i++)
+    // Self-check: flatIdx/flatToIdx round-trip on a sparse sample plus
+    // boundary cells. Cheap (sub-ms) and only runs on init.
     {
-        GridNodeMap_[i] = new GridNodePtr *[POOL_SIZE_(1)];
-        for (int j = 0; j < POOL_SIZE_(1); j++)
-        {
-            GridNodeMap_[i][j] = new GridNodePtr[POOL_SIZE_(2)];
-            for (int k = 0; k < POOL_SIZE_(2); k++)
-            {
-                GridNodeMap_[i][j][k] = new GridNode;
+        auto check = [&](int i, int j, int k) {
+            const int f = flatIdx(i, j, k);
+            const Eigen::Vector3i back = flatToIdx(f);
+            if (back(0) != i || back(1) != j || back(2) != k) {
+                if (log_manager_) {
+                    log_manager_->errorf("[A* INIT] flatIdx self-check FAILED at (%d,%d,%d) -> %d -> (%d,%d,%d)",
+                        i, j, k, f, back(0), back(1), back(2));
+                }
+                std::abort();
             }
+        };
+        const int sx = std::max(1, nx_ / 8);
+        const int sy = std::max(1, ny_ / 8);
+        const int sz = std::max(1, nz_ / 8);
+        for (int i = 0; i < nx_; i += sx)
+            for (int j = 0; j < ny_; j += sy)
+                for (int k = 0; k < nz_; k += sz)
+                    check(i, j, k);
+        check(0, 0, 0);
+        check(nx_ - 1, ny_ - 1, nz_ - 1);
+        if (log_manager_) {
+            log_manager_->infof("[A* INIT] flatIdx self-check passed (pool=%dx%dx%d, total=%zu)",
+                nx_, ny_, nz_, pool_.size());
         }
     }
 }
 
 void AStar::resizePool(const Eigen::Vector3i &pool_size)
 {
-    freePool(GridNodeMap_, POOL_SIZE_);
     initGridMap(pool_size);
 }
 
-double AStar::getDiagHeu(GridNodePtr node1, GridNodePtr node2)
+double AStar::getDiagHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
 {
-    double dx = abs(node1->index(0) - node2->index(0));
-    double dy = abs(node1->index(1) - node2->index(1));
-    double dz = abs(node1->index(2) - node2->index(2));
+    double dx = abs(i1(0) - i2(0));
+    double dy = abs(i1(1) - i2(1));
+    double dz = abs(i1(2) - i2(2));
 
     double h = 0.0;
     int diag = min(min(dx, dy), dz);
@@ -80,47 +85,42 @@ double AStar::getDiagHeu(GridNodePtr node1, GridNodePtr node2)
     return h;
 }
 
-double AStar::getManhHeu(GridNodePtr node1, GridNodePtr node2)
+double AStar::getManhHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
 {
-    double dx = abs(node1->index(0) - node2->index(0));
-    double dy = abs(node1->index(1) - node2->index(1));
-    double dz = abs(node1->index(2) - node2->index(2));
-
+    double dx = abs(i1(0) - i2(0));
+    double dy = abs(i1(1) - i2(1));
+    double dz = abs(i1(2) - i2(2));
     return dx + dy + dz;
 }
 
-double AStar::getEuclHeu(GridNodePtr node1, GridNodePtr node2)
+double AStar::getEuclHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
 {
-    return (node2->index - node1->index).norm();
+    return (i2 - i1).cast<double>().norm();
 }
 
 
-vector<GridNodePtr> AStar::retrievePath(GridNodePtr current)
+vector<int> AStar::retrievePath(int current_flat)
 {
-    vector<GridNodePtr> path;
-    if (!current) {
-        return path;  // Return empty path if current is null
-    }
+    vector<int> path;
+    if (current_flat < 0) return path;
 
-    while (current != NULL)
+    int cur = current_flat;
+    while (cur >= 0)
     {
-        path.push_back(current);
-        current = current->cameFrom;
+        path.push_back(cur);
+        cur = pool_[cur].cameFromFlat;
     }
-    // DEBUG: print gScore trace back from goal → start. If risk was
-    // added per cell, gScore jumps should match the risk cost of each
-    // cell; if any node has a suspiciously low gScore the issue is in
-    // the expansion / update rule.
     if (log_manager_ && risk_zones_ && !risk_zones_->empty()) {
-        log_manager_->infof("[A* RETRIEVE] path length=%zu (listed goal→start)", path.size());
+        log_manager_->infof("[A* RETRIEVE] path length=%zu (listed goal->start)", path.size());
         int stride = std::max(1, (int)path.size() / 20);
         for (size_t i = 0; i < path.size(); i += stride) {
-            GridNodePtr n = path[i];
-            Eigen::Vector3d w = Index2Coord(n->index);
+            const int f = path[i];
+            const Eigen::Vector3i idx = flatToIdx(f);
+            Eigen::Vector3d w = Index2Coord(idx);
             double tc = getRiskCost(w);
             log_manager_->infof("[A* RETRIEVE] i=%zu idx=(%d,%d,%d) world=(%.2f,%.2f,%.2f) g=%.3f risk_here=%.3f",
-                i, n->index(0), n->index(1), n->index(2),
-                w.x(), w.y(), w.z(), n->gScore, tc);
+                i, idx(0), idx(1), idx(2),
+                w.x(), w.y(), w.z(), pool_[f].gScore, tc);
         }
     }
 
@@ -248,52 +248,49 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
     if ( start_pt(0) > -1 && start_pt(0) < 0 )
         cout << "start_pt=" << start_pt.transpose() << " end_pt=" << end_pt.transpose() << endl;
 
-    GridNodePtr startPtr = GridNodeMap_[start_idx(0)][start_idx(1)][start_idx(2)];
-    GridNodePtr endPtr = GridNodeMap_[end_idx(0)][end_idx(1)][end_idx(2)];
+    int start_flat = flatIdx(start_idx);
+    // end_idx is used directly for goal comparison (no need to flatten).
 
-    std::priority_queue<GridNodePtr, std::vector<GridNodePtr>, NodeComparator> empty;
+    std::priority_queue<int, std::vector<int>, NodeComparator> empty{NodeComparator(&pool_)};
     openSet_.swap(empty);
 
-    GridNodePtr neighborPtr = NULL;
-    GridNodePtr current = NULL;
-
-    startPtr->index = start_idx;
-    startPtr->rounds = rounds_;
-    startPtr->gScore = 0;
-    startPtr->fScore = getHeu(startPtr, endPtr);
-    startPtr->state = GridNode::OPENSET; //put start node in open set
-    startPtr->cameFrom = NULL;
-    openSet_.push(startPtr); //put start in open set
-
-    endPtr->index = end_idx;
+    GridNode &startNode = pool_[start_flat];
+    startNode.rounds = rounds_;
+    startNode.gScore = 0;
+    startNode.fScore = getHeu(start_idx, end_idx);
+    startNode.state = GridNode::OPENSET;
+    startNode.cameFromFlat = -1;
+    openSet_.push(start_flat);
 
     double tentative_gScore;
 
     int num_iter = 0;
+    int current_flat = -1;
     while (!openSet_.empty())
     {
         num_iter++;
-        current = openSet_.top();
+        current_flat = openSet_.top();
         openSet_.pop();
+        GridNode &current = pool_[current_flat];
 
-        if (current->index(0) == endPtr->index(0) && current->index(1) == endPtr->index(1) && current->index(2) == endPtr->index(2))
+        const Eigen::Vector3i current_idx = flatToIdx(current_flat);
+        if (current_idx(0) == end_idx(0) && current_idx(1) == end_idx(1) && current_idx(2) == end_idx(2))
         {
             auto time_2 = rclcpp::Clock().now();
             auto elapsed = time_2 - time_1;
             if (log_manager_) {
                 log_manager_->infof("3D A* 검색 성공! 반복: %d회, 시간: %.3fms", num_iter, elapsed.seconds()*1000);
-                // DEBUG: risk firing stats + best neighbor cost vs final path gScore.
                 log_manager_->infof("[A* DBG] risk_queries=%zu nonzero=%zu max_cost=%.3f at (%.2f,%.2f,%.2f)",
                     dbg_risk_queries_, dbg_risk_nonzero_, dbg_risk_max_,
                     dbg_risk_max_pos_.x(), dbg_risk_max_pos_.y(), dbg_risk_max_pos_.z());
                 log_manager_->infof("[A* DBG] goal fScore=%.3f gScore=%.3f",
-                    current->fScore, current->gScore);
+                    current.fScore, current.gScore);
             }
             printf("\033[34mA star iter:%d, time:%.3f\033[0m\n", num_iter, elapsed.seconds()*1000);
-            gridPath_ = retrievePath(current);
+            gridPath_ = retrievePath(current_flat);
             return true;
         }
-        current->state = GridNode::CLOSEDSET;
+        current.state = GridNode::CLOSEDSET;
 
         static const int neighbor_offsets[26][3] = {
             {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1},
@@ -302,7 +299,7 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
             {0,1,1}, {0,1,-1}, {0,-1,1}, {0,-1,-1},
             {1,1,1}, {1,1,-1}, {1,-1,1}, {1,-1,-1},
             {-1,1,1}, {-1,1,-1}, {-1,-1,1}, {-1,-1,-1}
-        };  
+        };
         static const double neighbor_costs_ordered[26] = {
             1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             1.414213562373095, 1.414213562373095, 1.414213562373095, 1.414213562373095,
@@ -311,7 +308,7 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
             1.732050807568877, 1.732050807568877, 1.732050807568877, 1.732050807568877,
             1.732050807568877, 1.732050807568877, 1.732050807568877, 1.732050807568877
         };
-        
+
         for (int i = 0; i < 26; i++)
         {
             int dx = neighbor_offsets[i][0];
@@ -319,70 +316,57 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
             int dz = neighbor_offsets[i][2];
 
             Vector3i neighborIdx;
-            neighborIdx(0) = (current->index)(0) + dx;
-            neighborIdx(1) = (current->index)(1) + dy;
-            neighborIdx(2) = (current->index)(2) + dz;
+            neighborIdx(0) = current_idx(0) + dx;
+            neighborIdx(1) = current_idx(1) + dy;
+            neighborIdx(2) = current_idx(2) + dz;
 
-            if (neighborIdx(0) < 1 || neighborIdx(0) >= POOL_SIZE_(0) - 1 || 
-                neighborIdx(1) < 1 || neighborIdx(1) >= POOL_SIZE_(1) - 1 || 
+            if (neighborIdx(0) < 1 || neighborIdx(0) >= POOL_SIZE_(0) - 1 ||
+                neighborIdx(1) < 1 || neighborIdx(1) >= POOL_SIZE_(1) - 1 ||
                 neighborIdx(2) < 1 || neighborIdx(2) >= POOL_SIZE_(2) - 1)
             {
                 continue;
             }
-            
-            neighborPtr = GridNodeMap_[neighborIdx(0)][neighborIdx(1)][neighborIdx(2)];
-            if (!neighborPtr) {
-                continue;
-            }
-            neighborPtr->index = neighborIdx;
 
-            bool flag_explored = neighborPtr->rounds == rounds_;
+            const int neighbor_flat = flatIdx(neighborIdx);
+            GridNode &neighbor = pool_[neighbor_flat];
 
-            if (flag_explored && neighborPtr->state == GridNode::CLOSEDSET)
+            bool flag_explored = neighbor.rounds == rounds_;
+
+            if (flag_explored && neighbor.state == GridNode::CLOSEDSET)
             {
                 continue;
             }
 
-            neighborPtr->rounds = rounds_;
+            neighbor.rounds = rounds_;
 
             {
-                const Eigen::Vector3d nw = Index2Coord(neighborPtr->index);
-                // Hard ground / ceiling gate. Applies regardless of the
-                // search_ignores_obstacles_ debug flag — flying below the
-                // ground or above the ceiling is never allowed.
+                const Eigen::Vector3d nw = Index2Coord(neighborIdx);
+                // Hard ground / ceiling gate. Always applied, even when
+                // search_ignores_obstacles_ is set.
                 if (ground_height_ > -0.5 && nw.z() < ground_height_) continue;
                 if (virtual_ceil_height_ > -0.5 && nw.z() > virtual_ceil_height_) continue;
             }
 
             if (!search_ignores_obstacles_) {
                 if(use_esdf_check){
-                    if (checkOccupancy_esdf(Index2Coord(neighborPtr->index)))
+                    if (checkOccupancy_esdf(Index2Coord(neighborIdx)))
                         continue;
                 } else {
-                    if (checkOccupancy(Index2Coord(neighborPtr->index)))
+                    if (checkOccupancy(Index2Coord(neighborIdx)))
                         continue;
                 }
             }
 
             double static_cost = neighbor_costs_ordered[i];
 
-            // Risk-aware edge cost: multiply distance by (1 + risk) so
-            // the risk integral scales with travel length. With the
-            // additive form (static + risk) the distance component is
-            // swamped inside a high-risk zone, making diagonal and axial
-            // steps almost indistinguishable; the multiplicative form keeps
-            // shorter paths cheaper even inside risk regions and matches
-            // the main-branch / swarm-formation RRT* reference.
-            Eigen::Vector3d neigh_world = Index2Coord(neighborPtr->index);
+            // Risk-aware edge cost: distance * (1 + risk). Multiplicative
+            // form keeps shorter paths cheaper inside risk regions.
+            Eigen::Vector3d neigh_world = Index2Coord(neighborIdx);
             double risk_cost = getRiskCost(neigh_world);
-            tentative_gScore = current->gScore + static_cost * (1.0 + risk_cost);
+            tentative_gScore = current.gScore + static_cost * (1.0 + risk_cost);
 
-            // DEBUG: log first few expansions + any expansion into a risk
-            // zone. Shows whether A* actually queries cells near restricted zone centers
-            // and what world-coord each cell index maps to.
             if (log_manager_ && risk_zones_ && !risk_zones_->empty()) {
                 static thread_local int dbg_expand_count = 0;
-                // reset at start of a new search: rounds_ comparator.
                 static thread_local int dbg_last_round = -1;
                 if (dbg_last_round != rounds_) {
                     dbg_expand_count = 0;
@@ -401,8 +385,8 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
                     log_manager_->infof(
                         "[A* EXPAND] #%d idx=(%d,%d,%d) world=(%.3f,%.3f,%.3f) "
                         "static=%.3f risk=%.3f g=%.3f inside_zone=%d",
-                        dbg_expand_count, neighborPtr->index(0),
-                        neighborPtr->index(1), neighborPtr->index(2),
+                        dbg_expand_count, neighborIdx(0),
+                        neighborIdx(1), neighborIdx(2),
                         neigh_world.x(), neigh_world.y(), neigh_world.z(),
                         static_cost, risk_cost, tentative_gScore,
                         inside_zone ? 1 : 0);
@@ -412,26 +396,25 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
 
             if (!flag_explored)
             {
-                neighborPtr->state = GridNode::OPENSET;
-                neighborPtr->cameFrom = current;
-                neighborPtr->gScore = tentative_gScore;
-                neighborPtr->fScore = tentative_gScore + getHeu(neighborPtr, endPtr);
-                openSet_.push(neighborPtr);
+                neighbor.state = GridNode::OPENSET;
+                neighbor.cameFromFlat = current_flat;
+                neighbor.gScore = tentative_gScore;
+                neighbor.fScore = tentative_gScore + getHeu(neighborIdx, end_idx);
+                openSet_.push(neighbor_flat);
             }
-            else if (tentative_gScore < neighborPtr->gScore)
+            else if (tentative_gScore < neighbor.gScore)
             {
-                neighborPtr->cameFrom = current;
-                neighborPtr->gScore = tentative_gScore;
-                neighborPtr->fScore = tentative_gScore + getHeu(neighborPtr, endPtr);
-                openSet_.push(neighborPtr);
+                neighbor.cameFromFlat = current_flat;
+                neighbor.gScore = tentative_gScore;
+                neighbor.fScore = tentative_gScore + getHeu(neighborIdx, end_idx);
+                openSet_.push(neighbor_flat);
             }
         }
 
         auto time_2 = rclcpp::Clock().now();
         auto elapsed = time_2 - time_1;
-        // 10 s cap: global (one-shot) planning can afford a long front-end
-        // search; the 0.5 s limit in the upstream code was tuned for on-board
-        // real-time local replan.
+        // 20 s cap: global (one-shot) planning can afford a long front-end
+        // search; upstream 0.5 s was tuned for on-board real-time replan.
         if (elapsed.seconds() > 20.0)
         {
             if (log_manager_) {
@@ -466,9 +449,10 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
 vector<Vector3d> AStar::getPath()
 {
     vector<Vector3d> path;
+    path.reserve(gridPath_.size());
 
-    for (auto ptr : gridPath_)
-        path.push_back(Index2Coord(ptr->index));
+    for (int flat : gridPath_)
+        path.push_back(Index2Coord(flatToIdx(flat)));
 
     reverse(path.begin(), path.end());
     return path;
