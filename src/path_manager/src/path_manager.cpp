@@ -1,8 +1,25 @@
 #include "path_manager/path_manager.h"
 #include "path_manager/polynomial_traj.h"
+#include <chrono>
+#include <fstream>
+#include <string>
 
 namespace path_manager
 {
+
+// Read VmRSS from /proc/self/status, KB.
+static long pmReadVmRssKB() {
+    std::ifstream f("/proc/self/status");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.compare(0, 6, "VmRSS:") == 0) {
+            long kb = -1;
+            sscanf(line.c_str(), "VmRSS: %ld", &kb);
+            return kb;
+        }
+    }
+    return -1;
+}
 
     PathManager::PathManager(rclcpp::Node::SharedPtr node)
         : node_(node),
@@ -1053,9 +1070,18 @@ void PathManager::setTerrainData(const grid_map_msgs::msg::GridMap::SharedPtr &m
     if (!sdf_loaded_from_file_ && !load_terrain_esdf_path_.empty()) {
         Eigen::Vector3d lo, hi;
         if (computeTerrainBBox(&lo, &hi)) {
+            const long rss_before = pmReadVmRssKB();
+            auto t0 = std::chrono::steady_clock::now();
             if (!sdf_manager_.isInitialized()) sdf_manager_.initialize(sdf_voxel_size_);
             if (sdf_manager_.loadFromFile(load_terrain_esdf_path_, lo, hi)) {
+                auto t1 = std::chrono::steady_clock::now();
+                const long rss_after = pmReadVmRssKB();
+                const double load_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
                 sdf_loaded_from_file_ = true;
+                log_manager_->infof("[PM MEM] SDF eager-load: %.1f ms (RSS %ld -> %ld KB, delta=%ld KB = %.2f MB)",
+                                    load_ms, rss_before, rss_after,
+                                    rss_after - rss_before,
+                                    (double)(rss_after - rss_before) / 1024.0);
                 log_manager_->infof("SDF eagerly loaded from %s",
                                     load_terrain_esdf_path_.c_str());
             }
