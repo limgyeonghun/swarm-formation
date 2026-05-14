@@ -50,6 +50,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PositionCommand.msg"
   "msg/FormationTarget.msg"
   "msg/FormationCommand.msg"
+  "msg/DynamicObstacleSpec.msg"
+  "msg/DynamicObstacleArray.msg"
   DEPENDENCIES std_msgs builtin_interfaces nav_msgs geometry_msgs
 )
 
@@ -130,6 +132,10 @@ ament_target_dependencies(traj_server
   ${PATH_MANAGER_DEPENDENCIES}
 )
 
+# Standalone sanity test for the DynamicObstacleArray dispatch loop.
+add_executable(load_obstacles_test test/load_obstacles_test.cpp)
+rosidl_target_interfaces(load_obstacles_test
+  ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 
 rosidl_target_interfaces(${PROJECT_NAME}_lib
@@ -158,6 +164,10 @@ install(TARGETS ${PROJECT_NAME}_node
 )
 
 install(TARGETS traj_server
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(TARGETS load_obstacles_test
   DESTINATION lib/${PROJECT_NAME}
 )
 

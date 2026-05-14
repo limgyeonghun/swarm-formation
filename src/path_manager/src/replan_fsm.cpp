@@ -222,12 +222,19 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     }
     dynamic_obstacle_radius_ =
         node_->get_parameter("manager/dynamic_obstacle_radius").as_double();
+    // Separate topic from /clicked_point (used by TrajectoryCommandPanel for
+    // start/goal picking). Sphere-on-click is opt-in via a dedicated topic.
     clicked_point_sub_ = node_->create_subscription<geometry_msgs::msg::PointStamped>(
-        "/clicked_point", 10,
+        "/dynamic_obstacles/click", 10,
         std::bind(&ReplanFSM::clickedPointCallback, this, std::placeholders::_1));
     clear_obstacles_sub_ = node_->create_subscription<std_msgs::msg::Empty>(
         "/dynamic_obstacles/clear", 1,
         std::bind(&ReplanFSM::clearObstaclesCallback, this, std::placeholders::_1));
+    load_obstacles_sub_ =
+        node_->create_subscription<path_manager::msg::DynamicObstacleArray>(
+            "/dynamic_obstacles/load", 1,
+            std::bind(&ReplanFSM::loadObstaclesCallback, this,
+                      std::placeholders::_1));
 
     timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this), timer_callback_group_);
     FSM_LOG_INFO("FSM timer created with dedicated callback group (10ms period)");
@@ -1130,6 +1137,38 @@ void ReplanFSM::clearObstaclesCallback(
     if (!path_manager_) return;
     path_manager_->clearDynamicObstacles();
     FSM_LOG_INFO("Dynamic obstacles cleared on request");
+}
+
+void ReplanFSM::loadObstaclesCallback(
+    const path_manager::msg::DynamicObstacleArray::SharedPtr msg)
+{
+    if (!path_manager_) return;
+    if (msg->replace) {
+        path_manager_->clearDynamicObstacles();
+    }
+    size_t added = 0;
+    size_t skipped = 0;
+    for (const auto& spec : msg->obstacles) {
+        if (spec.kind != path_manager::msg::DynamicObstacleSpec::KIND_SPHERE) {
+            FSM_LOG_WARN(
+                "loadObstacles: skipping non-sphere spec kind=%u "
+                "(cube/cylinder not exposed yet)", spec.kind);
+            ++skipped;
+            continue;
+        }
+        Eigen::Vector3d c(spec.center.x, spec.center.y, spec.center.z);
+        int id = path_manager_->addDynamicSphere(c, spec.radius);
+        if (id < 0) {
+            FSM_LOG_WARN(
+                "loadObstacles: addDynamicSphere rejected at (%.2f,%.2f,%.2f) r=%.2f",
+                c.x(), c.y(), c.z(), spec.radius);
+            ++skipped;
+        } else {
+            ++added;
+        }
+    }
+    FSM_LOG_INFO("loadObstacles: added=%zu skipped=%zu (total in msg=%zu)",
+                 added, skipped, msg->obstacles.size());
 }
 
 }  // namespace path_manager

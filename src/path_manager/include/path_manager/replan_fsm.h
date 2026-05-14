@@ -14,6 +14,8 @@
 #include "path_manager/msg/formation_target.hpp"
 #include "formation_msgs/msg/trajectory_command.hpp"
 #include "path_manager/msg/position_command.hpp"
+#include "path_manager/msg/dynamic_obstacle_array.hpp"
+#include "path_manager/msg/dynamic_obstacle_spec.hpp"
 #include "path_manager/path_manager.h"
 #include "path_optimizer/plan_container.hpp"
 #include "../../common/log_manager.hpp"
@@ -84,6 +86,8 @@ public:
     // tool → /clicked_point → spawn a fixed-radius sphere obstacle into the SDF.
     void clickedPointCallback(const geometry_msgs::msg::PointStamped::SharedPtr msg);
     void clearObstaclesCallback(const std_msgs::msg::Empty::SharedPtr msg);
+    void loadObstaclesCallback(
+        const path_manager::msg::DynamicObstacleArray::SharedPtr msg);
     void polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     void globalTraj2ROSMsg(path_manager::msg::PolyTraj &msg);
     // Callback groups:
@@ -121,6 +125,8 @@ private:
     rclcpp::Subscription<grid_map_msgs::msg::GridMap>::SharedPtr terrain_sub_;
     rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr clicked_point_sub_;
     rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr clear_obstacles_sub_;
+    rclcpp::Subscription<path_manager::msg::DynamicObstacleArray>::SharedPtr
+        load_obstacles_sub_;
     double dynamic_obstacle_radius_;  // m, applied to clicked-point spheres
     rclcpp::Publisher<path_manager::msg::FormationTarget>::SharedPtr formation_target_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr waypoint_marker_pub_;
