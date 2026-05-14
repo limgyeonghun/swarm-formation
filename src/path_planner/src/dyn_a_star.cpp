@@ -2,39 +2,11 @@
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
-#include <fstream>
-#include <string>
 
 using namespace std;
 using namespace Eigen;
 
 namespace path_planner { namespace astar {
-
-// Read VmRSS / VmPeak from /proc/self/status. Returns KB. -1 on failure.
-static long readVmRssKB() {
-    std::ifstream f("/proc/self/status");
-    std::string line;
-    while (std::getline(f, line)) {
-        if (line.compare(0, 6, "VmRSS:") == 0) {
-            long kb = -1;
-            sscanf(line.c_str(), "VmRSS: %ld", &kb);
-            return kb;
-        }
-    }
-    return -1;
-}
-static long readVmPeakKB() {
-    std::ifstream f("/proc/self/status");
-    std::string line;
-    while (std::getline(f, line)) {
-        if (line.compare(0, 7, "VmPeak:") == 0) {
-            long kb = -1;
-            sscanf(line.c_str(), "VmPeak: %ld", &kb);
-            return kb;
-        }
-    }
-    return -1;
-}
 
 AStar::~AStar() = default;
 
@@ -46,20 +18,7 @@ void AStar::initGridMap(const Eigen::Vector3i &pool_size)
     ny_ = pool_size(1);
     nz_ = pool_size(2);
     const size_t N = static_cast<size_t>(nx_) * ny_ * nz_;
-
-    const long rss_before = readVmRssKB();
     pool_.assign(N, GridNode{});
-    const long rss_after = readVmRssKB();
-    const long peak = readVmPeakKB();
-    if (log_manager_) {
-        log_manager_->infof("[A* MEM] pool alloc: N=%zu sizeof=%zu theoretical=%.2f MB | "
-                            "VmRSS %ld -> %ld KB (delta=%ld KB = %.2f MB) | VmPeak=%ld KB (%.2f MB)",
-                            N, sizeof(GridNode),
-                            (double)(N * sizeof(GridNode)) / 1024.0 / 1024.0,
-                            rss_before, rss_after, rss_after - rss_before,
-                            (double)(rss_after - rss_before) / 1024.0,
-                            peak, (double)peak / 1024.0);
-    }
     // openSet_ comparator binds to pool_ for fScore lookup.
     openSet_ = std::priority_queue<int, std::vector<int>, NodeComparator>(
         NodeComparator(&pool_));
