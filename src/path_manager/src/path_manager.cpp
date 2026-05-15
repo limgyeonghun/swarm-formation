@@ -27,7 +27,11 @@ namespace path_manager
         node_->declare_parameter("manager/max_vel", -1.0);
         node_->declare_parameter("manager/max_acc", -1.0);
         node_->declare_parameter("manager/length_per_piece", 3.0);
-        node_->declare_parameter("manager/risk_weight", 10.0);
+        node_->declare_parameter("manager/risk_weight", 1.0);
+        node_->declare_parameter("manager/risk_detour_smha_w", 1.0);
+        node_->declare_parameter("manager/risk_transit_smha_w", 3.0);
+        node_->declare_parameter("manager/risk_goal_in_zone_threshold", 0.05);
+        node_->declare_parameter("manager/astar_bypass_shortcut", false);
         node_->declare_parameter("manager/astar_step_size", 1.0);
         node_->declare_parameter("manager/sdf_voxel_size", 1.0);
         node_->declare_parameter("manager/ground_height", -0.1);
@@ -36,6 +40,10 @@ namespace path_manager
         node_->get_parameter("manager/max_acc", max_acc_);
         node_->get_parameter("manager/length_per_piece", length_per_piece_);
         node_->get_parameter("manager/risk_weight", risk_weight_);
+        node_->get_parameter("manager/risk_detour_smha_w", risk_detour_smha_w_);
+        node_->get_parameter("manager/risk_transit_smha_w", risk_transit_smha_w_);
+        node_->get_parameter("manager/risk_goal_in_zone_threshold", risk_goal_in_zone_threshold_);
+        node_->get_parameter("manager/astar_bypass_shortcut", astar_bypass_shortcut_);
         node_->get_parameter("manager/astar_step_size", astar_step_size_);
         node_->get_parameter("manager/sdf_voxel_size", sdf_voxel_size_);
         node_->get_parameter("manager/ground_height", ground_height_);
@@ -58,12 +66,12 @@ namespace path_manager
             for (size_t ti = 0; ti < tz_params.size(); ti += 5) {
                 RiskZone tz;
                 tz.center = Eigen::Vector3d(tz_params[ti], tz_params[ti+1], tz_params[ti+2]);
-                tz.sensing_range = tz_params[ti+3];
-                tz.max_risk_level = tz_params[ti+4];
+                tz.reach = tz_params[ti+3];
+                tz.peak = tz_params[ti+4];
                 risk_zones_.push_back(tz);
                 log_manager_->infof("  RiskZone #%zu: center=(%.1f,%.1f,%.1f) range=%.1f risk=%.1f",
                     risk_zones_.size()-1, tz.center.x(), tz.center.y(), tz.center.z(),
-                    tz.sensing_range, tz.max_risk_level);
+                    tz.reach, tz.peak);
             }
             log_manager_->infof("Loaded %zu risk zones (risk_weight=%.1f)", risk_zones_.size(), risk_weight_);
         } else if (tz_params.empty()) {
@@ -208,8 +216,8 @@ namespace path_manager
                 for (const auto &tz : risk_zones_) {
                     ego_planner::RiskZone oz;
                     oz.center = tz.center;
-                    oz.sensing_range = tz.sensing_range;
-                    oz.max_risk_level = tz.max_risk_level;
+                    oz.reach = tz.reach;
+                    oz.peak = tz.peak;
                     opt_zones.push_back(oz);
                 }
                 poly_traj_opt_->setRiskZones(opt_zones);
@@ -259,13 +267,13 @@ namespace path_manager
         std::vector<path_planner::sdf::RiskZoneLite> sdf_risk_zones;
         sdf_risk_zones.reserve(risk_zones_.size());
         for (const auto &tz : risk_zones_) {
-            sdf_risk_zones.push_back({tz.center, tz.sensing_range, tz.max_risk_level});
+            sdf_risk_zones.push_back({tz.center, tz.reach, tz.peak});
         }
         path_planner::sdf::SDFQueryAdapter map_adapter;
         map_adapter.sdf = &sdf_manager_;
         map_adapter.risk_zones = sdf_risk_zones.empty() ? nullptr : &sdf_risk_zones;
         map_adapter.safety_margin = obstacle_clearance_;
-        map_adapter.risk_weight = risk_weight_;
+        map_adapter.risk_alpha = risk_weight_;
 
         // Compute map bounds from waypoints
         map_lower_bound_ = start_pos;
@@ -282,7 +290,7 @@ namespace path_manager
 
         // If risk zones exist, expand margin to allow routing around them
         for (const auto &tz : risk_zones_) {
-            bound_margin_xy = std::max(bound_margin_xy, tz.sensing_range + 5.0);
+            bound_margin_xy = std::max(bound_margin_xy, tz.reach + 5.0);
         }
 
         for (const auto& pt : all_points) {
@@ -295,7 +303,7 @@ namespace path_manager
 
         // Also extend bounds to include risk zone coverage areas
         for (const auto &tz : risk_zones_) {
-            double r = tz.sensing_range + 5.0;
+            double r = tz.reach + 5.0;
             map_lower_bound_.x() = std::min(map_lower_bound_.x(), tz.center.x() - r);
             map_lower_bound_.y() = std::min(map_lower_bound_.y(), tz.center.y() - r);
             map_upper_bound_.x() = std::max(map_upper_bound_.x(), tz.center.x() + r);
@@ -446,7 +454,7 @@ namespace path_manager
         std::vector<path_planner::astar::RiskZoneLite> astar_risks;
         astar_risks.reserve(risk_zones_.size());
         for (const auto &tz : risk_zones_) {
-            astar_risks.push_back({tz.center, tz.sensing_range, tz.max_risk_level});
+            astar_risks.push_back({tz.center, tz.reach, tz.peak});
         }
         Eigen::Vector3d map_size = map_upper_bound_ - map_lower_bound_;
         astar_.setLogManager(log_manager_);
@@ -468,7 +476,11 @@ namespace path_manager
         astar_.setSearchIgnoresObstacles(false);
         astar_.setGroundHeight(ground_height_);
         astar_.setVirtualCeilHeight(virtual_ceil_height_);
-        astar_.setRiskWeight(risk_weight_);
+        astar_.setRiskAlpha(risk_weight_);
+        astar_.setDetourSmhaW(risk_detour_smha_w_);
+        astar_.setTransitSmhaW(risk_transit_smha_w_);
+        astar_.setGoalInZoneThreshold(risk_goal_in_zone_threshold_);
+        astar_.setBypassShortcut(astar_bypass_shortcut_);
 
         // Size the A* search pool to cover the entire SDF so any detour is
         // reachable regardless of the start/goal pair. A* centers the pool
@@ -545,10 +557,10 @@ namespace path_manager
                 const auto &tz = risk_zones_[zi];
                 double dist = (p - tz.center).norm();
                 double zone_cost = 0.0;
-                if (dist < tz.sensing_range) {
-                    double sigma = tz.sensing_range / 3.0;
+                if (dist < tz.reach) {
+                    double sigma = tz.reach / 3.0;
                     double g = std::exp(-(dist * dist) / (2.0 * sigma * sigma));
-                    zone_cost = tz.max_risk_level * g * risk_weight_;
+                    zone_cost = tz.peak * g * risk_weight_;
                 }
                 total += zone_cost;
                 char buf[64];
@@ -585,7 +597,7 @@ namespace path_manager
             line.type = visualization_msgs::msg::Marker::LINE_STRIP;
             line.action = visualization_msgs::msg::Marker::ADD;
             line.pose.orientation.w = 1.0;
-            line.scale.x = 0.25;
+            line.scale.x = 1.5;
             line.color.r = 0.0; line.color.g = 1.0; line.color.b = 1.0; line.color.a = 1.0;
             line.lifetime = rclcpp::Duration(0, 0);
             for (const auto &p : full_route) {
@@ -602,7 +614,7 @@ namespace path_manager
             dots.type = visualization_msgs::msg::Marker::SPHERE_LIST;
             dots.action = visualization_msgs::msg::Marker::ADD;
             dots.pose.orientation.w = 1.0;
-            dots.scale.x = 0.6; dots.scale.y = 0.6; dots.scale.z = 0.6;
+            dots.scale.x = 2.5; dots.scale.y = 2.5; dots.scale.z = 2.5;
             dots.color.r = 0.0; dots.color.g = 0.8; dots.color.b = 1.0; dots.color.a = 1.0;
             dots.lifetime = rclcpp::Duration(0, 0);
             for (const auto &p : full_route) {
@@ -690,7 +702,7 @@ namespace path_manager
             line.type = visualization_msgs::msg::Marker::LINE_STRIP;
             line.action = visualization_msgs::msg::Marker::ADD;
             line.pose.orientation.w = 1.0;
-            line.scale.x = 0.3;
+            line.scale.x = 1.5;
             line.color.r = 1.0f; line.color.g = 0.5f; line.color.b = 0.0f; line.color.a = 1.0f;
             for (const auto &p : clean_path) {
                 geometry_msgs::msg::Point pt;
@@ -769,7 +781,7 @@ namespace path_manager
             line.type = visualization_msgs::msg::Marker::LINE_STRIP;
             line.action = visualization_msgs::msg::Marker::ADD;
             line.pose.orientation.w = 1.0;
-            line.scale.x = 0.3;
+            line.scale.x = 1.5;
             line.color.r = 0.0f; line.color.g = 1.0f; line.color.b = 0.2f; line.color.a = 1.0f;
             const auto &initTraj = globalMJO.getTraj();
             const double dt = 0.1;
@@ -828,7 +840,7 @@ namespace path_manager
                     s.pose.position.y = optInnerPts(1, i);
                     s.pose.position.z = optInnerPts(2, i);
                     s.pose.orientation.w = 1.0;
-                    s.scale.x = 0.6; s.scale.y = 0.6; s.scale.z = 0.6;
+                    s.scale.x = 2.5; s.scale.y = 2.5; s.scale.z = 2.5;
                     s.color.r = 1.0f; s.color.g = 0.55f; s.color.b = 0.0f; s.color.a = 0.9f;
                     arr.markers.push_back(s);
                 }
@@ -880,7 +892,7 @@ namespace path_manager
                             s.pose.position.y = optInnerOpt(1, i);
                             s.pose.position.z = optInnerOpt(2, i);
                             s.pose.orientation.w = 1.0;
-                            s.scale.x = 0.7; s.scale.y = 0.7; s.scale.z = 0.7;
+                            s.scale.x = 2.8; s.scale.y = 2.8; s.scale.z = 2.8;
                             s.color.r = 1.0f; s.color.g = 1.0f; s.color.b = 0.0f; s.color.a = 1.0f;
                             arr.markers.push_back(s);
 
@@ -1102,6 +1114,27 @@ void PathManager::clearDynamicObstacles()
     dyn_patch_radii_.clear();
     log_manager_->infof("Dynamic obstacles cleared");
     publishDynamicObstacles();
+}
+
+void PathManager::setRiskZonesRuntime(const std::vector<RiskZone>& zones)
+{
+    // Atomically replace the active zone list. The next planGlobalTraj
+    // call will re-bind A* and the optimizer with the new set via the
+    // existing setup paths (see planGlobalTraj where astar_.setRiskZones
+    // and poly_traj_opt_->setRiskZones are called).
+    risk_zones_ = zones;
+    if (log_manager_) {
+        log_manager_->infof(
+            "[risk_zones] runtime update: %zu zones now active",
+            risk_zones_.size());
+        for (size_t i = 0; i < risk_zones_.size(); ++i) {
+            const auto& tz = risk_zones_[i];
+            log_manager_->infof(
+                "  zone[%zu] center=(%.1f,%.1f,%.1f) reach=%.1f peak=%.2f",
+                i, tz.center.x(), tz.center.y(), tz.center.z(),
+                tz.reach, tz.peak);
+        }
+    }
 }
 
 void PathManager::publishDynamicObstacles()

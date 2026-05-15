@@ -730,43 +730,71 @@ namespace ego_planner
     return false;
   }
 
-  // Continuous Gaussian risk over sensing range.
-  // Matches ObstacleQueryAdapter::getRiskLevel in path_manager.h.
-  // Risk reporting (for logging / RRT* compatibility).
-  // Smooth Gaussian bell used only for informational queries.
+  // V3: quadratic moat + probabilistic-OR composition.
+  // Matches AStar::getRiskCost shape (without the alpha multiplier — the
+  // back-end uses its own wei_risk weight applied in RiskGradCostP).
   double PolyTrajOptimizer::getRiskLevel(const Eigen::Vector3d &pos) const
   {
-    double total_Risk = 0.0;
+    double survival = 1.0;
     for (const auto &tz : risk_zones_) {
-      double dist = (pos - tz.center).norm();
-      if (dist < tz.sensing_range) {
-        double sigma = tz.sensing_range / 3.0;
-        total_Risk += tz.max_risk_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
-      }
+      const double dx = std::abs(pos.x() - tz.center.x());
+      if (dx >= tz.reach) continue;
+      const double dy = std::abs(pos.y() - tz.center.y());
+      if (dy >= tz.reach) continue;
+      const double dz = std::abs(pos.z() - tz.center.z());
+      if (dz >= tz.reach) continue;
+      const double d = std::sqrt(dx*dx + dy*dy + dz*dz);
+      if (d >= tz.reach) continue;
+      const double u = 1.0 - d / tz.reach;
+      const double moat = std::min(tz.peak * u * u, 1.0 - 1e-3);
+      survival *= (1.0 - moat);
     }
-    return total_Risk;
+    return 1.0 - survival;
   }
 
+  // V3: gradient of `1 - prod_i (1 - moat_i)`.
+  // Identity: d/dx [1 - prod_i (1 - m_i)] = (1 - risk) * sum_i [grad_m_i / (1 - m_i)].
+  // For quadratic moat m_i = peak * (1 - d/R)^2:
+  //   d/dx m_i = (-2 * peak / R) * (1 - d/R) * (diff / d).
   Eigen::Vector3d PolyTrajOptimizer::getRiskGradient(const Eigen::Vector3d &pos) const
   {
-    Eigen::Vector3d grad = Eigen::Vector3d::Zero();
+    // First pass: per-zone moat values and their gradients.
+    struct ZoneData { double moat; Eigen::Vector3d grad_moat; };
+    std::vector<ZoneData> zd;
+    zd.reserve(risk_zones_.size());
     for (const auto &tz : risk_zones_) {
-      Eigen::Vector3d diff = pos - tz.center;
-      double dist = diff.norm();
-      if (dist < 1e-6) continue;
-      if (dist < tz.sensing_range) {
-        double sigma = tz.sensing_range / 3.0;
-        double sigma2 = sigma * sigma;
-        double gauss = tz.max_risk_level * std::exp(-0.5 * (dist / sigma) * (dist / sigma));
-        grad += gauss * (-1.0 / sigma2) * diff;
+      const Eigen::Vector3d diff = pos - tz.center;
+      const double d = diff.norm();
+      if (d >= tz.reach || d < 1e-9) {
+        zd.push_back({0.0, Eigen::Vector3d::Zero()});
+        continue;
       }
+      const double u = 1.0 - d / tz.reach;
+      const double moat_raw = tz.peak * u * u;
+      const double moat = std::min(moat_raw, 1.0 - 1e-3);
+      // If clipped, grad falls to 0 at the clip surface (rare in practice).
+      Eigen::Vector3d g = Eigen::Vector3d::Zero();
+      if (moat_raw == moat) {
+        g = (-2.0 * tz.peak * u / tz.reach) * (diff / d);
+      }
+      zd.push_back({moat, g});
     }
-    return grad;
+
+    // Survival product.
+    double survival = 1.0;
+    for (const auto &z : zd) survival *= (1.0 - z.moat);
+
+    // Sum of grad_m_i / (1 - m_i).
+    Eigen::Vector3d sum = Eigen::Vector3d::Zero();
+    for (const auto &z : zd) {
+      const double denom = 1.0 - z.moat;
+      if (denom > 1e-6) sum += z.grad_moat / denom;
+    }
+    return survival * sum;
   }
 
-  // Gaussian-based risk penalty (matches main-branch RiskGradCostP).
-  // Quadratic cost on the smooth Gaussian risk level, so gradient stays
-  // smooth everywhere (no hard boundary at sensing_range).
+  // V3 risk penalty: cost = wei_risk * risk^2, risk in [0, 1] (OR-moat).
+  // The squaring keeps the gradient smooth; quadratic moat itself is C^1.
   bool PolyTrajOptimizer::RiskGradCostP(const int i_dp,
                                            const Eigen::Vector3d &p,
                                            Eigen::Vector3d &gradp,

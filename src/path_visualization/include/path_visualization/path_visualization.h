@@ -6,6 +6,7 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <path_manager/msg/poly_traj.hpp>
+#include <path_manager/msg/risk_zone_array.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2/LinearMath/Quaternion.h>
@@ -36,8 +37,8 @@ struct Obstacle {
 
 struct VisRiskZone {
   Eigen::Vector3d center;
-  double sensing_range;
-  double max_risk_level;
+  double reach;   // meters; risk is exactly zero outside this ball
+  double peak;    // dimensionless in (0, 1]
 };
 
 class PathVisualization : public rclcpp::Node {
@@ -71,6 +72,7 @@ private:
   void publishTraveledPaths();
   void loadRiskZoneParameters();
   void publishRiskZones();
+  void riskZoneArrayCallback(const path_manager::msg::RiskZoneArray::SharedPtr msg);
 
   int num_drones_;
   bool enable_obstacles_;
@@ -78,6 +80,7 @@ private:
   std::vector<VisRiskZone> risk_zones_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr risk_zone_pub_;
   rclcpp::TimerBase::SharedPtr risk_zone_timer_;
+  rclcpp::Subscription<path_manager::msg::RiskZoneArray>::SharedPtr risk_zone_sub_;
 
   std::vector<DroneParams> drone_params_;
   std::vector<DroneData> drone_data_;

@@ -52,6 +52,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FormationCommand.msg"
   "msg/DynamicObstacleSpec.msg"
   "msg/DynamicObstacleArray.msg"
+  "msg/RiskZoneSpec.msg"
+  "msg/RiskZoneArray.msg"
   DEPENDENCIES std_msgs builtin_interfaces nav_msgs geometry_msgs
 )
 
@@ -137,6 +139,16 @@ add_executable(load_obstacles_test test/load_obstacles_test.cpp)
 rosidl_target_interfaces(load_obstacles_test
   ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
+# V3 scenario harness for risk-aware A*.
+add_executable(risk_scenarios_test test/risk_scenarios_test.cpp)
+target_link_libraries(risk_scenarios_test
+  ${PROJECT_NAME}_lib
+  yaml-cpp)
+ament_target_dependencies(risk_scenarios_test
+  ${PATH_MANAGER_DEPENDENCIES})
+rosidl_target_interfaces(risk_scenarios_test
+  ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
 
 rosidl_target_interfaces(${PROJECT_NAME}_lib
   ${PROJECT_NAME} "rosidl_typesupport_cpp"
@@ -168,6 +180,10 @@ install(TARGETS traj_server
 )
 
 install(TARGETS load_obstacles_test
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(TARGETS risk_scenarios_test
   DESTINATION lib/${PROJECT_NAME}
 )
 

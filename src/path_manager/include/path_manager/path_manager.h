@@ -48,12 +48,12 @@ namespace path_manager
     Obstacle(const Eigen::Vector3d& c, double width, double length, double height) : center(c), shape(ObstacleShape::RECTANGLE), param1(width), param2(length), z_extent(height) {}
   };
 
-  // Single Gaussian centered at `center` with
-  // support out to `sensing_range` (sigma = range/3). Peak = max_risk_level.
+  // V3 risk zone: quadratic moat with compact support.
+  // moat(x) = peak * (1 - ||x - center|| / reach)^2 for d < reach, else 0.
   struct RiskZone {
     Eigen::Vector3d center;
-    double sensing_range;
-    double max_risk_level;
+    double reach;   // meters; risk is exactly zero outside this ball
+    double peak;    // dimensionless in (0, 1]
   };
 
   // Terrain elevation data extracted from GridMap
@@ -184,6 +184,14 @@ namespace path_manager
     void clearDynamicObstacles();
     size_t numDynamicObstacles() const { return sdf_manager_.numActiveObstacles(); }
 
+    // Runtime risk-zone reset (called when ObstacleScenarioPanel / mission
+    // authority publishes a new RiskZoneArray). Atomically replaces the
+    // internal zone list. A* / optimizer are re-bound on next planGlobalTraj.
+    // Thread/timing: callers must ensure this is invoked on the same
+    // callback group as trajectory commands (handled in ReplanFSM).
+    void setRiskZonesRuntime(const std::vector<RiskZone>& zones);
+    size_t numRiskZones() const { return risk_zones_.size(); }
+
   private:
     // Helper functions for outer/inner line calculation
     std::vector<Eigen::Vector3d> adjustWaypointsForFormation(
@@ -214,6 +222,10 @@ namespace path_manager
     std::vector<Obstacle> obstacle_centers_;
     std::vector<RiskZone> risk_zones_;
     double risk_weight_;
+    double risk_detour_smha_w_{1.0};
+    double risk_transit_smha_w_{3.0};
+    double risk_goal_in_zone_threshold_{0.05};
+    bool astar_bypass_shortcut_{false};
     Eigen::Vector3d map_lower_bound_;
     Eigen::Vector3d map_upper_bound_;
     std::vector<LocalTrajData> swarm_traj_;

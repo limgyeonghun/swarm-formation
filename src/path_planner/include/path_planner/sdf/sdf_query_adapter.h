@@ -17,15 +17,15 @@ namespace sdf {
 
 struct RiskZoneLite {
   Eigen::Vector3d center;
-  double sensing_range;
-  double max_risk_level;
+  double reach;   // meters; risk is exactly zero outside this ball
+  double peak;    // dimensionless in (0, 1]
 };
 
 struct SDFQueryAdapter {
   const SDFManager *sdf = nullptr;
   const std::vector<RiskZoneLite> *risk_zones = nullptr;
   double safety_margin = 0.5;
-  double risk_weight = 10.0;
+  double risk_alpha = 1.0;
 
   // Hard collision: 1 if obstacle (SDF <= safety_margin), 0 if free.
   int query(const Eigen::Vector3d &pos) const {
@@ -40,9 +40,9 @@ struct SDFQueryAdapter {
     double total = 0.0;
     for (const auto &tz : *risk_zones) {
       double dist = (pos - tz.center).norm();
-      if (dist < tz.sensing_range) {
-        double sigma = tz.sensing_range / 3.0;
-        total += tz.max_risk_level *
+      if (dist < tz.reach) {
+        double sigma = tz.reach / 3.0;
+        total += tz.peak *
                  std::exp(-0.5 * (dist / sigma) * (dist / sigma));
       }
     }
@@ -50,7 +50,7 @@ struct SDFQueryAdapter {
   }
 
   double getRiskCostMultiplier(const Eigen::Vector3d &pos) const {
-    return 1.0 + risk_weight * getRiskLevel(pos);
+    return 1.0 + risk_alpha * getRiskLevel(pos);
   }
 };
 

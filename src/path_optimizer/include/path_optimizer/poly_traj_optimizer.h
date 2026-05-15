@@ -46,8 +46,8 @@ namespace ego_planner
   // risk zone (shared definition with path_manager).
   struct RiskZone {
     Eigen::Vector3d center;
-    double sensing_range;
-    double max_risk_level;
+    double reach;   // meters; risk is exactly zero outside this ball
+    double peak;    // dimensionless in (0, 1]
   };
 
   enum FORMATION_TYPE

@@ -235,6 +235,22 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
             "/dynamic_obstacles/load", 1,
             std::bind(&ReplanFSM::loadObstaclesCallback, this,
                       std::placeholders::_1));
+    // Runtime risk-zone reset. Subscribe on the same MutuallyExclusive
+    // subscription_callback_group_ used by trajectoryCommandCallback so
+    // that publish-order from the mission panel is preserved: the panel
+    // publishes RiskZoneArray first, then TrajectoryCommand; the panel's
+    // QoS is reliable, ROS preserves FIFO per publisher, and the shared
+    // MutuallyExclusive group serializes the two callbacks. No race.
+    {
+        rclcpp::SubscriptionOptions risk_zone_options;
+        risk_zone_options.callback_group = subscription_callback_group_;
+        load_risk_zones_sub_ =
+            node_->create_subscription<path_manager::msg::RiskZoneArray>(
+                "/risk_zones/load", rclcpp::QoS(1).reliable(),
+                std::bind(&ReplanFSM::loadRiskZonesCallback, this,
+                          std::placeholders::_1),
+                risk_zone_options);
+    }
 
     timer_ = node_->create_wall_timer(10ms, std::bind(&ReplanFSM::computeAndPublishPaths, this), timer_callback_group_);
     FSM_LOG_INFO("FSM timer created with dedicated callback group (10ms period)");
@@ -1169,6 +1185,27 @@ void ReplanFSM::loadObstaclesCallback(
     }
     FSM_LOG_INFO("loadObstacles: added=%zu skipped=%zu (total in msg=%zu)",
                  added, skipped, msg->obstacles.size());
+}
+
+void ReplanFSM::loadRiskZonesCallback(
+    const path_manager::msg::RiskZoneArray::SharedPtr msg)
+{
+    if (!path_manager_) return;
+    // Convert the wire format to PathManager's internal RiskZone struct.
+    std::vector<path_manager::RiskZone> zones;
+    zones.reserve(msg->zones.size());
+    size_t dropped = 0;
+    for (const auto& z : msg->zones) {
+        if (z.reach <= 0.0 || z.peak <= 0.0) { ++dropped; continue; }
+        path_manager::RiskZone tz;
+        tz.center = Eigen::Vector3d(z.center.x, z.center.y, z.center.z);
+        tz.reach = z.reach;
+        tz.peak = std::min(z.peak, 1.0);  // clamp to (0, 1]
+        zones.push_back(tz);
+    }
+    path_manager_->setRiskZonesRuntime(zones);
+    FSM_LOG_INFO("loadRiskZones: %zu zones applied (dropped %zu invalid)",
+                 zones.size(), dropped);
 }
 
 }  // namespace path_manager

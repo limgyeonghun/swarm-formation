@@ -33,7 +33,7 @@ inline bool segmentClear(const SDFManager& sdf,
     if (!std::isfinite(d) || d < safety_margin) return false;
     if (risks) {
       for (const auto& tz : *risks) {
-        if ((p - tz.center).norm() < tz.sensing_range) return false;
+        if ((p - tz.center).norm() < tz.reach) return false;
       }
     }
   }

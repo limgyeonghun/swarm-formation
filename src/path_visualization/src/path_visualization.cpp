@@ -113,15 +113,55 @@ PathVisualization::PathVisualization() : Node("path_visualization")
     publishObstacles(); // Initial publish
   }
 
-  // Load and visualize risk zones
+  // Load static risk zones from launch params (legacy path) and create
+  // the publisher / timer unconditionally so runtime updates via the
+  // /risk_zones/load topic can become visible without restart.
   loadRiskZoneParameters();
-  if (!risk_zones_.empty()) {
-    risk_zone_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("risk_field", 10);
-    risk_zone_timer_ = this->create_wall_timer(2000ms, std::bind(&PathVisualization::publishRiskZones, this));
-    publishRiskZones();
-    RCLCPP_INFO(this->get_logger(), "Risk zone visualization: %zu zones loaded", risk_zones_.size());
-  }
+  // QoS::TransientLocal so a late RViz subscriber still receives the
+  // most recent zone marker set without us having to republish.
+  rclcpp::QoS marker_qos(10);
+  marker_qos.transient_local().reliable();
+  risk_zone_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
+      "risk_field", marker_qos);
+  // No periodic timer: markers carry lifetime=0 (never expire in RViz)
+  // and we only need to republish when the zone set changes via the
+  // /risk_zones/load callback below.
+  risk_zone_sub_ = this->create_subscription<path_manager::msg::RiskZoneArray>(
+      "/risk_zones/load", rclcpp::QoS(1).reliable(),
+      std::bind(&PathVisualization::riskZoneArrayCallback, this, std::placeholders::_1));
+  publishRiskZones();
+  RCLCPP_INFO(this->get_logger(),
+              "Risk zone visualization: %zu zones from launch params; "
+              "subscribed to /risk_zones/load for runtime updates",
+              risk_zones_.size());
+}
 
+void PathVisualization::riskZoneArrayCallback(
+    const path_manager::msg::RiskZoneArray::SharedPtr msg)
+{
+  risk_zones_.clear();
+  risk_zones_.reserve(msg->zones.size());
+  for (const auto &z : msg->zones) {
+    if (z.reach <= 0.0 || z.peak <= 0.0) continue;
+    VisRiskZone tz;
+    tz.center = Eigen::Vector3d(z.center.x, z.center.y, z.center.z);
+    tz.reach = z.reach;
+    tz.peak = std::min(z.peak, 1.0);
+    risk_zones_.push_back(tz);
+  }
+  // The zone set just changed — wipe the previous markers once, then
+  // let publishRiskZones() draw the new (or empty) set.
+  if (risk_zone_pub_) {
+    visualization_msgs::msg::Marker del;
+    del.header.frame_id = "map";
+    del.header.stamp = this->now();
+    del.action = visualization_msgs::msg::Marker::DELETEALL;
+    risk_zone_pub_->publish(del);
+  }
+  RCLCPP_INFO(this->get_logger(),
+              "[risk_zones] runtime update: %zu zones visualized",
+              risk_zones_.size());
+  publishRiskZones();
 }
 
 void PathVisualization::simplePathCallback(const nav_msgs::msg::Path::SharedPtr msg, int drone_id)
@@ -671,12 +711,12 @@ void PathVisualization::loadRiskZoneParameters()
     for (size_t i = 0; i < tz_params.size(); i += 5) {
       VisRiskZone tz;
       tz.center = Eigen::Vector3d(tz_params[i], tz_params[i+1], tz_params[i+2]);
-      tz.sensing_range = tz_params[i+3];
-      tz.max_risk_level = tz_params[i+4];
+      tz.reach = tz_params[i+3];
+      tz.peak = tz_params[i+4];
       risk_zones_.push_back(tz);
       RCLCPP_INFO(this->get_logger(), "  RiskZone #%zu: center=(%.1f,%.1f,%.1f) range=%.1f risk=%.1f",
           risk_zones_.size()-1, tz.center.x(), tz.center.y(), tz.center.z(),
-          tz.sensing_range, tz.max_risk_level);
+          tz.reach, tz.peak);
     }
   } else if (!tz_params.empty()) {
     RCLCPP_WARN(this->get_logger(), "Invalid risk_zones param size: %zu (must be multiple of 5)", tz_params.size());
@@ -685,7 +725,12 @@ void PathVisualization::loadRiskZoneParameters()
 
 void PathVisualization::publishRiskZones()
 {
-  if (risk_zones_.empty() || !risk_zone_pub_) return;
+  if (!risk_zone_pub_) return;
+  // ADD-only publish: every active zone gets a fresh stamp every 2 s, so
+  // the markers stay alive without flicker. DELETEALL is only sent when
+  // the zone list actually changes (in riskZoneArrayCallback) — never
+  // here on the periodic timer.
+  if (risk_zones_.empty()) return;
 
   int marker_id = 0;
   for (size_t zi = 0; zi < risk_zones_.size(); ++zi) {
@@ -705,9 +750,10 @@ void PathVisualization::publishRiskZones()
       m.pose.position.y = tz.center.y();
       m.pose.position.z = tz.center.z();
       m.pose.orientation.w = 1.0;
-      double d = tz.sensing_range * 2.0;
+      double d = tz.reach * 2.0;
       m.scale.x = d; m.scale.y = d; m.scale.z = d;
-      float alpha = std::min(0.4f, static_cast<float>(tz.max_risk_level / 250.0));
+      // V3: peak in (0, 1]. Map to alpha in [0.1, 0.5] for visibility.
+      float alpha = 0.1f + 0.4f * static_cast<float>(tz.peak);
       m.color.r = 1.0; m.color.g = 0.0; m.color.b = 0.0; m.color.a = alpha;
       m.lifetime = rclcpp::Duration(0, 0);
       risk_zone_pub_->publish(m);
@@ -742,12 +788,12 @@ void PathVisualization::publishRiskZones()
       m.action = visualization_msgs::msg::Marker::ADD;
       m.pose.position.x = tz.center.x();
       m.pose.position.y = tz.center.y();
-      m.pose.position.z = tz.center.z() + tz.sensing_range + 1.0;
+      m.pose.position.z = tz.center.z() + tz.reach + 1.0;
       m.pose.orientation.w = 1.0;
       m.scale.z = 1.5;
       m.color.r = 1.0; m.color.g = 0.2; m.color.b = 0.2; m.color.a = 1.0;
       std::ostringstream ss;
-      ss << "restricted zone #" << zi << " (T=" << std::fixed << std::setprecision(0) << tz.max_risk_level << ")";
+      ss << "restricted zone #" << zi << " (peak=" << std::fixed << std::setprecision(2) << tz.peak << ")";
       m.text = ss.str();
       m.lifetime = rclcpp::Duration(0, 0);
       risk_zone_pub_->publish(m);
