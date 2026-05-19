@@ -32,21 +32,28 @@
     #   α=100 makes max_depth=0 on sdf2 but pessimistic on S3 transit.
     manager/risk_weight: 30.0
 
-    # SMHA* (Aine et al., IJRR 2016) shared-g dual-queue A* with auto
-    # mode dispatch.
-    # - DETOUR mode (smha_w == detour): anchor-only A* (admissible).
-    #   Preserves crisp detour around risk zones. Times out if the goal
-    #   is geometrically encircled.
-    # - TRANSIT mode (smha_w == transit > 1): inadmissible queue pops
-    #   while its f ≤ smha_w × anchor.f. Greedy progress toward goal
-    #   pushes the search through risk bands when no detour exists.
-    # Dispatch per planning call:
-    #   1. If risk(goal) > goal_in_zone_threshold → start in TRANSIT.
-    #   2. Otherwise start in DETOUR; if it fails, retry as TRANSIT.
-    # Suboptimality bound = transit_smha_w × anchor_bound (here 3.0 × 1).
-    manager/risk_detour_smha_w: 1.0
-    manager/risk_transit_smha_w: 3.0
-    manager/risk_goal_in_zone_threshold: 0.05
+    # SMHA* (Aine et al., IJRR 2016) shared-g dual-queue A*, single
+    # unified algorithm — NO mode switch. The inadmissible queue uses a
+    # coarse risk-aware cost-to-go heuristic (Dijkstra from the goal on a
+    # K-downsampled grid with the same dist*(1+alpha*risk) cost). Per
+    # Wilt&Ruml SoCS2012, a heuristic correlated with true cost-to-go is
+    # the only thing that escapes risk depressions without bulldozing
+    # mid-path detours; a coarse value field encodes that structure
+    # exactly (Holte hierarchical A*). smha_w is the SMHA* suboptimality
+    # bound on the inadmissible dispatch; 1 = anchor-only. Sweep 1..5.
+    manager/risk_smha_w: 2.0
+
+    # Front-end search. FM2 (Fast Marching Square) is the default: a
+    # heuristic-free Eikonal planner that, by construction, has no local
+    # minima (Valero-Gomez et al.), so it detours avoidable zones,
+    # transits walled-off ones, and commits into a goal-in-zone all in a
+    # single query — none of the Wilt&Ruml depression explosion the A*
+    # family suffers. `astar` keeps the SMHA* path as the ablation
+    # baseline / fallback.
+    manager/front_end: fm2          # fm2 | astar
+    # Eikonal grid downsample factor. 4 -> ~ (map/4)^3 cells. Lower =
+    # finer geodesic but slower; the MINCO/L-BFGS back-end refines it.
+    manager/fm2_coarse_k: 4
 
     # Debug: bypass shortcut/visibility-thinning so RViz shows the raw
     # 1-voxel-step A* path. Use to verify front-end risk avoidance in
