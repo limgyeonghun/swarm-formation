@@ -70,6 +70,10 @@ private:
 
 class AStar
 {
+public:
+    // Front-end search selector (yaml manager/front_end).
+    enum class FrontEnd { ASTAR, FM2 };
+
 private:
     // SDF query backend. We do not need a separate occupancy map: a voxel is
     // considered blocked when sdf_distance < obstacle_margin_.
@@ -85,18 +89,81 @@ private:
     double ground_height_ = -1.0;
     double virtual_ceil_height_ = -1.0;
     double risk_alpha_ = 1.0;
-    // SMHA* (Aine et al., IJRR 2016) shared-g, dual-heuristic A*.
-    // - Anchor queue (admissible): h_anchor = euclidean (Diag) tie-broken.
-    // - Inadmis queue (greedy):    h_inadmis = smha_w_ * euclidean.
-    // Inadmis is preferred while INADMIS.top.f <= smha_w_ * ANCHOR.top.f.
-    // smha_w_ == 1.0 disables SMHA* dispatch and falls back to anchor-only.
-    // Auto-dispatch chooses smha_w_ per planning call (see astarSearch*).
+    // SMHA* (Aine et al., IJRR 2016) shared-g, dual-heuristic A*, run
+    // unconditionally for every query — NO binary mode switch.
+    //
+    // - ANCHOR queue (admissible): h = euclidean (Diag) tie-broken.
+    //   Bounds suboptimality (SMHA* 2-expand theorem) so detour quality
+    //   is preserved.
+    // - INADMIS queue: h = coarse risk-aware cost-to-go (see below).
+    //   Dispatch: pop inadmis while INADMIS.top.f <= smha_w_ * ANCHOR.top.f.
+    //
+    // The inadmissible heuristic is a COARSE-GRID risk-aware value-to-go,
+    // computed by Dijkstra from the goal on a K-times-downsampled grid
+    // using the SAME edge cost  dist*(1 + alpha*risk).  Per Wilt & Ruml
+    // (SoCS 2012, "When does Weighted A* Fail?"): greedy/weighted search
+    // is fast iff the heuristic is correlated with true cost-to-go. A
+    // reweighted Euclidean heuristic is *anti*-correlated inside a risk
+    // depression (goal gets closer geometrically but more expensive),
+    // which is exactly why every distance-based inadmissible heuristic we
+    // tried stalled on goal-in-zone or bulldozed mid-path detours. A
+    // coarse cost-to-go encodes the depression structure exactly, so the
+    // SAME single heuristic:
+    //   * routes around a mid-path zone (coarse value says detour is
+    //     cheaper),
+    //   * cuts straight through when the goal is inside a zone (coarse
+    //     value says transit is the cheapest available),
+    //   * never bulldozes a detour that is actually cheaper.
+    // (Holte hierarchical A*, Felner additive PDB: an abstract search's
+    // exact cost-to-go is a valid heuristic for the fine search.)
     double smha_w_ = 1.0;
-    // Auto-mode parameters (set via yaml). Pick smha_w_ at plan start
-    // based on goal risk; retry with transit_w if detour run fails.
-    double detour_smha_w_  = 1.0;   // when goal sits outside any zone
-    double transit_smha_w_ = 3.0;   // when goal sits inside a zone
-    double goal_in_zone_threshold_ = 0.05;  // risk(goal) > this -> transit
+
+    // Coarse value field for the inadmissible heuristic.
+    int coarse_k_ = 8;                  // downsample factor (fine->coarse)
+    int cnx_ = 0, cny_ = 0, cnz_ = 0;   // coarse grid dims
+    std::vector<double> coarse_g_;      // cost-to-go from goal; inf if unreachable
+    bool coarse_valid_ = false;
+    Eigen::Vector3i coarse_goal_idx_{-1, -1, -1};
+
+    inline int coarseFlat(int ci, int cj, int ck) const {
+        return ci + cnx_ * (cj + cny_ * ck);
+    }
+    // World position -> coarse cost-to-go (inf-safe). Returns -1 if the
+    // coarse field is not valid so the caller can fall back to euclidean.
+    double coarseCostToGo(const Eigen::Vector3d &world) const;
+    // (Re)compute the coarse Dijkstra value field rooted at `goal`.
+    // Cheap (coarse grid has ~ fine/K^3 cells); called once per query.
+    void buildCoarseValueField(const Eigen::Vector3d &goal_world);
+
+    // ----- FM2 (Fast Marching Square) front-end -----
+    // Heuristic-free Eikonal planner. Solves |∇T|·F = 1 from the goal on
+    // a coarse risk-weighted speed map, then extracts the geodesic by
+    // gradient descent. No local minima (Valero-Gomez et al.) so it has
+    // none of the Wilt&Ruml depression-explosion of the A* family.
+    // (FrontEnd enum is public — see below.)
+    FrontEnd front_end_ = FrontEnd::ASTAR;
+    int   fm2_coarse_k_ = 4;            // Eikonal grid downsample factor
+    bool  fm2_star_ = true;             // FM2*: cost-to-go heuristic on
+                                        // the FMM queue (same trajectory)
+    int   fcnx_ = 0, fcny_ = 0, fcnz_ = 0;
+    std::vector<float> fm2_T_;          // arrival time / cost-to-go
+    std::vector<float> fm2_F_;          // speed map in (0, 1]
+    bool  fm2_valid_ = false;
+
+    inline int fm2Flat(int i, int j, int k) const {
+        return i + fcnx_ * (j + fcny_ * k);
+    }
+    // Build speed map (ESDF + OR-moat risk) on the coarse grid.
+    void fm2BuildSpeedMap();
+    // Solve the Eikonal equation rooted at goal_world; fills fm2_T_.
+    void fm2SolveEikonal(const Eigen::Vector3d &goal_world,
+                         const Eigen::Vector3d &start_world);
+    // Extract the geodesic start->goal by descending -∇T. World coords.
+    std::vector<Eigen::Vector3d> fm2ExtractGeodesic(
+        const Eigen::Vector3d &start_world,
+        const Eigen::Vector3d &goal_world);
+    // Trilinear sample of fm2_T_ at a world point; +inf if outside/blocked.
+    double fm2SampleT(const Eigen::Vector3d &world) const;
     // Debug toggle: when true, astarSearchAndGetSimplePath returns the raw
     // 1-voxel-step A* path without shortcut/visibility-thinning. Used to
     // verify front-end behavior independent of the shortcut filter.
@@ -137,7 +204,9 @@ private:
     // Composed: risk(x) = 1 - prod_i (1 - moat_i(x)),  bounded in [0, 1].
     // Returns risk_alpha_ * risk(x). Compact support; AABB pre-filter
     // skips the sqrt for far zones.
-    inline double getRiskCost(const Eigen::Vector3d &pos) const {
+    // Normalized OR-moat risk in [0, 1] (no alpha scaling). Used by the
+    // inadmissible heuristic so its inflation factor stays dimensionless.
+    inline double getRiskNorm(const Eigen::Vector3d &pos) const {
         if (!risk_zones_ || risk_zones_->empty()) return 0.0;
         double survival = 1.0;
         for (const auto &tz : *risk_zones_) {
@@ -154,7 +223,11 @@ private:
             constexpr double kMoatCap = 1.0 - 1e-3;
             survival *= (1.0 - std::min(moat, kMoatCap));
         }
-        return risk_alpha_ * (1.0 - survival);
+        return 1.0 - survival;
+    }
+
+    inline double getRiskCost(const Eigen::Vector3d &pos) const {
+        return risk_alpha_ * getRiskNorm(pos);
     }
 
     std::vector<int> retrievePath(int current_flat);
@@ -212,11 +285,9 @@ public:
     void setVirtualCeilHeight(double h) { virtual_ceil_height_ = h; }
     void setRiskAlpha(double a) { risk_alpha_ = a; }
     void setSmhaW(double w) { smha_w_ = w; }
-    // Back-compat alias used by callers; treats heuristic weight as SMHA w.
-    void setHeuristicWeight(double w) { smha_w_ = w; }
-    void setDetourSmhaW(double w)  { detour_smha_w_  = w; }
-    void setTransitSmhaW(double w) { transit_smha_w_ = w; }
-    void setGoalInZoneThreshold(double t) { goal_in_zone_threshold_ = t; }
+    void setFrontEnd(FrontEnd fe) { front_end_ = fe; }
+    void setFm2CoarseK(int k) { fm2_coarse_k_ = (k >= 1 ? k : 1); }
+    void setFm2Star(bool on) { fm2_star_ = on; }
     void setBypassShortcut(bool b) { bypass_shortcut_ = b; }
 
     void initGridMap(const Eigen::Vector3i &pool_size);
@@ -241,10 +312,16 @@ inline double AStar::getHeuAnchor(const Eigen::Vector3i &i1, const Eigen::Vector
 
 inline double AStar::getHeuInadmis(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
 {
-    // Greedy depression-escape heuristic: pure inflated distance to goal.
-    // Inadmissible by construction (overestimates by smha_w_), it drives
-    // expansion straight toward the goal even when neighbors have inflated
-    // g-scores from risk. The admissible anchor is the optimality backstop.
+    // Coarse risk-aware cost-to-go (see buildCoarseValueField). This
+    // encodes the depression structure exactly, so the same heuristic
+    // detours around mid-path zones AND cuts through goal-in-zone.
+    if (coarse_valid_) {
+        const Eigen::Vector3d w = Index2Coord(i1);
+        const double c = coarseCostToGo(w);
+        if (c >= 0.0) return c;            // valid coarse value
+    }
+    // Fallback (coarse field unavailable / cell unreachable): inflated
+    // euclidean so the inadmis queue still makes progress.
     return tie_breaker_ * smha_w_ * getDiagHeu(i1, i2);
 }
 
