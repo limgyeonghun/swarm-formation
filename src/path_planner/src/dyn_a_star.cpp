@@ -970,7 +970,11 @@ constexpr float kFMin = 1e-3f;          // blocked-cell speed (never 0)
 // is spatially continuous (reference FM2's first-wave benefit, via the
 // ESDF we already have). d0 is auto-derived from grid resolution — no
 // tuning knob. floor keeps F > 0 next to hard walls (Eikonal safety).
-static constexpr double kEsdfSmoothCells = 3.0;
+// DISABLED (2026-05-19): set huge so d/d0 -> prox saturates to 1 and
+// the modulation is inert. Measurement showed it did not reduce the
+// FM2*-vs-FM2 gap and pushed paths to excessive altitude (z 34m -> 43m
+// on the sdf2 diagonal mission). Code kept for easy re-enable.
+static constexpr double kEsdfSmoothCells = 1e9;
 static constexpr double kProxFloor       = 0.05;
 }
 
