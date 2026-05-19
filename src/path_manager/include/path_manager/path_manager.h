@@ -222,9 +222,10 @@ namespace path_manager
     std::vector<Obstacle> obstacle_centers_;
     std::vector<RiskZone> risk_zones_;
     double risk_weight_;
-    double risk_detour_smha_w_{1.0};
-    double risk_transit_smha_w_{3.0};
-    double risk_goal_in_zone_threshold_{0.05};
+    double risk_smha_w_{2.0};
+    std::string front_end_str_{"fm2"};
+    int fm2_coarse_k_{4};
+    bool fm2_star_{true};
     bool astar_bypass_shortcut_{false};
     Eigen::Vector3d map_lower_bound_;
     Eigen::Vector3d map_upper_bound_;

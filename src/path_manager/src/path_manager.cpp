@@ -28,9 +28,10 @@ namespace path_manager
         node_->declare_parameter("manager/max_acc", -1.0);
         node_->declare_parameter("manager/length_per_piece", 3.0);
         node_->declare_parameter("manager/risk_weight", 1.0);
-        node_->declare_parameter("manager/risk_detour_smha_w", 1.0);
-        node_->declare_parameter("manager/risk_transit_smha_w", 3.0);
-        node_->declare_parameter("manager/risk_goal_in_zone_threshold", 0.05);
+        node_->declare_parameter("manager/risk_smha_w", 2.0);
+        node_->declare_parameter("manager/front_end", std::string("fm2"));
+        node_->declare_parameter("manager/fm2_coarse_k", 4);
+        node_->declare_parameter("manager/fm2_star", true);
         node_->declare_parameter("manager/astar_bypass_shortcut", false);
         node_->declare_parameter("manager/astar_step_size", 1.0);
         node_->declare_parameter("manager/sdf_voxel_size", 1.0);
@@ -40,9 +41,10 @@ namespace path_manager
         node_->get_parameter("manager/max_acc", max_acc_);
         node_->get_parameter("manager/length_per_piece", length_per_piece_);
         node_->get_parameter("manager/risk_weight", risk_weight_);
-        node_->get_parameter("manager/risk_detour_smha_w", risk_detour_smha_w_);
-        node_->get_parameter("manager/risk_transit_smha_w", risk_transit_smha_w_);
-        node_->get_parameter("manager/risk_goal_in_zone_threshold", risk_goal_in_zone_threshold_);
+        node_->get_parameter("manager/risk_smha_w", risk_smha_w_);
+        node_->get_parameter("manager/front_end", front_end_str_);
+        node_->get_parameter("manager/fm2_coarse_k", fm2_coarse_k_);
+        node_->get_parameter("manager/fm2_star", fm2_star_);
         node_->get_parameter("manager/astar_bypass_shortcut", astar_bypass_shortcut_);
         node_->get_parameter("manager/astar_step_size", astar_step_size_);
         node_->get_parameter("manager/sdf_voxel_size", sdf_voxel_size_);
@@ -477,9 +479,12 @@ namespace path_manager
         astar_.setGroundHeight(ground_height_);
         astar_.setVirtualCeilHeight(virtual_ceil_height_);
         astar_.setRiskAlpha(risk_weight_);
-        astar_.setDetourSmhaW(risk_detour_smha_w_);
-        astar_.setTransitSmhaW(risk_transit_smha_w_);
-        astar_.setGoalInZoneThreshold(risk_goal_in_zone_threshold_);
+        astar_.setSmhaW(risk_smha_w_);
+        astar_.setFrontEnd(front_end_str_ == "fm2"
+            ? path_planner::astar::AStar::FrontEnd::FM2
+            : path_planner::astar::AStar::FrontEnd::ASTAR);
+        astar_.setFm2CoarseK(fm2_coarse_k_);
+        astar_.setFm2Star(fm2_star_);
         astar_.setBypassShortcut(astar_bypass_shortcut_);
 
         // Size the A* search pool to cover the entire SDF so any detour is
