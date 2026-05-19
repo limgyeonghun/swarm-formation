@@ -1025,11 +1025,28 @@ void AStar::fm2SolveEikonal(const Eigen::Vector3d &goal_world,
     if (fm2_F_[gflat] <= kFMin) fm2_F_[gflat] = 0.5f;
     fm2_T_[gflat] = 0.0f;
 
+    // FM2* causal-domain restriction: the wave terminates once the
+    // start cell is frozen. Only cells on the goal->start corridor are
+    // computed, in correct causal order, so the geodesic is preserved
+    // ("same path" — Valero-Gomez et al.). Without this early stop the
+    // T+h freeze order would corrupt the full field (FMM is order-
+    // dependent: solveQuad reads frozen neighbours). When fm2_star_ is
+    // false (plain FM2) sflat is unused and the wave runs to completion.
+    Eigen::Vector3d srel = (start_world - map_origin_) / cres;
+    int si = (int)std::floor(srel.x());
+    int sj = (int)std::floor(srel.y());
+    int sk = (int)std::floor(srel.z());
+    const bool s_in = (si >= 0 && si < fcnx_ && sj >= 0 && sj < fcny_ &&
+                       sk >= 0 && sk < fcnz_);
+    const int sflat = s_in ? fm2Flat(si, sj, sk) : -1;
+
     // FM2*: admissible cost-to-go heuristic. True remaining cost from a
     // cell to the start is integral(1/F) ds >= straight-line distance
     // (F <= 1 in free space, F_max = 1 at risk = 0). The Euclidean
-    // distance to the start is thus an admissible lower bound; it only
-    // reorders the queue and leaves fm2_T_ unchanged.
+    // distance to the start is thus an admissible, consistent lower
+    // bound. It guides the wave toward the start; combined with the
+    // early stop above, the computed corridor T (hence the geodesic) is
+    // the same as plain FM2 while far fewer cells are expanded.
     auto heur = [&](int flat) -> float {
         if (!fm2_star_) return 0.0f;
         const int k = flat / (fcnx_ * fcny_);
@@ -1100,6 +1117,7 @@ void AStar::fm2SolveEikonal(const Eigen::Vector3d &goal_world,
         pq.pop();
         if (frozen[flat]) continue;
         frozen[flat] = 1;
+        if (fm2_star_ && flat == sflat) break;  // start reached: stop
 
         const int k = flat / (fcnx_ * fcny_);
         const int r = flat - k * (fcnx_ * fcny_);

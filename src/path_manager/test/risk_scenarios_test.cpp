@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iomanip>
+#include <limits>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -21,6 +22,11 @@ namespace {
 using path_planner::astar::AStar;
 using path_planner::astar::RiskZoneLite;
 using path_planner::sdf::SDFManager;
+
+// CLI-selected front end: "astar" or "fm2" (default fm2).
+std::string g_front_end = "fm2";
+int g_fm2_k = 4;
+bool g_fm2_star = true;
 
 int g_passed = 0;
 int g_failed = 0;
@@ -164,11 +170,16 @@ void run(const Scenario &s, double alpha, double h_weight, const MapSpec &map) {
   astar.setRiskZones(&s.zones);
   astar.setObstacleMargin(0.5);
   astar.setRiskAlpha(alpha);
-  // Treat the CLI "h_weight" as transit_smha_w. detour mode runs as
-  // strict anchor (smha_w = 1.0).
-  astar.setDetourSmhaW(1.0);
-  astar.setTransitSmhaW(h_weight);
-  astar.setGoalInZoneThreshold(0.05);
+  astar.setSmhaW(h_weight);
+  astar.setFrontEnd(g_front_end == "fm2"
+      ? path_planner::astar::AStar::FrontEnd::FM2
+      : path_planner::astar::AStar::FrontEnd::ASTAR);
+  astar.setFm2CoarseK(g_fm2_k);
+  astar.setFm2Star(g_fm2_star);
+  // Keep the raw front-end geodesic (no shortcut collapse) so the
+  // path-integrated risk metric reflects the actual route taken,
+  // not a 4-point straight-line simplification.
+  astar.setBypassShortcut(true);
   Eigen::Vector3i pool(
       static_cast<int>(map.size.x() / map.voxel),
       static_cast<int>(map.size.y() / map.voxel),
@@ -199,8 +210,44 @@ void run(const Scenario &s, double alpha, double h_weight, const MapSpec &map) {
     }
   }
 
-  std::printf("  length=%.1fm direct=%.1fm risk_int=%.3f max_depth=%.1fm time=%.1fms wp=%zu\n",
-              L, Ldirect, R, max_depth, ms, path.size());
+  // Geodesic jitter: mean turn angle between consecutive segments.
+  // High = the raw path zig-zags (coarse-grid gradient stair-step);
+  // useful for comparing fm2_coarse_k settings.
+  double turn_sum_deg = 0.0;
+  int turn_n = 0;
+  for (size_t i = 2; i < path.size(); ++i) {
+    Eigen::Vector3d a = path[i-1] - path[i-2];
+    Eigen::Vector3d b = path[i]   - path[i-1];
+    double na = a.norm(), nb = b.norm();
+    if (na < 1e-6 || nb < 1e-6) continue;
+    double c = std::clamp(a.dot(b) / (na * nb), -1.0, 1.0);
+    turn_sum_deg += std::acos(c) * 180.0 / M_PI;
+    ++turn_n;
+  }
+  double mean_turn = turn_n > 0 ? turn_sum_deg / turn_n : 0.0;
+
+  std::printf("  length=%.1fm direct=%.1fm risk_int=%.3f max_depth=%.1fm time=%.1fms wp=%zu mean_turn=%.2fdeg\n",
+              L, Ldirect, R, max_depth, ms, path.size(), mean_turn);
+
+  // Per-zone traversal diagnostic. For every zone, report its peak and
+  // whether the path went through it (and how deep). With an asymmetric
+  // gate layout this directly shows which gate was used: the chosen
+  // gate's zones are traversed, the rejected gate's are not.
+  for (size_t zi = 0; zi < s.zones.size(); ++zi) {
+    const auto &tz = s.zones[zi];
+    double min_d = std::numeric_limits<double>::max();
+    int hits = 0;
+    for (const auto &p : path) {
+      double d = (p - tz.center).norm();
+      if (d < min_d) min_d = d;
+      if (d < tz.reach) ++hits;
+    }
+    const bool through = hits > 0;
+    const double pen = through ? (tz.reach - min_d) : 0.0;
+    std::printf("  zone[%zu] peak=%.2f reach=%.0f : %s (min_d=%.1fm pen=%.1fm)\n",
+                zi, tz.peak, tz.reach,
+                through ? "THROUGH" : "clear  ", min_d, pen);
+  }
 
   // DETOUR success = path stays mostly outside zones (low risk_int).
   // Threshold scales with direct length so it's resolution-independent.
@@ -243,6 +290,12 @@ int main(int argc, char **argv) {
   if (argc > 2) alphas = {std::stod(argv[2])};
 
   double h_weight = (argc > 3) ? std::stod(argv[3]) : 1.0;
+  if (argc > 4) g_front_end = argv[4];          // astar | fm2
+  if (argc > 5) g_fm2_k = std::stoi(argv[5]);
+  if (argc > 6) g_fm2_star = (std::string(argv[6]) != "0");
+  std::cout << "front_end=" << g_front_end
+            << " fm2_k=" << g_fm2_k
+            << " fm2_star=" << (g_fm2_star ? 1 : 0) << "\n";
 
   for (double a : alphas) {
     for (const auto &s : loaded.scenarios) run(s, a, h_weight, loaded.map);
