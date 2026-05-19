@@ -2,6 +2,7 @@
 // Builds a synthetic flat ESDF in memory (no terrain dependency), loads
 // scenarios from yaml, runs A*, prints metrics per scenario.
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -37,6 +38,10 @@ void check(bool cond, const std::string &label) {
   if (cond) ++g_passed; else ++g_failed;
 }
 
+struct ObstacleBox {  // axis-aligned, world meters (inclusive lo, exclusive hi)
+  Eigen::Vector3d lo, hi;
+};
+
 struct Scenario {
   std::string name;
   Eigen::Vector3d start, goal;
@@ -52,6 +57,7 @@ struct MapSpec {
   std::string esdf_path;
   Eigen::Vector3d bbox_lo = Eigen::Vector3d(0, 0, 0);
   Eigen::Vector3d bbox_hi = Eigen::Vector3d(1000, 1000, 100);
+  std::vector<ObstacleBox> obstacles;  // filled into occ when esdf_path empty
 };
 
 struct LoadResult {
@@ -79,6 +85,15 @@ LoadResult load(const std::string &path) {
     if (m["bbox_hi"]) {
       auto v = m["bbox_hi"];
       out.map.bbox_hi = Eigen::Vector3d(v[0].as<double>(), v[1].as<double>(), v[2].as<double>());
+    }
+    if (m["obstacles"]) {
+      for (const auto &o : m["obstacles"]) {
+        ObstacleBox b;
+        auto lo = o["lo"]; auto hi = o["hi"];
+        b.lo = Eigen::Vector3d(lo[0].as<double>(), lo[1].as<double>(), lo[2].as<double>());
+        b.hi = Eigen::Vector3d(hi[0].as<double>(), hi[1].as<double>(), hi[2].as<double>());
+        out.map.obstacles.push_back(b);
+      }
     }
   }
   for (const auto &n : root["scenarios"]) {
@@ -146,6 +161,19 @@ bool buildFlatSDF(SDFManager &sdf, const MapSpec &map) {
   const int ny = static_cast<int>(map.size.y() / map.voxel);
   const int nz = static_cast<int>(map.size.z() / map.voxel);
   std::vector<uint8_t> occ(static_cast<size_t>(nx) * ny * nz, 0);
+  // Mark box obstacles occupied (layout ((x*ny)+y)*nz+z, see sdf_manager.h).
+  for (const auto &b : map.obstacles) {
+    const int x0 = std::max(0, (int)std::floor(b.lo.x() / map.voxel));
+    const int y0 = std::max(0, (int)std::floor(b.lo.y() / map.voxel));
+    const int z0 = std::max(0, (int)std::floor(b.lo.z() / map.voxel));
+    const int x1 = std::min(nx, (int)std::ceil(b.hi.x() / map.voxel));
+    const int y1 = std::min(ny, (int)std::ceil(b.hi.y() / map.voxel));
+    const int z1 = std::min(nz, (int)std::ceil(b.hi.z() / map.voxel));
+    for (int x = x0; x < x1; ++x)
+      for (int y = y0; y < y1; ++y)
+        for (int z = z0; z < z1; ++z)
+          occ[((static_cast<size_t>(x) * ny) + y) * nz + z] = 1;
+  }
   Eigen::Vector3d origin(0, 0, 0);
   if (!sdf.buildFromVoxels(occ.data(), nx, ny, nz, origin)) {
     std::cerr << "SDF buildFromVoxels failed\n";
