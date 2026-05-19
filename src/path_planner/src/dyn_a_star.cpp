@@ -964,6 +964,14 @@ double AStar::coarseCostToGo(const Eigen::Vector3d &world) const
 // ===========================================================================
 namespace {
 constexpr float kFMin = 1e-3f;          // blocked-cell speed (never 0)
+
+// ESDF speed-map smoothing (FM2* approximation quality). Free-space
+// speed is scaled by clamp(d_obstacle / d0, floor, 1) so the speed map
+// is spatially continuous (reference FM2's first-wave benefit, via the
+// ESDF we already have). d0 is auto-derived from grid resolution — no
+// tuning knob. floor keeps F > 0 next to hard walls (Eikonal safety).
+static constexpr double kEsdfSmoothCells = 3.0;
+static constexpr double kProxFloor       = 0.05;
 }
 
 void AStar::fm2BuildSpeedMap()
@@ -992,10 +1000,17 @@ void AStar::fm2BuildSpeedMap()
             if (blocked) {
                 fm2_F_[fm2Flat(i, j, k)] = kFMin;
             } else {
-                // risk in [0,1]; speed drops with risk. alpha = risk_alpha_.
+                // Free-space speed: risk slowdown, modulated by distance
+                // to the nearest obstacle so the map is C0-continuous.
                 const double r = getRiskNorm(w);
+                const double d0 = kEsdfSmoothCells * cres;
+                double prox = (double)sdf_->getDistance(w) / d0;
+                if (!std::isfinite(prox) || prox < kProxFloor)
+                    prox = kProxFloor;
+                else if (prox > 1.0)
+                    prox = 1.0;
                 fm2_F_[fm2Flat(i, j, k)] =
-                    (float)(1.0 / (1.0 + risk_alpha_ * r));
+                    (float)(prox * (1.0 / (1.0 + risk_alpha_ * r)));
             }
         }
 }
