@@ -86,12 +86,19 @@
     manager/ground_height: -0.01
     manager/virtual_ceil_height: -1.0
 
-    # Precomputed terrain ESDF (both optional). Flat binary format (.esdf).
-    #   save_terrain_esdf: write .esdf after the first successful build.
-    #   load_terrain_esdf: read .esdf instead of voxelizing (fast startup).
-    # Usage: set save once, run, then switch to load for subsequent runs.
-    manager/save_terrain_esdf: "/ws/src/mmp_terrain/data/sample.esdf"
-    manager/load_terrain_esdf: "/ws/src/mmp_terrain/data/sample.esdf"
+    # Precomputed terrain ESDF (flat binary .esdf).
+    #
+    # Path is normally synthesized from <esdf_dir>/<world>.esdf, where
+    # `world` is set by the RViz MapSelector when you click Load Map.
+    # That means the typical user doesn't touch save/load below — leave
+    # them blank and the map you select in RViz drives the cache.
+    #
+    # Paths are resolved against the process CWD (= the workspace root;
+    # /ws under run_docker.sh).
+    manager/world: "dokdo"                          # fallback if RViz hasn't pushed one yet
+    manager/esdf_dir: "src/mmp_terrain/data"
+    manager/save_terrain_esdf: ""                   # override: non-empty wins
+    manager/load_terrain_esdf: ""                   # override: non-empty wins
 
     # RViz "Publish Point" → spawn a sphere obstacle at the click. Radius in m.
     manager/dynamic_obstacle_radius: 50.0

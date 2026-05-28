@@ -51,13 +51,40 @@ namespace path_manager
         node_->get_parameter("manager/ground_height", ground_height_);
         node_->get_parameter("manager/virtual_ceil_height", virtual_ceil_height_);
 
-        // Optional precomputed terrain ESDF file.
-        // save: after first successful buildSDFForBounds, dump to this path.
-        // load: if set and file exists, skip voxelization and load directly.
+        // ESDF cache resolution:
+        //   manager/world           : map name (e.g. "sample", "dokdo"). The
+        //                             RViz MapSelector pushes this to every
+        //                             replan_fsm_* node when you click Load
+        //                             Map, so the typical workflow is "pick
+        //                             the map first, start path_manager after".
+        //                             If never set, falls back to "dokdo".
+        //   manager/esdf_dir        : directory the .esdf is read from / written
+        //                             to. Resolved against the process CWD,
+        //                             which is /ws under run_docker.sh.
+        //   manager/{save,load}_terrain_esdf :
+        //                             optional explicit overrides. Non-empty
+        //                             values win over the world-derived path,
+        //                             which is useful when you want to point
+        //                             at a hand-built cache.
+        node_->declare_parameter("manager/world", std::string("dokdo"));
+        node_->declare_parameter("manager/esdf_dir", std::string("src/mmp_terrain/data"));
         node_->declare_parameter("manager/save_terrain_esdf", std::string());
         node_->declare_parameter("manager/load_terrain_esdf", std::string());
+
+        std::string world_name;
+        std::string esdf_dir;
+        node_->get_parameter("manager/world", world_name);
+        node_->get_parameter("manager/esdf_dir", esdf_dir);
         node_->get_parameter("manager/save_terrain_esdf", save_terrain_esdf_path_);
         node_->get_parameter("manager/load_terrain_esdf", load_terrain_esdf_path_);
+
+        const std::string auto_path = esdf_dir + "/" + world_name + ".esdf";
+        if (save_terrain_esdf_path_.empty()) save_terrain_esdf_path_ = auto_path;
+        if (load_terrain_esdf_path_.empty()) load_terrain_esdf_path_ = auto_path;
+        log_manager_->infof("ESDF cache for world='%s': load='%s' save='%s'",
+                            world_name.c_str(),
+                            load_terrain_esdf_path_.c_str(),
+                            save_terrain_esdf_path_.c_str());
 
         // Parse risk zones: [cx, cy, cz, sensing_range, max_risk_level, ...]
         node_->declare_parameter("risk_zones", std::vector<double>{});

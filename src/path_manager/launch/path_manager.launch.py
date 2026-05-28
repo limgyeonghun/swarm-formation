@@ -43,6 +43,11 @@ def create_drone_nodes(context, *args, **kwargs):
     record_bag_str = context.perform_substitution(LaunchConfiguration('record_bag'))
     record_bag = (record_bag_str.lower() == 'true')
 
+    # Map name passed in from RViz LaunchControlPanel (or empty when launched
+    # straight from a terminal). Empty string falls through to optimizer_params
+    # yaml's manager/world default; a non-empty value wins via ROS param order.
+    world_arg = context.perform_substitution(LaunchConfiguration('world'))
+
     disable_file_logging_str = context.perform_substitution(LaunchConfiguration('disable_file_logging'))
     disable_file_logging = (disable_file_logging_str.lower() == 'true')
 
@@ -153,6 +158,10 @@ def create_drone_nodes(context, *args, **kwargs):
             'drone_id':        idx,
             'mavlink_id':      mavlink_id,
         }
+        # Inject manager/world only when the user actually passed one in.
+        # Otherwise the yaml default stays in effect.
+        if world_arg:
+            params['manager/world'] = world_arg
         # Note: start_point will be received from TrajectoryCommand message
 
         remaps = []
@@ -180,8 +189,10 @@ def create_drone_nodes(context, *args, **kwargs):
         # No additional remapping needed - formation_targets now uses topic_prefix directly
         all_remaps = remaps
 
-        # Build parameter list with scenario config
-        replan_params = [params, scenario_file, optimizer_file, drones_file]
+        # Build parameter list with scenario config.
+        # `params` goes LAST so launch-time overrides (e.g. manager/world from
+        # the RViz LaunchControlPanel) win over the yaml defaults.
+        replan_params = [scenario_file, optimizer_file, drones_file, params]
 
         replan_nodes.append(
             Node(
@@ -388,6 +399,13 @@ def generate_launch_description():
             'disable_file_logging',
             default_value='false',
             description='Disable file logging (logs will only appear in console)'
+        ),
+        DeclareLaunchArgument(
+            'world',
+            default_value='',
+            description='Map name (e.g. dokdo, sample, big_terrain). When set, '
+                        'overrides manager/world in optimizer_params.yaml so '
+                        'path_manager picks the matching <world>.esdf cache.'
         ),
         OpaqueFunction(function=create_drone_nodes),
     ])

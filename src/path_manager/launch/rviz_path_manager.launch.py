@@ -43,6 +43,12 @@ def generate_launch_description():
             default_value='false',
             description='Disable file logging (logs will only appear in console)'
         ),
+        DeclareLaunchArgument(
+            'world',
+            default_value='',
+            description='Map name used to synthesize the ESDF cache path. Leave '
+                        'empty to fall back to optimizer_params.yaml manager/world.'
+        ),
         # Include base path_manager launch with RViz defaults
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(path_manager_launch),
@@ -55,6 +61,7 @@ def generate_launch_description():
                 'drone_id': LaunchConfiguration('drone_id'),
                 'record_bag': LaunchConfiguration('record_bag'),
                 'disable_file_logging': LaunchConfiguration('disable_file_logging'),
+                'world': LaunchConfiguration('world'),
             }.items()
         ),
     ])
