@@ -6,6 +6,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <iostream>
@@ -221,6 +223,86 @@ void run(const Scenario &s, double alpha, double h_weight, const MapSpec &map) {
 
   check(path.size() >= 2, "A* returned a path");
   if (path.size() < 2) return;
+
+  // Optional grid dump for visualization (set DUMP_GRID=1).
+  // Writes raw binary <prefix>_meta.txt + <prefix>_T.bin + <prefix>_G.bin +
+  // <prefix>_F.bin + <prefix>_path.txt for python to load.
+  if (const char *dump = std::getenv("DUMP_GRID"); dump && std::string(dump) == "1") {
+    std::string prefix = std::getenv("DUMP_PREFIX") ? std::getenv("DUMP_PREFIX") : "/tmp/grid_dump";
+    std::string tag = g_front_end + "_" + s.name;
+    std::string base = prefix + "_" + tag;
+    // meta
+    {
+      std::ofstream ofs(base + "_meta.txt");
+      auto fm2d = astar.getFm2Dims();
+      auto cgd = astar.getCoarseDims();
+      ofs << "front_end " << g_front_end << "\n"
+          << "scenario " << s.name << "\n"
+          << "alpha " << alpha << "\n"
+          << "h_weight " << h_weight << "\n"
+          << "fm2_dims " << fm2d.x() << " " << fm2d.y() << " " << fm2d.z() << "\n"
+          << "fm2_coarse_k " << astar.getFm2CoarseK() << "\n"
+          << "coarse_dims " << cgd.x() << " " << cgd.y() << " " << cgd.z() << "\n"
+          << "coarse_k " << astar.getCoarseK() << "\n"
+          << "start " << s.start.x() << " " << s.start.y() << " " << s.start.z() << "\n"
+          << "goal " << s.goal.x() << " " << s.goal.y() << " " << s.goal.z() << "\n"
+          << "voxel " << map.voxel << "\n"
+          << "n_zones " << s.zones.size() << "\n";
+      for (const auto &z : s.zones) {
+        ofs << "zone " << z.center.x() << " " << z.center.y() << " " << z.center.z()
+            << " " << z.reach << " " << z.peak << "\n";
+      }
+    }
+    // FM2 T(x)
+    {
+      const auto &T = astar.getFm2T();
+      if (!T.empty()) {
+        std::ofstream ofs(base + "_T.bin", std::ios::binary);
+        ofs.write(reinterpret_cast<const char*>(T.data()), T.size() * sizeof(float));
+      }
+    }
+    // FM2 speed map F(x)
+    {
+      const auto &F = astar.getFm2F();
+      if (!F.empty()) {
+        std::ofstream ofs(base + "_F.bin", std::ios::binary);
+        ofs.write(reinterpret_cast<const char*>(F.data()), F.size() * sizeof(float));
+      }
+    }
+    // A* coarse cost-to-go G(x)
+    {
+      const auto &G = astar.getCoarseG();
+      if (!G.empty()) {
+        std::ofstream ofs(base + "_G.bin", std::ios::binary);
+        ofs.write(reinterpret_cast<const char*>(G.data()), G.size() * sizeof(double));
+      }
+    }
+    // A* fine grid gScore z-slice at the goal z (visualization).
+    {
+      Eigen::Vector3i pool = astar.getPoolSize();
+      int gz = std::clamp(static_cast<int>(s.goal.z() / map.voxel),
+                          0, pool.z() - 1);
+      auto gslice = astar.getFineGScoreSlice(gz);
+      if (!gslice.empty()) {
+        std::ofstream ofs(base + "_finegslice.bin", std::ios::binary);
+        ofs.write(reinterpret_cast<const char*>(gslice.data()),
+                  gslice.size() * sizeof(double));
+        // dim 메모: 위 meta 에 fine pool 정보 추가
+        std::ofstream m(base + "_finegslice_meta.txt");
+        m << "fine_pool " << pool.x() << " " << pool.y() << " " << pool.z() << "\n"
+          << "slice_z " << gz << "\n"
+          << "voxel " << map.voxel << "\n";
+      }
+    }
+    // Output path
+    {
+      std::ofstream ofs(base + "_path.txt");
+      for (const auto &p : path) {
+        ofs << p.x() << " " << p.y() << " " << p.z() << "\n";
+      }
+    }
+    std::cout << "  [dump] wrote " << base << "_*\n";
+  }
 
   double L = pathLength(path);
   double R = pathRisk(path, s.zones);

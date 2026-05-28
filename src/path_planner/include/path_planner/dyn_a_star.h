@@ -290,6 +290,31 @@ public:
     void setFm2Star(bool on) { fm2_star_ = on; }
     void setBypassShortcut(bool b) { bypass_shortcut_ = b; }
 
+    // ----- Visualization dump accessors (read-only, post-search) -----
+    const std::vector<float>&  getFm2T() const { return fm2_T_; }
+    const std::vector<float>&  getFm2F() const { return fm2_F_; }
+    const std::vector<double>& getCoarseG() const { return coarse_g_; }
+    Eigen::Vector3i getFm2Dims() const { return {fcnx_, fcny_, fcnz_}; }
+    Eigen::Vector3i getCoarseDims() const { return {cnx_, cny_, cnz_}; }
+    int getFm2CoarseK() const { return fm2_coarse_k_; }
+    int getCoarseK() const { return coarse_k_; }
+
+    // Fine pool gScore (A* per-cell accumulated cost) z-slice dump.
+    // Returns a flat (nx * ny) vector of gScore for the given z layer,
+    // with INFs left as +inf. Used for visualization only.
+    Eigen::Vector3i getPoolSize() const { return POOL_SIZE_; }
+    std::vector<double> getFineGScoreSlice(int z) const {
+        std::vector<double> out;
+        if (z < 0 || z >= POOL_SIZE_(2)) return out;
+        out.reserve(static_cast<size_t>(POOL_SIZE_(0)) * POOL_SIZE_(1));
+        for (int x = 0; x < POOL_SIZE_(0); ++x)
+            for (int y = 0; y < POOL_SIZE_(1); ++y) {
+                int flat = (x * POOL_SIZE_(1) + y) * POOL_SIZE_(2) + z;
+                out.push_back(pool_[flat].gScore);
+            }
+        return out;
+    }
+
     void initGridMap(const Eigen::Vector3i &pool_size);
     // Free the existing pool (if any) and allocate a new one. Use when the
     // map span changes between queries.

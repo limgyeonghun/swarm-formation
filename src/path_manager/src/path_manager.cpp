@@ -487,12 +487,10 @@ namespace path_manager
         astar_.setFm2Star(fm2_star_);
         astar_.setBypassShortcut(astar_bypass_shortcut_);
 
-        // Size the A* search pool to cover the entire SDF so any detour is
-        // reachable regardless of the start/goal pair. A* centers the pool
-        // on the midpoint of each query; as long as pool_size ≥ sdf shape,
-        // the full map is inside the search region. Allocated once on the
-        // first plan and reused for all later missions.
-        {
+        // A* fine pool is only used by the A* front-end. FM2 runs on its
+        // own coarse grid (fm2_F_, fm2_T_) and never touches pool_, so
+        // skip the ~2 GB / 655 ms allocation in FM2 mode.
+        if (front_end_str_ != "fm2") {
             Eigen::Vector3i sdf_shape = sdf_manager_.shape();
             if (sdf_shape.minCoeff() <= 0) {
                 log_manager_->errorf("SDF shape not available, cannot size A* pool");
