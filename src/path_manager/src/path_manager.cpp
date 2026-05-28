@@ -164,6 +164,37 @@ namespace path_manager
         dyn_qos.durability(rclcpp::DurabilityPolicy::TransientLocal);
         dyn_obstacle_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/drone_" + std::to_string(drone_id) + "/dynamic_obstacles", dyn_qos);
+
+        // Terrain ESDF cache status (drone_0 only, latched).
+        if (drone_id == 0) {
+            rclcpp::QoS status_qos(1);
+            status_qos.reliability(rclcpp::ReliabilityPolicy::Reliable);
+            status_qos.durability(rclcpp::DurabilityPolicy::TransientLocal);
+            terrain_status_pub_ = node_->create_publisher<std_msgs::msg::String>(
+                "/manager/terrain_status", status_qos);
+
+            // Startup check: warn if load path is set but the cache file is missing.
+            // path_manager builds the ESDF lazily on the first plan, so this is
+            // a heads-up that the first plan will take a while.
+            if (!load_terrain_esdf_path_.empty()) {
+                std::ifstream f(load_terrain_esdf_path_);
+                if (!f.good()) {
+                    publishTerrainStatus(
+                        "ESDF cache missing: " + load_terrain_esdf_path_ +
+                        " — will build from TIF on first plan (this may take "
+                        "several minutes; subsequent runs load instantly).");
+                } else {
+                    publishTerrainStatus("ESDF cache ready: " + load_terrain_esdf_path_);
+                }
+            }
+        }
+    }
+
+    void PathManager::publishTerrainStatus(const std::string &msg) {
+        if (!terrain_status_pub_) return;
+        std_msgs::msg::String m;
+        m.data = msg;
+        terrain_status_pub_->publish(m);
     }
 
     void PathManager::updateRobotState(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& local_target_pt)
@@ -374,6 +405,7 @@ namespace path_manager
                 sdf_loaded_from_file_ = true;
                 log_manager_->infof("SDF loaded from %s (skipping voxelization)",
                                     load_terrain_esdf_path_.c_str());
+                publishTerrainStatus("ESDF loaded: " + load_terrain_esdf_path_);
             } else {
                 log_manager_->warnf("SDF load failed from %s; falling back to build",
                                     load_terrain_esdf_path_.c_str());
@@ -382,16 +414,29 @@ namespace path_manager
 
         // Build SDF (fallback or no cache).
         if (!sdf_loaded_from_file_) {
+            const bool will_persist = use_cache && !save_terrain_esdf_path_.empty();
+            if (will_persist) {
+                publishTerrainStatus(
+                    "Building ESDF cache → " + save_terrain_esdf_path_ +
+                    " (this may take several minutes; please wait)...");
+            }
             if (!buildSDFForBounds(sdf_lo, sdf_hi)) {
                 RCLCPP_ERROR(node_->get_logger(), "SDF build failed");
+                if (will_persist) {
+                    publishTerrainStatus("ESDF build failed (see path_manager log)");
+                }
                 return false;
             }
             // Persist on first successful build if requested (terrain must exist).
-            if (use_cache && !save_terrain_esdf_path_.empty()) {
+            if (will_persist) {
                 if (sdf_manager_.saveToFile(save_terrain_esdf_path_)) {
                     log_manager_->infof("SDF saved to %s",
                                         save_terrain_esdf_path_.c_str());
                     sdf_loaded_from_file_ = true;  // skip rebuild next mission
+                    publishTerrainStatus("ESDF cache ready: " + save_terrain_esdf_path_);
+                } else {
+                    publishTerrainStatus(
+                        "ESDF build done but save failed → " + save_terrain_esdf_path_);
                 }
             }
         }

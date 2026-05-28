@@ -20,6 +20,7 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <grid_map_msgs/msg/grid_map.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <fstream>
@@ -297,6 +298,10 @@ namespace path_manager
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr inner_pts_opt_pub_;
     // Dynamic obstacle visualization (one MarkerArray republished on every add/clear).
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr dyn_obstacle_pub_;
+    // Terrain ESDF cache status string (RViz panel reads this).
+    // Only drone_0's PathManager owns this publisher to avoid duplicate writes.
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr terrain_status_pub_;
+    void publishTerrainStatus(const std::string &msg);
     // Tracks live patch ids so clearObstacles + visualization stay in sync.
     std::vector<int> dyn_patch_ids_;
     std::vector<Eigen::Vector3d> dyn_patch_centers_;
