@@ -90,8 +90,8 @@
     #   save_terrain_esdf: write .esdf after the first successful build.
     #   load_terrain_esdf: read .esdf instead of voxelizing (fast startup).
     # Usage: set save once, run, then switch to load for subsequent runs.
-    manager/save_terrain_esdf: "/home/ros/ws/dev/MMP/src/mmp_terrain/data/big_terrain.esdf"
-    manager/load_terrain_esdf: "/home/ros/ws/dev/MMP/src/mmp_terrain/data/big_terrain.esdf"
+    manager/save_terrain_esdf: "/ws/src/mmp_terrain/data/sample.esdf"
+    manager/load_terrain_esdf: "/ws/src/mmp_terrain/data/sample.esdf"
 
     # RViz "Publish Point" → spawn a sphere obstacle at the click. Radius in m.
     manager/dynamic_obstacle_radius: 50.0
