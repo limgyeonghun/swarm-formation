@@ -211,10 +211,7 @@ def create_drone_nodes(context, *args, **kwargs):
     #   ros2 launch mmp_visualization mmp.launch.py
     # This allows unified visualization with terrain and all path planning topics
 
-    # NOTE: formation_manager is run separately (not part of this launch file)
-    # Start it manually in another terminal:
-    #   ros2 run formation_manager formation_manager_node --ros-args -p num_drones:=1 -p scenario:=risk_zones
-
+    # Missions come from the RViz MissionConfig panel (/V1/trajectory_command).
     immediate_actions = [visualization_node]
 
     traj_nodes_delayed = TimerAction(
@@ -261,8 +258,7 @@ def create_drone_nodes(context, *args, **kwargs):
     else:
         print("ROSbag recording disabled")
 
-    # Return all nodes (formation_manager excluded - run separately)
-    print("Launch complete. Remember to start formation_manager separately if needed.")
+    print("Launch complete.")
     return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed] + rosbag_actions
 
 def generate_launch_description():
