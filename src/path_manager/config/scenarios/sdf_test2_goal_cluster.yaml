@@ -2,7 +2,6 @@
   ros__parameters:
     # =============================================================
     # Scenario 2: Goal inside overlapping restricted zone cluster
-    # Pairs with formation_manager/config/scenario_sdf_test1.yaml
     # start = (610.59, 108.07), goal = (155.60, 854.72)
 
     # =============================================================

@@ -132,6 +132,10 @@ def create_drone_nodes(context, *args, **kwargs):
         # the RViz LaunchControlPanel) win over the yaml defaults.
         replan_params = [scenario_file, optimizer_file, drones_file, params]
 
+        # Node names keep the _drone_{i} suffix so multiple agents stay unique
+        # when scaled up; topics are flat for the single agent (see topic_prefix
+        # in the C++ sources). The RViz MissionConfig panel matches on the
+        # replan_fsm_drone_ prefix, so keep it.
         replan_nodes.append(
             Node(
                 package='path_manager',

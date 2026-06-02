@@ -24,11 +24,6 @@ def generate_launch_description():
             description='Scenario configuration file (e.g., scenario_basic, scenario_complex)'
         ),
         DeclareLaunchArgument(
-            'map_config',
-            default_value='map_risk_zones',
-            description='Map configuration file (default: map_risk_zones)'
-        ),
-        DeclareLaunchArgument(
             'drone_id',
             default_value='1',
             description='Target drone ID to run (0-5)'
@@ -56,7 +51,6 @@ def generate_launch_description():
                 'rviz_simulation': 'true',
                 'enable_visualization': 'true',
                 'scenario': LaunchConfiguration('scenario'),
-                'map_config': LaunchConfiguration('map_config'),
                 'drone_id': LaunchConfiguration('drone_id'),
                 'record_bag': LaunchConfiguration('record_bag'),
                 'disable_file_logging': LaunchConfiguration('disable_file_logging'),

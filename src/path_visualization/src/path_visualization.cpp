@@ -70,9 +70,9 @@ PathVisualization::PathVisualization() : Node("path_visualization")
     std::string position_topic = topic_prefix + "/current_position";
     position_pubs_[drone_id] = this->create_publisher<geometry_msgs::msg::PointStamped>(position_topic, sensor_qos);
     position_marker_pubs_[drone_id] = this->create_publisher<visualization_msgs::msg::Marker>(
-        "position_markers_drone_" + std::to_string(drone_id), sensor_qos);
+        "/agent/position_markers", sensor_qos);
     traveled_path_pubs_[drone_id] = this->create_publisher<visualization_msgs::msg::Marker>(
-        "traveled_path_drone_" + std::to_string(drone_id), sensor_qos);
+        "/agent/traveled_path", sensor_qos);
 
     std::string simple_path_topic = "/agent/simple_path";
     simple_path_subs_[drone_id] = this->create_subscription<nav_msgs::msg::Path>(
@@ -564,7 +564,7 @@ void PathVisualization::updatePosition()
       vel.normalize();
 
     auto [r, g, b] = getDroneColor(drone_id);
-    auto marker = createMarker("position_drone_" + std::to_string(drone_id), 0,
+    auto marker = createMarker("position_agent", 0,
                                visualization_msgs::msg::Marker::ARROW, 1.0, r, g, b, 1.0);
     // ARROW with two points: points[0]=tail, points[1]=tip
     marker.scale.x = kArrowShaftDiam;  // shaft diameter
@@ -687,7 +687,7 @@ void PathVisualization::publishTraveledPaths()
       continue;
 
     auto [r, g, b] = getDroneColor(drone_id);
-    auto marker = createMarker("traveled_path_drone_" + std::to_string(drone_id), drone_id,
+    auto marker = createMarker("traveled_path_agent", drone_id,
                                visualization_msgs::msg::Marker::LINE_STRIP, 0.1, r, g, b, 0.85);
     marker.lifetime = rclcpp::Duration(0, 0); // Never expire in RViz
 

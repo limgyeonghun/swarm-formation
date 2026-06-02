@@ -1,9 +1,9 @@
 # =============================================================================
 # COMMUNICATION TYPE: EXTERNAL (Can be serialized for inter-drone communication)
 # =============================================================================
-# Purpose: formation_manager sends individual trajectory commands to each drone
-# Flow: formation_manager → /V{N}/trajectory_command → trajectory_planner
-# Note: Each drone receives its own personal target and waypoints
+# Purpose: a trajectory command (target + waypoints) for one agent
+# Flow: RViz MissionConfig panel → /trajectory_command → ReplanFSM
+# Note: carries one agent's target and waypoints
 # =============================================================================
 
 std_msgs/Header header
@@ -15,7 +15,7 @@ int32 drone_id
 int32 sequence
 string mission_id
 
-# Start position for this specific drone (set by formation_manager or UI)
+# Start position for this agent (set by the RViz MissionConfig panel)
 geometry_msgs/Point start_position
 
 # Individual target for this specific drone
