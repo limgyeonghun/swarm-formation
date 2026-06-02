@@ -47,7 +47,7 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
   auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
-  marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("path_markers", sensor_qos);
+  marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/agent/obstacles", sensor_qos);
   optimized_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("opt_trajectory", sensor_qos);
   global_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("global_trajectory", sensor_qos);
   simple_path_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("simple_path_trajectory", sensor_qos);

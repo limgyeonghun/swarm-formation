@@ -171,8 +171,6 @@ namespace path_manager
 
         simple_path_pub_ = node_->create_publisher<nav_msgs::msg::Path>(
             "/agent/simple_path", 10);
-        ctrl_points_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/agent/ctrl_points", 10);
         rrt_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
             "/agent/rrt_path", 10);
         shorten_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(

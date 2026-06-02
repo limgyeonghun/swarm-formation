@@ -282,7 +282,6 @@ namespace path_manager
     bool has_valid_state_;
 
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr simple_path_pub_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr ctrl_points_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr rrt_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr shorten_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr init_minco_pub_;
