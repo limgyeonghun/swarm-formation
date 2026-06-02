@@ -34,17 +34,6 @@ find_package(grid_map_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 
-# Optional PX4 support
-find_package(px4_msgs QUIET)
-if(px4_msgs_FOUND)
-  message(STATUS "px4_msgs found - PX4 support enabled")
-  add_definitions(-DHAVE_PX4_MSGS)
-  set(HAVE_PX4_MSGS TRUE)
-else()
-  message(STATUS "px4_msgs not found - PX4 support disabled (simulation only)")
-  set(HAVE_PX4_MSGS FALSE)
-endif()
-
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PolyTraj.msg"
   "msg/PositionCommand.msg"
@@ -77,10 +66,6 @@ set(PATH_MANAGER_DEPENDENCIES
   visualization_msgs
   grid_map_msgs
 )
-
-if(HAVE_PX4_MSGS)
-  list(APPEND PATH_MANAGER_DEPENDENCIES px4_msgs)
-endif()
 
 ament_target_dependencies(${PROJECT_NAME}_lib
   ${PATH_MANAGER_DEPENDENCIES}
@@ -201,9 +186,6 @@ install(DIRECTORY config launch
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 
 set(EXPORT_DEPS rclcpp std_msgs nav_msgs Eigen3 path_optimizer geometry_msgs path_planner formation_msgs rosidl_default_generators visualization_msgs grid_map_msgs)
-if(HAVE_PX4_MSGS)
-  list(APPEND EXPORT_DEPS px4_msgs)
-endif()
 ament_export_dependencies(${EXPORT_DEPS})
 
 ament_package()

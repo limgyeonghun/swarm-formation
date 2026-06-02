@@ -40,10 +40,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
     node_->declare_parameter("drone_id", 0);
     node_->get_parameter("drone_id", drone_id_);
-
-    node_->declare_parameter("mavlink_id", 1);
-    node_->get_parameter("mavlink_id", mavlink_id_);
-    FSM_LOG_INFO("Starting ReplanFSM for drone_id: %d (internal), mavlink_id: %d (PX4)", drone_id_, mavlink_id_);
+    FSM_LOG_INFO("Starting ReplanFSM for drone_id: %d", drone_id_);
 
     // Formation manager parameters
     node_->declare_parameter("num_drones", 4);
@@ -157,29 +154,12 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     rclcpp::SubscriptionOptions position_options;
     position_options.callback_group = position_callback_group_;
 
-    if (rviz_simulation_)
-    {
-        // Internal agent topic for simulation
-        std::string target_position_topic = "/agent" + std::to_string(drone_id_) + "/target_position";
-        target_position_sub_ = node_->create_subscription<path_manager::msg::PositionCommand>(
-            target_position_topic, sensor_qos,
-            std::bind(&ReplanFSM::targetPositionCallback, this, std::placeholders::_1),
-            position_options);
-        have_position_ = true;  // We have initial position from parameters
-    }
-    else
-    {
-#ifdef HAVE_PX4_MSGS
-        // External MAVLink topic for real PX4
-        std::string px4_position_topic = "/vehicle" + std::to_string(mavlink_id_) + "/fmu/out/vehicle_local_position";
-        px4_position_sub_ = node_->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-            px4_position_topic, sensor_qos,
-            std::bind(&ReplanFSM::PX4positionCallback, this, std::placeholders::_1),
-            position_options);
-#else
-        FSM_LOG_WARN("PX4 support disabled - cannot subscribe to vehicle_local_position. Use rviz_simulation mode.");
-#endif
-    }
+    std::string target_position_topic = "/agent" + std::to_string(drone_id_) + "/target_position";
+    target_position_sub_ = node_->create_subscription<path_manager::msg::PositionCommand>(
+        target_position_topic, sensor_qos,
+        std::bind(&ReplanFSM::targetPositionCallback, this, std::placeholders::_1),
+        position_options);
+    have_position_ = true;
 
     rclcpp::SubscriptionOptions broadcast_options;
     broadcast_options.callback_group = subscription_callback_group_;
@@ -427,34 +407,6 @@ void ReplanFSM::targetPositionCallback(const path_manager::msg::PositionCommand:
     current_pos_ = new_pos;
     swarm_positions_[drone_id_] = new_pos;
 }
-
-#ifdef HAVE_PX4_MSGS
-void ReplanFSM::PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
-    Eigen::Vector3d new_pos;
-    new_pos(0) = msg->x + offset_pt_(0);
-    new_pos(1) = msg->y + offset_pt_(1);
-    new_pos(2) = offset_pt_(2);
-
-    // Sanity check: identify position jumps (likely from PX4 sensor glitches)
-    if (have_position_) {
-        double position_jump = (new_pos - current_pos_).norm();
-        const double MAX_POSITION_JUMP = 50.0;  // 50m threshold
-
-        if (position_jump > MAX_POSITION_JUMP) {
-            FSM_LOG_WARN("PX4 position jump found! Distance: %.2fm, rejecting update. "
-                        "Old: (%.2f, %.2f, %.2f), New: (%.2f, %.2f, %.2f)",
-                        position_jump,
-                        current_pos_(0), current_pos_(1), current_pos_(2),
-                        new_pos(0), new_pos(1), new_pos(2));
-            return;  // Reject this position update
-        }
-    }
-
-    current_pos_ = new_pos;
-    swarm_positions_[drone_id_] = new_pos;
-    have_position_ = true;
-}
-#endif
 
 void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg) {
     auto callback_start = std::chrono::high_resolution_clock::now();

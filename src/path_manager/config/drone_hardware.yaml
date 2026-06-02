@@ -20,7 +20,6 @@
     # Drone hardware mapping
     drone_0:
       index: 0          # Internal agent index (0,1,2,3...) -> /agent0/target_position
-      mavlink_id: 1     # External MAVLink ID (can be non-consecutive) -> /vehicle1/fmu/...
       start_point_x: 0.0
       start_point_y: 0.0
       start_point_z: 0.0

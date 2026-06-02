@@ -22,11 +22,6 @@
 #include "path_optimizer/plan_container.hpp"
 #include "../../common/log_manager.hpp"
 
-// Optional PX4 support
-#ifdef HAVE_PX4_MSGS
-#include <px4_msgs/msg/vehicle_local_position.hpp>
-#endif
-
 // Conditional logging macros to avoid code duplication
 #define FSM_LOG_INFO(msg, ...) do { \
     if (!enable_debug_logs_) { \
@@ -77,9 +72,6 @@ public:
     void init();
     void computeAndPublishPaths();
     void targetPositionCallback(const path_manager::msg::PositionCommand::SharedPtr msg);
-#ifdef HAVE_PX4_MSGS
-    void PX4positionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
-#endif
     void recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg);
     void formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg);
     void trajectoryCommandCallback(const formation_msgs::msg::TrajectoryCommand::SharedPtr msg);
@@ -121,9 +113,6 @@ private:
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr verified_traj_pub_;  // For formation_commander
     rclcpp::Subscription<path_manager::msg::PositionCommand>::SharedPtr target_position_sub_;
     rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr broadcast_traj_sub_;
-#ifdef HAVE_PX4_MSGS
-    rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr px4_position_sub_;
-#endif
     rclcpp::Subscription<path_manager::msg::FormationTarget>::SharedPtr formation_target_sub_;
     rclcpp::Subscription<formation_msgs::msg::TrajectoryCommand>::SharedPtr trajectory_cmd_sub_;
     rclcpp::Subscription<grid_map_msgs::msg::GridMap>::SharedPtr terrain_sub_;
@@ -148,7 +137,6 @@ private:
     bool have_recv_pre_agent_;
     bool start_position_received_;  // Track if we received start position from TrajectoryCommand
     int drone_id_;      // Internal index (0,1,2,3...)
-    int mavlink_id_;    // MAVLink system ID for PX4 communication
     Eigen::Vector3d current_pos_;
     Eigen::Vector3d current_vel_;
     Eigen::Vector3d start_pt_, start_vel_, start_acc_;

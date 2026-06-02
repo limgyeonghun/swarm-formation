@@ -121,17 +121,12 @@ def create_drone_nodes(context, *args, **kwargs):
             print(f"Error: index {drone_index} not found in drones.yaml")
             continue
 
-        cfg = target_cfg
         idx = drone_index
         i = target_key_index
-
-        # Get mavlink_id from config, or default to index + 1
-        mavlink_id = cfg.get('mavlink_id', idx + 1)
 
         params = {
             'rviz_simulation': rviz_sim,
             'drone_id':        idx,
-            'mavlink_id':      mavlink_id,
         }
         # Inject manager/world only when the user actually passed one in.
         # Otherwise the yaml default stays in effect.
