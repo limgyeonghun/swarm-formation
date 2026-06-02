@@ -60,10 +60,9 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   traveled_paths_.resize(num_drones_);
   traveled_path_pubs_.resize(num_drones_);
 
-  // Single-drone: num_drones_ is 1, topics are flat (no prefix).
-  // For swarm/multiple drones, give each drone a unique topic_prefix
-  // (e.g. "/drone" + std::to_string(drone_id)) so the per-drone
-  // subscriptions below don't all collide on the same flat topic.
+  // Single-agent: planning topics are flat (topic_prefix empty), agent debug
+  // topics use the /agent/ prefix to match path_manager. For multiple agents,
+  // give each one a unique prefix so the subscriptions don't collide.
   for (int drone_id = 0; drone_id < num_drones_; ++drone_id)
   {
     std::string topic_prefix = "";
@@ -75,7 +74,7 @@ PathVisualization::PathVisualization() : Node("path_visualization")
     traveled_path_pubs_[drone_id] = this->create_publisher<visualization_msgs::msg::Marker>(
         "traveled_path_drone_" + std::to_string(drone_id), sensor_qos);
 
-    std::string simple_path_topic = topic_prefix + "/simple_path";
+    std::string simple_path_topic = "/agent/simple_path";
     simple_path_subs_[drone_id] = this->create_subscription<nav_msgs::msg::Path>(
         simple_path_topic, sensor_qos,
         [this, drone_id](const nav_msgs::msg::Path::SharedPtr msg)

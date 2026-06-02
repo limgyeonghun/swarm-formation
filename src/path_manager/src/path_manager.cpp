@@ -170,27 +170,27 @@ namespace path_manager
         }
 
         simple_path_pub_ = node_->create_publisher<nav_msgs::msg::Path>(
-            "/drone_" + std::to_string(drone_id) + "/simple_path", 10);
+            "/agent/simple_path", 10);
         ctrl_points_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/drone_" + std::to_string(drone_id) + "/ctrl_points", 10);
+            "/agent/ctrl_points", 10);
         rrt_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-            "/drone_" + std::to_string(drone_id) + "/rrt_path", 10);
+            "/agent/rrt_path", 10);
         shorten_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-            "/drone_" + std::to_string(drone_id) + "/shorten_path", 10);
+            "/agent/shorten_path", 10);
         init_minco_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-            "/drone_" + std::to_string(drone_id) + "/init_minco_path", 10);
+            "/agent/init_minco_path", 10);
         esdf_occ_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-            "/drone_" + std::to_string(drone_id) + "/esdf_occupied", 1);
+            "/agent/esdf_occupied", 1);
         inner_pts_init_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/drone_" + std::to_string(drone_id) + "/inner_pts_init", 10);
+            "/agent/inner_pts_init", 10);
         inner_pts_opt_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/drone_" + std::to_string(drone_id) + "/inner_pts_opt", 10);
+            "/agent/inner_pts_opt", 10);
         // TRANSIENT_LOCAL so RViz, joining late, still gets the latest set.
         rclcpp::QoS dyn_qos(1);
         dyn_qos.reliability(rclcpp::ReliabilityPolicy::Reliable);
         dyn_qos.durability(rclcpp::DurabilityPolicy::TransientLocal);
         dyn_obstacle_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/drone_" + std::to_string(drone_id) + "/dynamic_obstacles", dyn_qos);
+            "/agent/dynamic_obstacles", dyn_qos);
 
         // Terrain ESDF cache status (drone_0 only, latched).
         if (drone_id == 0) {
@@ -1455,35 +1455,6 @@ std::vector<Eigen::Vector3d> PathManager::adjustWaypointsWithCurvature(
     return adjusted_waypoints;
 }
 
-void PathManager::setInitialFromPath(const Eigen::Matrix3Xd &path,
-                                      const double &speed,
-                                      const Eigen::VectorXi &intervalNs,
-                                      Eigen::Matrix3Xd &innerPoints,
-                                      Eigen::VectorXd &timeAlloc)
-{
-    const int sizeM = intervalNs.size();
-    const int sizeN = intervalNs.sum();
-    innerPoints.resize(3, sizeN - 1);
-    timeAlloc.resize(sizeN);
-
-    Eigen::Vector3d a, b, c;
-    for (int i = 0, j = 0, k = 0, l; i < sizeM; i++)
-    {
-        l = intervalNs(i);
-        a = path.col(i);
-        b = path.col(i + 1);
-        c = (b - a) / l;
-        timeAlloc.segment(j, l).setConstant(c.norm() / speed);
-        j += l;
-        for (int m = 0; m < l; m++)
-        {
-            if (i > 0 || m > 0)
-            {
-                innerPoints.col(k++) = a + c * m;
-            }
-        }
-    }
-}
 // Voxelize terrain + geometry obstacles into an occupancy grid and build ESDF.
 // Risk zones are NOT included: they are handled as soft cost elsewhere.
 bool PathManager::buildSDFForBounds(const Eigen::Vector3d &lo,

@@ -39,7 +39,6 @@ def generate_launch_description():
         ]),
         launch_arguments={
             'drone_id': LaunchConfiguration('drone_id'),
-            'real': 'false',
             'rviz_simulation': LaunchConfiguration('rviz_simulation'),
         }.items()
     )

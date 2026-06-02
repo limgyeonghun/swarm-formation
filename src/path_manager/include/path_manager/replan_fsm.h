@@ -125,7 +125,6 @@ private:
     rclcpp::Publisher<path_manager::msg::FormationTarget>::SharedPtr formation_target_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr waypoint_marker_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
-    rclcpp::TimerBase::SharedPtr odom_timer_;
 
     FSM_EXEC_STATE exec_state_;
     int continously_called_times_;

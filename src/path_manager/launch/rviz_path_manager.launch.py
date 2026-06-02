@@ -8,7 +8,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 def generate_launch_description():
     """
     RViz simulation launch file for path_manager
-    Automatically sets: real=false, rviz_simulation=true, enable_visualization=true
+    Automatically sets: rviz_simulation=true, enable_visualization=true
 
     Usage:
         ros2 launch path_manager rviz_path_manager.launch.py scenario:=scenario_basic
@@ -53,7 +53,6 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(path_manager_launch),
             launch_arguments={
-                'real': 'false',
                 'rviz_simulation': 'true',
                 'enable_visualization': 'true',
                 'scenario': LaunchConfiguration('scenario'),

@@ -18,7 +18,7 @@ Visualization Manager:
       Scale X: 0.1
       Scale Y: 0.1
       Scale Z: 0.1
-    - Class: rviz_default_plugins/Marker  # (/V1/planning/trajectory)
+    - Class: rviz_default_plugins/Marker  # (/planning/trajectory)
       Enabled: true
       Name: Min Jerk Trajectory
       Topic:
@@ -34,7 +34,7 @@ Visualization Manager:
       Scale Z: 0.05
       Color: 0;255;0
       History Length: 1000
-    - Class: rviz_default_plugins/Marker  # (/V1/planning/global)
+    - Class: rviz_default_plugins/Marker  # (/planning/global)
       Enabled: true
       Name: Global Trajectory
       Topic:
@@ -152,7 +152,7 @@ Visualization Manager:
       History Length: 1000
 
 
-    - Class: rviz_default_plugins/Marker  # (/drone_0/simple_path)
+    - Class: rviz_default_plugins/Marker  # (/agent/simple_path)
       Enabled: true
       Name: Simple Path Trajectory
       Topic:

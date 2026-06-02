@@ -27,9 +27,6 @@ def create_drone_nodes(context, *args, **kwargs):
     rviz_sim_str = context.perform_substitution(LaunchConfiguration('rviz_simulation'))
     rviz_sim = (rviz_sim_str.lower() == 'true')
 
-    real_str = context.perform_substitution(LaunchConfiguration('real'))
-    real_mode = (real_str.lower() == 'true')
-
     record_bag_str = context.perform_substitution(LaunchConfiguration('record_bag'))
     record_bag = (record_bag_str.lower() == 'true')
 
@@ -48,11 +45,6 @@ def create_drone_nodes(context, *args, **kwargs):
     else:
         os.environ['SWARM_DISABLE_FILE_LOGGING'] = '0'
         print("File logging enabled (logs will be saved to ./logs/runtime)")
-
-    # NOTE: real_mode and rviz_sim are independent:
-    # - real_mode=true: run only the target drone + use real-mode topic remaps
-    # - real_mode=false: run all configured drones + simulation topic remaps
-    # - rviz_sim=true: use trajectory-based position
 
     # Target drone ID
     drone_id_str = context.perform_substitution(LaunchConfiguration('drone_id'))
@@ -89,19 +81,14 @@ def create_drone_nodes(context, *args, **kwargs):
     replan_nodes = []
     traj_nodes   = []
 
-    # Drones to run - real mode runs single drone, simulation runs all
-    if real_mode:
-        # Real mode: run only the specified drone
-        drones_to_run = [target_drone_id]
-        print(f"Real mode: running only drone {target_drone_id}")
-    else:
-        # Simulation mode: run all drones from config
-        drones_to_run = []
-        for i in range(6):  # Check drone_0 to drone_5
-            drone_key = f'drone_{i}'
-            if drone_key in drone_cfg:
-                drones_to_run.append(drone_cfg[drone_key]['index'])
-        print(f"Simulation mode: running drones {drones_to_run}")
+    # Agents to run: all agents configured in drone_hardware.yaml
+    # (single-agent setup has just one).
+    drones_to_run = []
+    for i in range(6):  # Check drone_0 to drone_5
+        drone_key = f'drone_{i}'
+        if drone_key in drone_cfg:
+            drones_to_run.append(drone_cfg[drone_key]['index'])
+    print(f"Running agents: {drones_to_run}")
 
     # Create nodes per drone
     for drone_index in drones_to_run:
@@ -134,28 +121,11 @@ def create_drone_nodes(context, *args, **kwargs):
             params['manager/world'] = world_arg
         # Note: start_point will be received from TrajectoryCommand message
 
-        remaps = []
-        id_str = str(idx + 1)
-        if not real_mode:
-            # Simulation: feed each drone's broadcast_traj_send into the shared
-            # broadcast_traj_recv bus so members exchange trajectories.
-            # Single-drone: this loops a drone's own trajectory back to itself.
-            remaps = [
-                ('/planning/broadcast_traj_send', '/planning/broadcast_traj_recv'),
-            ]
-        else:
-            # Real mode (formation / real-hardware, restore from branch when
-            # needed): drone 0 listens on the shared /formation_command, others
-            # on their own /V{id}/formation_command.
-            if idx == 0:
-                remaps = [
-                    (f'/V{id_str}/formation_command', '/formation_command'),
-                ]
-            else:
-                remaps = []
-
-        # No additional remapping needed - formation_targets now uses topic_prefix directly
-        all_remaps = remaps
+        # Loop the agent's broadcast_traj_send back into broadcast_traj_recv.
+        # (Single-agent: feeds the agent's own trajectory back to itself.)
+        all_remaps = [
+            ('/planning/broadcast_traj_send', '/planning/broadcast_traj_recv'),
+        ]
 
         # Build parameter list with scenario config.
         # `params` goes LAST so launch-time overrides (e.g. manager/world from
@@ -253,11 +223,6 @@ def generate_launch_description():
             'rviz_simulation',
             default_value='false',
             description='Enable RViz visualization (bool)'
-        ),
-        DeclareLaunchArgument(
-            'real',
-            default_value='false',
-            description='Enable real-topic remapping'
         ),
         DeclareLaunchArgument(
             'drone_id',

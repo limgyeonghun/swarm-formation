@@ -136,17 +136,12 @@ namespace path_manager
                         const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
     bool checkCollision(int drone_id);
 
-    void deliverTrajToOptimizer(void) { 
+    void deliverTrajToOptimizer(void) {
         if (isOptimizerInitialized()) {
-            poly_traj_opt_->setSwarmTrajs(&traj_.swarm_traj); 
+            poly_traj_opt_->setSwarmTrajs(&traj_.swarm_traj);
         }
     };
-    void setDroneIdtoOpt(void) { 
-        if (isOptimizerInitialized()) {
-            poly_traj_opt_->setDroneId(traj_.local_traj.drone_id); 
-        }
-    }
-    double getSwarmClearance(void) { 
+    double getSwarmClearance(void) {
         return isOptimizerInitialized() ? poly_traj_opt_->getSwarmClearance() : 0.0; 
     }
     void setFormationToOptimizer(const std::vector<Eigen::Vector3d>& formation_positions, int formation_size) {
@@ -315,12 +310,6 @@ namespace path_manager
     int current_drone_id_;
     std::string current_formation_type_;
     std::vector<Eigen::Vector3d> current_formation_pattern_;
-
-    void setInitialFromPath(const Eigen::Matrix3Xd &path,
-                            const double &speed,
-                            const Eigen::VectorXi &intervalNs,
-                            Eigen::Matrix3Xd &innerPoints,
-                            Eigen::VectorXd &timeAlloc);
 
   };
 
