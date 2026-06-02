@@ -111,7 +111,6 @@ def create_drone_nodes(context, *args, **kwargs):
 
     replan_nodes = []
     traj_nodes   = []
-    rover_nodes  = []
     jfi_nodes    = []
 
     # Drones to run - real mode runs single drone, simulation runs all
@@ -215,28 +214,6 @@ def create_drone_nodes(context, *args, **kwargs):
             )
         )
 
-        # rover_control only runs when NOT in RViz simulation mode
-        # (requires real PX4 hardware with px4_msgs)
-        if not rviz_sim:
-            rover_nodes.append(
-                Node(
-                    package='rover_control',
-                    executable='rover_control_node',
-                    name=f'RoverControl_drone_{i}',
-                    output='screen',
-                    parameters=[
-                        {'index': idx},
-                        {'mavlink_id': mavlink_id},
-                        {'rviz_simulation': rviz_sim},
-                        {'start_point_x': cfg['start_point_x']},
-                        {'start_point_y': cfg['start_point_y']},
-                        {'start_point_z': cfg['start_point_z']},
-                        {'target_idle_timeout_sec': target_idle_timeout_sec},
-                        {'arrival_distance_threshold': arrival_distance_threshold},
-                    ],
-                )
-            )
-
         if real_mode:
             # Use namespace to isolate jfi_comm topics per drone
             jfi_namespace = f'drone_{idx}'
@@ -303,7 +280,7 @@ def create_drone_nodes(context, *args, **kwargs):
     # Start it manually in another terminal:
     #   ros2 run formation_manager formation_manager_node --ros-args -p num_drones:=1 -p scenario:=risk_zones
 
-    immediate_actions = [visualization_node] + rover_nodes + jfi_nodes
+    immediate_actions = [visualization_node] + jfi_nodes
 
     traj_nodes_delayed = TimerAction(
         period=0.0,
