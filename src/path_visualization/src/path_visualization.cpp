@@ -60,10 +60,13 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   traveled_paths_.resize(num_drones_);
   traveled_path_pubs_.resize(num_drones_);
 
+  // Single-drone: num_drones_ is 1, topics are flat (no prefix).
+  // For swarm/multiple drones, give each drone a unique topic_prefix
+  // (e.g. "/drone" + std::to_string(drone_id)) so the per-drone
+  // subscriptions below don't all collide on the same flat topic.
   for (int drone_id = 0; drone_id < num_drones_; ++drone_id)
   {
-    // Match FSM topic naming: /V1, /V2, etc. (drone_id+1)
-    std::string topic_prefix = "/V" + std::to_string(drone_id + 1);
+    std::string topic_prefix = "";
 
     std::string position_topic = topic_prefix + "/current_position";
     position_pubs_[drone_id] = this->create_publisher<geometry_msgs::msg::PointStamped>(position_topic, sensor_qos);

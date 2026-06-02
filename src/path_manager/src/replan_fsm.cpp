@@ -136,35 +136,33 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
     FSM_LOG_INFO("Callback groups created: timer, subscription, position (all MutuallyExclusive)");
 
-    std::string odom_topic = "/vehicle" + std::to_string(drone_id_+1) + "/target_position";
-    std::string topic_prefix = "/V" + std::to_string(drone_id_+1);
+    // Single-drone: topics are flat (no per-drone prefix).
+    // For swarm/multiple drones, restore a per-drone prefix here
+    // (e.g. "/drone" + std::to_string(drone_id_)) so topics don't collide.
+    std::string topic_prefix = "";
 
     optimized_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/trajectory", sensor_qos);
     global_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/global", sensor_qos);
     broadcast_traj_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/broadcast_traj_send", sensor_qos);
-
-    // Only FSM1 (drone_id == 0) publishes verified trajectories to formation_commander
-    if (drone_id_ == 0) {
-        verified_traj_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>("/for_commander/trajectories", sensor_qos);
-        FSM_LOG_INFO("FSM1: Created verified trajectory publisher for formation_commander");
-    }
 
     // Position callback uses separate callback group to ensure it always runs
     // even when main callback group is blocked by long trajectory planning
     rclcpp::SubscriptionOptions position_options;
     position_options.callback_group = position_callback_group_;
 
-    std::string target_position_topic = "/agent" + std::to_string(drone_id_) + "/target_position";
+    std::string target_position_topic = "/target_position";
     target_position_sub_ = node_->create_subscription<path_manager::msg::PositionCommand>(
         target_position_topic, sensor_qos,
         std::bind(&ReplanFSM::targetPositionCallback, this, std::placeholders::_1),
         position_options);
     have_position_ = true;
 
+    // Swarm trajectory exchange: members publish broadcast_traj_send and
+    // subscribe broadcast_traj_recv. Single-drone is a self-loopback.
     rclcpp::SubscriptionOptions broadcast_options;
     broadcast_options.callback_group = subscription_callback_group_;
     broadcast_traj_sub_ = node_->create_subscription<path_manager::msg::PolyTraj>(
-        topic_prefix + "/j_fi/broadcast_traj_recv", sensor_qos,
+        topic_prefix + "/planning/broadcast_traj_recv", sensor_qos,
         std::bind(&ReplanFSM::recvBroadcastPolyTrajCallback, this, std::placeholders::_1),
         broadcast_options);
 
@@ -485,11 +483,6 @@ void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj:
 
     swarm_positions_[recv_id] = trajectory.getPos(0.0);
 
-    // Publish verified trajectory to formation_commander (other drones' trajectories, FSM1 only)
-    if (verified_traj_pub_) {
-        verified_traj_pub_->publish(*msg);
-    }
-
     if (path_manager_->checkCollision(recv_id)) {
         changeFSMExecState(SEQUENTIAL_START, "SWARM_CHECK");
     }
@@ -606,9 +599,6 @@ bool ReplanFSM::planFromGlobalTraj(int trial_times) {
         polyTraj2ROSMsg(msg);
         optimized_path_pub_->publish(msg);
         broadcast_traj_pub_->publish(msg);
-        if (verified_traj_pub_) {
-            verified_traj_pub_->publish(msg);
-        }
 
         have_local_traj_ = true;
         have_new_target_ = false;
@@ -905,9 +895,6 @@ bool ReplanFSM::callEmergencyStop(const Eigen::Vector3d& stop_pos) {
     polyTraj2ROSMsg(msg);
     optimized_path_pub_->publish(msg);
     broadcast_traj_pub_->publish(msg);
-    if (verified_traj_pub_) {
-        verified_traj_pub_->publish(msg);  // Also publish to formation_commander (FSM1 only)
-    }
 
     return true;
 }

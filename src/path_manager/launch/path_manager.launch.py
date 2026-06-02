@@ -137,12 +137,11 @@ def create_drone_nodes(context, *args, **kwargs):
         remaps = []
         id_str = str(idx + 1)
         if not real_mode:
-            # Simulation mode: Remap FSM's /V{id}/formation_command to Commander's /formation_command
-            # Also remap trajectory topics to shared /planning/broadcast_traj_recv
+            # Simulation: feed each drone's broadcast_traj_send into the shared
+            # broadcast_traj_recv bus so members exchange trajectories.
+            # Single-drone: this loops a drone's own trajectory back to itself.
             remaps = [
-                (f'/V{id_str}/formation_command', '/formation_command'),
-                (f'V{id_str}/planning/broadcast_traj_send', '/planning/broadcast_traj_recv'),
-                (f'V{id_str}/j_fi/broadcast_traj_recv', '/planning/broadcast_traj_recv'),
+                ('/planning/broadcast_traj_send', '/planning/broadcast_traj_recv'),
             ]
         else:
             # Real mode: No remapping needed
@@ -206,7 +205,7 @@ def create_drone_nodes(context, *args, **kwargs):
     #   ros2 launch mmp_visualization mmp.launch.py
     # This allows unified visualization with terrain and all path planning topics
 
-    # Missions come from the RViz MissionConfig panel (/V1/trajectory_command).
+    # Missions come from the RViz MissionConfig panel (/trajectory_command).
     immediate_actions = [visualization_node]
 
     traj_nodes_delayed = TimerAction(
@@ -230,13 +229,8 @@ def create_drone_nodes(context, *args, **kwargs):
         # Create directory if it doesn't exist
         os.makedirs(bag_dir, exist_ok=True)
 
-        # Target position topic for this drone
-        target_position_topic = f'/agent{target_drone_id}/target_position'
-
-        # Formation debugging topics (this rover only - namespace isolated!)
-        vid = target_drone_id + 1
-        formation_cmd_topic = f'/V{vid}/formation_command'  # external commander (no publisher in sim)
-        formation_target_topic = f'/V{vid}/formation_target'  # Internal loopback (topic_prefix)
+        target_position_topic = '/target_position'
+        formation_target_topic = '/formation_target'
 
         print(f"ROSbag recording enabled: {bag_path}")
         print(f"Recording: /opt_trajectory, {target_position_topic}, formation debug topics")
@@ -244,7 +238,6 @@ def create_drone_nodes(context, *args, **kwargs):
             cmd=['ros2', 'bag', 'record',
                  '-o', bag_path,
                  target_position_topic,
-                 formation_cmd_topic,
                  formation_target_topic],
             output='screen',
             shell=False
