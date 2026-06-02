@@ -146,9 +146,6 @@ rosidl_target_interfaces(traj_server
   ${PROJECT_NAME} "rosidl_typesupport_cpp"
 )
 
-
-# formation_commander removed
-
 install(TARGETS ${PROJECT_NAME}_lib
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
@@ -171,9 +168,6 @@ install(TARGETS load_obstacles_test
 install(TARGETS risk_scenarios_test
   DESTINATION lib/${PROJECT_NAME}
 )
-
-
-# formation_commander removed
 
 install(DIRECTORY include/
   DESTINATION include

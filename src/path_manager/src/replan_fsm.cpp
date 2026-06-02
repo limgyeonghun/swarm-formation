@@ -111,16 +111,14 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     // Initialize PathManager in constructor to avoid nullptr access
     path_manager_ = std::make_shared<PathManager>(node_);
 
-    // SwarmGraph removed - formation management now handled by formation_manager package
-
     // Initialize swarm_positions_ map for all drones
     for (int i = 0; i < num_drones_; ++i) {
         swarm_positions_[i] = Eigen::Vector3d::Zero();  // Will be updated from broadcast
     }
     FSM_LOG_INFO("Initialized swarm_positions_ for %d drones", num_drones_);
 
-    RCLCPP_INFO(node_->get_logger(), "PathManager initialized, waiting for formation command from formation_commander");
-    log_manager_->infof("PathManager initialized, waiting for formation command from formation_commander");
+    RCLCPP_INFO(node_->get_logger(), "PathManager initialized, waiting for trajectory command");
+    log_manager_->infof("PathManager initialized, waiting for trajectory command");
 
     rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
     auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
@@ -793,7 +791,7 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
                     drone_id_, waypoints.size(), marker.header.frame_id.c_str(), marker.ns.c_str());
     }
 
-    // Use formation pattern received from formation_manager via TrajectoryCommand
+    // Use formation pattern received via TrajectoryCommand
     auto formation_setup_start = std::chrono::high_resolution_clock::now();
     path_manager_->setFormationInfo(drone_id_, current_formation_type_, current_formation_pattern_);
 
@@ -899,8 +897,8 @@ bool ReplanFSM::callEmergencyStop(const Eigen::Vector3d& stop_pos) {
     return true;
 }
 
-// trajectoryCommandCallback: receives individual trajectory command from formation_manager
-// The target position and waypoints are already calculated by formation_manager
+// trajectoryCommandCallback: receives a trajectory command (target position
+// and waypoints) from the RViz MissionConfig panel.
 void ReplanFSM::trajectoryCommandCallback(const formation_msgs::msg::TrajectoryCommand::SharedPtr msg) {
     auto callback_start = std::chrono::high_resolution_clock::now();
     FSM_LOG_INFO("[TRAJECTORY CMD] Received trajectory command (seq: %d, drone: %d) at time %.3f",
@@ -955,7 +953,7 @@ void ReplanFSM::trajectoryCommandCallback(const formation_msgs::msg::TrajectoryC
         waypoints.emplace_back(wp.x, wp.y, wp.z);
     }
 
-    // Extract target position (already calculated by formation_manager)
+    // Extract target position
     Eigen::Vector3d target_position(
         msg->target_position.x,
         msg->target_position.y,
@@ -1007,9 +1005,6 @@ void ReplanFSM::trajectoryCommandCallback(const formation_msgs::msg::TrajectoryC
                  callback_duration, rclcpp::Clock(RCL_ROS_TIME).now().seconds());
 }
 
-// generateFormationTargets and generateFormationPattern functions removed
-// Formation generation is now handled by formation_manager package
-
 void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std::vector<Eigen::Vector3d>& waypoints, bool formation_changed, const Eigen::Vector3d& formation_offset) {
     path_manager::msg::FormationTarget target_msg;
 
@@ -1035,7 +1030,7 @@ void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std:
 
     if (!waypoints.empty()) {
         // Simply pass waypoints as-is without adding offset
-        // The waypoints from formation commander are already center points
+        // The waypoints from the trajectory command are already center points
         target_msg.formation_positions.reserve(waypoints.size());
         for (const auto& wp : waypoints) {
             geometry_msgs::msg::Point waypoint_pos;

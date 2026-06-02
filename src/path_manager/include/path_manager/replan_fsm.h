@@ -160,7 +160,7 @@ private:
     std::string current_formation_type_;
     double current_formation_scale_;
     Eigen::Vector3d current_formation_center_;
-    std::vector<Eigen::Vector3d> current_formation_pattern_;  // Full formation pattern from formation_manager
+    std::vector<Eigen::Vector3d> current_formation_pattern_;  // Full formation pattern from TrajectoryCommand
     bool has_formation_command_;
 
     // Mission sequencing for robustness

@@ -52,7 +52,7 @@ def create_drone_nodes(context, *args, **kwargs):
     # NOTE: real_mode and rviz_sim are independent:
     # - real_mode=true: run only the target drone + use real-mode topic remaps
     # - real_mode=false: run all configured drones + simulation topic remaps
-    # - rviz_sim=true: use trajectory-based position (no real PX4)
+    # - rviz_sim=true: use trajectory-based position
 
     # Target drone ID
     drone_id_str = context.perform_substitution(LaunchConfiguration('drone_id'))
@@ -78,7 +78,7 @@ def create_drone_nodes(context, *args, **kwargs):
     drone_cfg = drones_params['/**']['ros__parameters']
     num_drones = drone_cfg.get('num_drones', 1)
     print(f"Loaded drone hardware config: drone_hardware.yaml (num_drones={num_drones})")
-    print("Note: Start positions will be provided by formation_manager via TrajectoryCommand")
+    print("Note: Start positions will be provided via TrajectoryCommand")
 
     fsm_params = drone_cfg.get('fsm', {})
     n_seconds_ahead = float(fsm_params.get('n_seconds_ahead', 0.0))
@@ -144,10 +144,9 @@ def create_drone_nodes(context, *args, **kwargs):
                 ('/planning/broadcast_traj_send', '/planning/broadcast_traj_recv'),
             ]
         else:
-            # Real mode: No remapping needed
-            # - Drone 0: Commander publishes /formation_command -> JFI0 subscribes /formation_command -> Serial
-            # - Drone 1,2,3: JFI publishes /V{id}/formation_command -> FSM subscribes /V{id}/formation_command
-            # For Drone 0 FSM: Need to remap /V1/formation_command -> /formation_command (to receive from Commander directly)
+            # Real mode (formation / real-hardware, restore from branch when
+            # needed): drone 0 listens on the shared /formation_command, others
+            # on their own /V{id}/formation_command.
             if idx == 0:
                 remaps = [
                     (f'/V{id_str}/formation_command', '/formation_command'),
@@ -190,7 +189,6 @@ def create_drone_nodes(context, *args, **kwargs):
         scenario_file,
         optimizer_file,
     ]
-    # Note: Start positions are now provided by formation_manager via TrajectoryCommand
 
     visualization_node = Node(
         package='path_visualization',
