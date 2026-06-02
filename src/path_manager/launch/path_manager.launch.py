@@ -16,22 +16,12 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 import yaml
-import glob
 import os
 from datetime import datetime
 
 def load_yaml_file(file_path):
     with open(file_path, 'r') as file:
         return yaml.safe_load(file)
-
-def find_serial_port():
-    usb_ports = glob.glob('/dev/ttyUSB*')
-    if usb_ports:
-        return usb_ports[0]
-    acm_ports = glob.glob('/dev/ttyACM*')
-    if acm_ports:
-        return acm_ports[0]
-    return '/dev/ttyUSB0'
 
 def create_drone_nodes(context, *args, **kwargs):
     rviz_sim_str = context.perform_substitution(LaunchConfiguration('rviz_simulation'))
@@ -60,27 +50,14 @@ def create_drone_nodes(context, *args, **kwargs):
         print("File logging enabled (logs will be saved to ./logs/runtime)")
 
     # NOTE: real_mode and rviz_sim are independent:
-    # - real_mode=true: Use JFI serial communication
-    # - rviz_sim=true: Use trajectory-based position (no real PX4)
-    # - real_mode=true + rviz_sim=true: Jetson environment (serial + simulated position)
+    # - real_mode=true: run only the target drone + use real-mode topic remaps
+    # - real_mode=false: run all configured drones + simulation topic remaps
+    # - rviz_sim=true: use trajectory-based position (no real PX4)
 
     # Target drone ID
     drone_id_str = context.perform_substitution(LaunchConfiguration('drone_id'))
     target_drone_id = int(drone_id_str)
     print(f"Target drone ID: {target_drone_id}")
-
-    # JFI params
-    jfi_port_arg = context.perform_substitution(LaunchConfiguration('jfi_port'))
-    jfi_baud_rate_str = context.perform_substitution(LaunchConfiguration('jfi_baud_rate'))
-    jfi_baud_rate = int(jfi_baud_rate_str)
-
-    if jfi_port_arg == 'auto':
-        jfi_port = find_serial_port()
-        print(f"Auto-discovered JFI Port: {jfi_port}")
-    else:
-        jfi_port = jfi_port_arg
-        print(f"Manual JFI Port: {jfi_port}")
-    print(f"JFI Baud Rate: {jfi_baud_rate}")
 
     # Config paths
     pkg_share = FindPackageShare('path_manager')
@@ -111,7 +88,6 @@ def create_drone_nodes(context, *args, **kwargs):
 
     replan_nodes = []
     traj_nodes   = []
-    jfi_nodes    = []
 
     # Drones to run - real mode runs single drone, simulation runs all
     if real_mode:
@@ -214,47 +190,6 @@ def create_drone_nodes(context, *args, **kwargs):
             )
         )
 
-        if real_mode:
-            # Use namespace to isolate jfi_comm topics per drone
-            jfi_namespace = f'drone_{idx}'
-
-            # JFI serial communication node
-            jfi_nodes.append(
-                Node(
-                    package='jfi_comm',
-                    executable='serial_comm_node',
-                    name=f'jfi_comm_drone_{i}',
-                    namespace=jfi_namespace,
-                    output='screen',
-                    parameters=[
-                        {'port_name': jfi_port},
-                        {'baud_rate': jfi_baud_rate},
-                        {'system_id': mavlink_id},
-                        {'component_id': 1},
-                    ]
-                )
-            )
-            # JFI bridge node (converts between ROS messages and SwarmComm)
-            # Bridge needs remapping to connect namespace jfi_comm with global /V{id} topics
-            jfi_nodes.append(
-                Node(
-                    package='jfi_bridge',
-                    executable='jfi_bridge_node',
-                    name=f'jfi_bridge_drone_{i}',
-                    output='screen',
-                    parameters=[
-                        {'system_id': mavlink_id},
-                    ],
-                    remappings=[
-                        ('jfi_comm/in/packet', f'/{jfi_namespace}/jfi_comm/in/packet'),
-                        ('jfi_comm/out/packet', f'/{jfi_namespace}/jfi_comm/out/packet'),
-                    ]
-                )
-            )
-            print(f"JFI nodes added for drone index={idx} with mavlink_id={mavlink_id}, namespace={jfi_namespace}")
-        else:
-            print("JFI nodes skipped (not in real mode)")
-
     # Build parameters for path_visualization
     viz_params = [
         drones_file,  # Base drone hardware
@@ -280,7 +215,7 @@ def create_drone_nodes(context, *args, **kwargs):
     # Start it manually in another terminal:
     #   ros2 run formation_manager formation_manager_node --ros-args -p num_drones:=1 -p scenario:=risk_zones
 
-    immediate_actions = [visualization_node] + jfi_nodes
+    immediate_actions = [visualization_node]
 
     traj_nodes_delayed = TimerAction(
         period=0.0,
@@ -308,7 +243,7 @@ def create_drone_nodes(context, *args, **kwargs):
 
         # Formation debugging topics (this rover only - namespace isolated!)
         vid = target_drone_id + 1
-        formation_cmd_topic = f'/V{vid}/formation_command'  # From serial (jfi_bridge)
+        formation_cmd_topic = f'/V{vid}/formation_command'  # external commander (no publisher in sim)
         formation_target_topic = f'/V{vid}/formation_target'  # Internal loopback (topic_prefix)
 
         print(f"ROSbag recording enabled: {bag_path}")
@@ -351,16 +286,6 @@ def generate_launch_description():
             'scenario',
             default_value='',
             description='Scenario configuration file containing obstacles (e.g., scenario_basic, scenario_complex)'
-        ),
-        DeclareLaunchArgument(
-            'jfi_port',
-            default_value='auto',
-            description='JFI serial port device path (use "auto" for auto-discovery)'
-        ),
-        DeclareLaunchArgument(
-            'jfi_baud_rate',
-            default_value='115200',
-            description='JFI serial port baud rate'
         ),
         DeclareLaunchArgument(
             'record_bag',
