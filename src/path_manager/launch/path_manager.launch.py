@@ -79,7 +79,6 @@ def create_drone_nodes(context, *args, **kwargs):
     arrival_distance_threshold = 0.75
 
     replan_nodes = []
-    traj_nodes   = []
 
     # Agents to run: all agents configured in drone_hardware.yaml
     # (single-agent setup has just one).
@@ -147,16 +146,6 @@ def create_drone_nodes(context, *args, **kwargs):
             )
         )
 
-        traj_nodes.append(
-            Node(
-                package='path_manager',
-                executable='traj_server',
-                name=f'TrajServer_drone_{i}',
-                output='screen',
-                parameters=[params,optimizer_file],
-            )
-        )
-
     # Build parameters for path_visualization
     viz_params = [
         drones_file,  # Base drone hardware
@@ -179,11 +168,6 @@ def create_drone_nodes(context, *args, **kwargs):
 
     # Missions come from the RViz MissionConfig panel (/trajectory_command).
     immediate_actions = [visualization_node]
-
-    traj_nodes_delayed = TimerAction(
-        period=0.0,
-        actions=traj_nodes,
-    )
 
     replan_nodes_delayed = TimerAction(
         period=0.0,
@@ -219,7 +203,7 @@ def create_drone_nodes(context, *args, **kwargs):
         print("ROSbag recording disabled")
 
     print("Launch complete.")
-    return immediate_actions + [traj_nodes_delayed, replan_nodes_delayed] + rosbag_actions
+    return immediate_actions + [replan_nodes_delayed] + rosbag_actions
 
 def generate_launch_description():
     return LaunchDescription([

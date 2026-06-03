@@ -109,15 +109,6 @@ ament_target_dependencies(${PROJECT_NAME}_node
   ${PATH_MANAGER_DEPENDENCIES}
 )
 
-add_executable(traj_server
-  src/traj_server.cpp
-)
-target_link_libraries(traj_server
-  ${PROJECT_NAME}_lib
-)
-ament_target_dependencies(traj_server
-  ${PATH_MANAGER_DEPENDENCIES}
-)
 
 # Standalone sanity test for the DynamicObstacleArray dispatch loop.
 add_executable(load_obstacles_test test/load_obstacles_test.cpp)
@@ -142,10 +133,6 @@ rosidl_target_interfaces(${PROJECT_NAME}_node
   ${PROJECT_NAME} "rosidl_typesupport_cpp"
 )
 
-rosidl_target_interfaces(traj_server
-  ${PROJECT_NAME} "rosidl_typesupport_cpp"
-)
-
 install(TARGETS ${PROJECT_NAME}_lib
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
@@ -154,10 +141,6 @@ install(TARGETS ${PROJECT_NAME}_lib
 )
 
 install(TARGETS ${PROJECT_NAME}_node
-  DESTINATION lib/${PROJECT_NAME}
-)
-
-install(TARGETS traj_server
   DESTINATION lib/${PROJECT_NAME}
 )
 

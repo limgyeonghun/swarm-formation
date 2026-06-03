@@ -10,7 +10,6 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     : node_(node),
       exec_state_(FSM_EXEC_STATE::INIT),
       continously_called_times_(0),
-      have_position_(false),
       have_target_(false),
       have_new_target_(false),
       have_local_traj_(false),
@@ -26,8 +25,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
       last_received_sequence_(-1),
       current_mission_id_(""),
       next_mission_id_(""),
-      is_final_mission_(false),
-      need_formation_command_sub_(true)
+      is_final_mission_(false)
     {
         log_manager_ = std::make_unique<swarm_formation::LogManager>(
             node->get_name(), "./logs/runtime", swarm_formation::LogManager::INFO);
@@ -98,8 +96,6 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     current_pos_ = offset_pt_;  // Initialize current_pos_ to zero, will be updated from TrajectoryCommand
     current_vel_ = Eigen::Vector3d::Zero();  // Initialize velocity to zero
     end_pt_ = Eigen::Vector3d::Zero();  // Initialize end_pt_ to avoid uninitialized access
-    prev_end_pt_ = Eigen::Vector3d::Zero();  // Initialize previous endpoint
-    prev_formation_offset_ = Eigen::Vector3d::Zero();  // Initialize previous formation offset
     have_target_ = false;  // Wait for trajectory command
     start_position_received_ = false;  // Flag to track if we received start position
     
@@ -130,9 +126,8 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     // With MultiThreadedExecutor, these groups can run in parallel threads
     timer_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     subscription_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    position_callback_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
-    FSM_LOG_INFO("Callback groups created: timer, subscription, position (all MutuallyExclusive)");
+    FSM_LOG_INFO("Callback groups created: timer, subscription (all MutuallyExclusive)");
 
     // Single-drone: topics are flat (no per-drone prefix).
     // For swarm/multiple drones, restore a per-drone prefix here
@@ -142,18 +137,6 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     optimized_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/trajectory", sensor_qos);
     global_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/global", sensor_qos);
     broadcast_traj_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/broadcast_traj_send", sensor_qos);
-
-    // Position callback uses separate callback group to ensure it always runs
-    // even when main callback group is blocked by long trajectory planning
-    rclcpp::SubscriptionOptions position_options;
-    position_options.callback_group = position_callback_group_;
-
-    std::string target_position_topic = "/agent/cmd_position";
-    target_position_sub_ = node_->create_subscription<path_manager::msg::PositionCommand>(
-        target_position_topic, sensor_qos,
-        std::bind(&ReplanFSM::targetPositionCallback, this, std::placeholders::_1),
-        position_options);
-    have_position_ = true;
 
     // Swarm trajectory exchange: members publish broadcast_traj_send and
     // subscribe broadcast_traj_recv. Single-drone is a self-loopback.
@@ -289,9 +272,6 @@ void ReplanFSM::computeAndPublishPaths() {
 
     switch (exec_state_) {
         case INIT: {
-            if (!have_position_) {
-                return;
-            }
             changeFSMExecState(WAIT_POSITION, "FSM");
             break;
         }
@@ -397,12 +377,6 @@ void ReplanFSM::computeAndPublishPaths() {
     }
 }
 
-void ReplanFSM::targetPositionCallback(const path_manager::msg::PositionCommand::SharedPtr msg) {
-    Eigen::Vector3d new_pos(msg->position.x, msg->position.y, msg->position.z);
-
-    current_pos_ = new_pos;
-    swarm_positions_[drone_id_] = new_pos;
-}
 
 void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg) {
     auto callback_start = std::chrono::high_resolution_clock::now();
@@ -587,10 +561,6 @@ bool ReplanFSM::planFromGlobalTraj(int trial_times) {
     {
         // local_traj was already set by planGlobalTraj() — publish and go
         log_manager_->infof("[planFromGlobalTraj] Using pre-optimized trajectory (duration=%.3f)", local_traj->duration);
-
-        // Set local_target to end_pt since the whole trajectory is already optimized
-        local_target_pt_ = end_pt_;
-        local_target_vel_.setZero();
 
         // Publish trajectory
         path_manager::msg::PolyTraj msg;
@@ -822,19 +792,6 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
             FSM_LOG_WARN("Formation pattern is empty, optimizer may not apply formation constraints");
             path_manager_->setFormationToOptimizer(current_formation_pattern_, num_drones_);
         }
-
-        // Save current endpoint and offset for next formation transition
-        prev_end_pt_ = end_pt_;
-        prev_formation_offset_ = Eigen::Vector3d(
-            msg->formation_offset.x,
-            msg->formation_offset.y,
-            msg->formation_offset.z
-        );
-        log_manager_->infof(
-                   "Drone %d: Saved endpoint (%.2f, %.2f, %.2f) and offset (%.2f, %.2f, %.2f) for next transition",
-                   drone_id_,
-                   prev_end_pt_.x(), prev_end_pt_.y(), prev_end_pt_.z(),
-                   prev_formation_offset_.x(), prev_formation_offset_.y(), prev_formation_offset_.z());
 
         have_target_ = true;
         have_new_target_ = true;

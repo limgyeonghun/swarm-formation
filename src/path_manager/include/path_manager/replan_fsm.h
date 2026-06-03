@@ -71,7 +71,6 @@ public:
     
     void init();
     void computeAndPublishPaths();
-    void targetPositionCallback(const path_manager::msg::PositionCommand::SharedPtr msg);
     void recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg);
     void formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg);
     void trajectoryCommandCallback(const formation_msgs::msg::TrajectoryCommand::SharedPtr msg);
@@ -93,7 +92,6 @@ public:
     // This separation prevents timer stalls when subscriptions are processing
     rclcpp::CallbackGroup::SharedPtr timer_callback_group_;
     rclcpp::CallbackGroup::SharedPtr subscription_callback_group_;
-    rclcpp::CallbackGroup::SharedPtr position_callback_group_;
 
 private:
     rclcpp::Node::SharedPtr node_;
@@ -110,7 +108,6 @@ private:
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr optimized_path_pub_;
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr global_path_pub_;
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr broadcast_traj_pub_;
-    rclcpp::Subscription<path_manager::msg::PositionCommand>::SharedPtr target_position_sub_;
     rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr broadcast_traj_sub_;
     rclcpp::Subscription<path_manager::msg::FormationTarget>::SharedPtr formation_target_sub_;
     rclcpp::Subscription<formation_msgs::msg::TrajectoryCommand>::SharedPtr trajectory_cmd_sub_;
@@ -128,7 +125,6 @@ private:
 
     FSM_EXEC_STATE exec_state_;
     int continously_called_times_;
-    bool have_position_;
     bool have_target_;
     bool have_new_target_;
     bool have_local_traj_;
@@ -139,10 +135,7 @@ private:
     Eigen::Vector3d current_vel_;
     Eigen::Vector3d start_pt_, start_vel_, start_acc_;
     Eigen::Vector3d end_pt_;
-    Eigen::Vector3d local_target_pt_;
-    Eigen::Vector3d local_target_vel_;
     Eigen::Vector3d offset_pt_;
-    double t_to_target_;
     double current_time_;
     double last_start_time_;
     bool rviz_simulation_;
@@ -167,11 +160,7 @@ private:
     std::string current_mission_id_;    // Current mission being executed
     std::string next_mission_id_;       // Next mission to execute
     bool is_final_mission_;             // True if no more missions after current
-    bool need_formation_command_sub_;   // True if we need to subscribe for next mission
 
-    // Previous formation tracking for smooth transitions
-    Eigen::Vector3d prev_end_pt_;  // Previous formation target endpoint
-    Eigen::Vector3d prev_formation_offset_;  // Previous formation offset for this drone
 
     // Swarm position tracking for formation management
     std::map<int, Eigen::Vector3d> swarm_positions_;  // drone_id -> current position
