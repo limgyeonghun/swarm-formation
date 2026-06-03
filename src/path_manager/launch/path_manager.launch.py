@@ -146,7 +146,7 @@ def create_drone_nodes(context, *args, **kwargs):
             )
         )
 
-    # Build parameters for path_visualization
+    # Build parameters for the visualization node
     viz_params = [
         drones_file,  # Base drone hardware
         scenario_file,
@@ -154,9 +154,9 @@ def create_drone_nodes(context, *args, **kwargs):
     ]
 
     visualization_node = Node(
-        package='path_visualization',
-        executable='path_visualization_node',
-        name=f'path_visualization_{target_drone_id}',
+        package='mmp_visualization',
+        executable='mmp_visualization_node',
+        name='mmp_visualization_node',
         output='screen',
         parameters=viz_params,
         condition=IfCondition(LaunchConfiguration('enable_visualization'))

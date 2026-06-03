@@ -2,6 +2,7 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 
@@ -56,5 +57,15 @@ def generate_launch_description():
                 'disable_file_logging': LaunchConfiguration('disable_file_logging'),
                 'world': LaunchConfiguration('world'),
             }.items()
+        ),
+
+        # TEMP follower: samples /planning/trajectory and publishes
+        # /dynamics/sim_state + /dynamics/sim_path + drone_0_base TF so RViz can
+        # show the moving agent. Replace with mmp_dynamics_sim when ready.
+        Node(
+            package='mmp_dummy_follower',
+            executable='dummy_follower_node',
+            name='dummy_follower_node',
+            output='screen',
         ),
     ])
