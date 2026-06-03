@@ -328,6 +328,7 @@ visualization_msgs::msg::Marker PathVisualization::createMarker(const std::strin
   marker.id = id;
   marker.type = type;
   marker.action = visualization_msgs::msg::Marker::ADD;
+  marker.pose.orientation.w = 1.0;  // identity quaternion (avoids RViz cull/flicker)
   marker.scale.x = scale;
   marker.scale.y = scale;
   marker.scale.z = scale;
@@ -613,7 +614,7 @@ void PathVisualization::publishPath(const std::vector<Eigen::Vector3d> &path, in
 {
   std::string ns_prefix = (pub == global_traj_pub_) ? "global_path_drone_" : "opt_path_drone_";
   auto marker = createMarker(ns_prefix + std::to_string(id), id,
-                             visualization_msgs::msg::Marker::LINE_STRIP, 0.4, r, g, b, alpha);
+                             visualization_msgs::msg::Marker::LINE_STRIP, 5.0, r, g, b, alpha);
   for (const auto &pt : path)
   {
     geometry_msgs::msg::Point p;
