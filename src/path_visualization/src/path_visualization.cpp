@@ -47,10 +47,10 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
   auto sensor_qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
-  marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/agent/obstacles", sensor_qos);
-  optimized_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("opt_trajectory", sensor_qos);
-  global_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("global_trajectory", sensor_qos);
-  simple_path_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("simple_path_trajectory", sensor_qos);
+  marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/viz/obstacles", sensor_qos);
+  optimized_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/viz/opt_trajectory", sensor_qos);
+  global_traj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/viz/global_trajectory", sensor_qos);
+  simple_path_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/viz/simple_path", sensor_qos);
   position_pubs_.resize(num_drones_);
   position_marker_pubs_.resize(num_drones_);
   drone_data_.resize(num_drones_);
@@ -67,14 +67,14 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   {
     std::string topic_prefix = "";
 
-    std::string position_topic = topic_prefix + "/current_position";
+    std::string position_topic = topic_prefix + "/agent/position";
     position_pubs_[drone_id] = this->create_publisher<geometry_msgs::msg::PointStamped>(position_topic, sensor_qos);
     position_marker_pubs_[drone_id] = this->create_publisher<visualization_msgs::msg::Marker>(
-        "/agent/position_markers", sensor_qos);
+        "/viz/agent_position", sensor_qos);
     traveled_path_pubs_[drone_id] = this->create_publisher<visualization_msgs::msg::Marker>(
-        "/agent/traveled_path", sensor_qos);
+        "/viz/traveled_path", sensor_qos);
 
-    std::string simple_path_topic = "/agent/simple_path";
+    std::string simple_path_topic = "/agent/debug/simple_path";
     simple_path_subs_[drone_id] = this->create_subscription<nav_msgs::msg::Path>(
         simple_path_topic, sensor_qos,
         [this, drone_id](const nav_msgs::msg::Path::SharedPtr msg)
@@ -124,7 +124,7 @@ PathVisualization::PathVisualization() : Node("path_visualization")
   rclcpp::QoS marker_qos(10);
   marker_qos.transient_local().reliable();
   risk_zone_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
-      "risk_field", marker_qos);
+      "/viz/risk_field", marker_qos);
   // No periodic timer: markers carry lifetime=0 (never expire in RViz)
   // and we only need to republish when the zone set changes via the
   // /risk_zones/load callback below.

@@ -45,7 +45,7 @@ TrajServer::TrajServer() : Node("traj_server") {
 
     // Single-drone: flat topics. For swarm, add a per-drone prefix
     // (e.g. "/drone" + std::to_string(drone_id_)) so topics don't collide.
-    std::string pos_cmd_topic = "/target_position";
+    std::string pos_cmd_topic = "/agent/cmd_position";
     std::string topic_prefix = "";
     pos_cmd_pub_ = create_publisher<path_manager::msg::PositionCommand>(pos_cmd_topic, sensor_qos);
 

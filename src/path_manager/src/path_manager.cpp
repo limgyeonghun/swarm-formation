@@ -170,25 +170,25 @@ namespace path_manager
         }
 
         simple_path_pub_ = node_->create_publisher<nav_msgs::msg::Path>(
-            "/agent/simple_path", 10);
+            "/agent/debug/simple_path", 10);
         rrt_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-            "/agent/rrt_path", 10);
+            "/agent/debug/rrt_path", 10);
         shorten_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-            "/agent/shorten_path", 10);
+            "/agent/debug/shorten_path", 10);
         init_minco_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-            "/agent/init_minco_path", 10);
+            "/agent/debug/init_minco_path", 10);
         esdf_occ_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-            "/agent/esdf_occupied", 1);
+            "/agent/debug/esdf_occupied", 1);
         inner_pts_init_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/agent/inner_pts_init", 10);
+            "/agent/debug/inner_pts_init", 10);
         inner_pts_opt_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/agent/inner_pts_opt", 10);
+            "/agent/debug/inner_pts_opt", 10);
         // TRANSIENT_LOCAL so RViz, joining late, still gets the latest set.
         rclcpp::QoS dyn_qos(1);
         dyn_qos.reliability(rclcpp::ReliabilityPolicy::Reliable);
         dyn_qos.durability(rclcpp::DurabilityPolicy::TransientLocal);
         dyn_obstacle_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/agent/dynamic_obstacles", dyn_qos);
+            "/viz/dynamic_obstacles", dyn_qos);
 
         // Terrain ESDF cache status (drone_0 only, latched).
         if (drone_id == 0) {

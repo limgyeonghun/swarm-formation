@@ -148,7 +148,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     rclcpp::SubscriptionOptions position_options;
     position_options.callback_group = position_callback_group_;
 
-    std::string target_position_topic = "/target_position";
+    std::string target_position_topic = "/agent/cmd_position";
     target_position_sub_ = node_->create_subscription<path_manager::msg::PositionCommand>(
         target_position_topic, sensor_qos,
         std::bind(&ReplanFSM::targetPositionCallback, this, std::placeholders::_1),
@@ -182,7 +182,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         topic_prefix + "/formation_target", sensor_qos);
 
     waypoint_marker_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-        "waypoint_markers", 10);
+        "/viz/waypoints", 10);
 
     // Terrain GridMap subscription (TRANSIENT_LOCAL to receive latched message)
     rclcpp::QoS terrain_qos(1);
