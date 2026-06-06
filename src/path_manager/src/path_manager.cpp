@@ -169,13 +169,13 @@ namespace path_manager
         }
 
         simple_path_pub_ = node_->create_publisher<nav_msgs::msg::Path>(
-            "/agent/debug/simple_path", 10);
-        rrt_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-            "/agent/debug/rrt_path", 10);
+            "/viz/debug/simple_path", 10);
+        search_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
+            "/viz/debug/search_path", 10);
         shorten_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-            "/agent/debug/shorten_path", 10);
+            "/viz/debug/shorten_path", 10);
         esdf_occ_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-            "/agent/debug/esdf_occupied", 1);
+            "/viz/debug/esdf_occupied", 1);
         // TRANSIENT_LOCAL so RViz, joining late, still gets the latest set.
         rclcpp::QoS dyn_qos(1);
         dyn_qos.reliability(rclcpp::ReliabilityPolicy::Reliable);
@@ -189,7 +189,7 @@ namespace path_manager
             status_qos.reliability(rclcpp::ReliabilityPolicy::Reliable);
             status_qos.durability(rclcpp::DurabilityPolicy::TransientLocal);
             terrain_status_pub_ = node_->create_publisher<std_msgs::msg::String>(
-                "/manager/terrain_status", status_qos);
+                "/planning/terrain_status", status_qos);
 
             // Startup check: warn if load path is set but the cache file is missing.
             // path_manager builds the ESDF lazily on the first plan, so this is
@@ -667,7 +667,8 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
                 ri, p.x(), p.y(), p.z(), total, per_zone.c_str());
         }
 
-        // Publish simple path for visualization
+        // Front-end route as nav_msgs/Path → mmp_visualization converts it to a
+        // RViz marker (/viz/simple_path).
         nav_msgs::msg::Path path_msg;
         path_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
         path_msg.header.frame_id = "map";
@@ -682,12 +683,12 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
         }
         simple_path_pub_->publish(path_msg);
 
-        // Publish RRT* path as LINE_STRIP + SPHERE_LIST for debugging (cyan)
+        // Front-end route as LINE_STRIP + SPHERE_LIST for debugging (cyan)
         {
             visualization_msgs::msg::Marker line;
             line.header.frame_id = "map";
             line.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
-            line.ns = "rrt_path_line";
+            line.ns = "search_path_line";
             line.id = 0;
             line.type = visualization_msgs::msg::Marker::LINE_STRIP;
             line.action = visualization_msgs::msg::Marker::ADD;
@@ -700,11 +701,11 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
                 pt.x = p.x(); pt.y = p.y(); pt.z = p.z();
                 line.points.push_back(pt);
             }
-            rrt_path_pub_->publish(line);
+            search_path_pub_->publish(line);
 
             visualization_msgs::msg::Marker dots;
             dots.header = line.header;
-            dots.ns = "rrt_path_dots";
+            dots.ns = "search_path_dots";
             dots.id = 1;
             dots.type = visualization_msgs::msg::Marker::SPHERE_LIST;
             dots.action = visualization_msgs::msg::Marker::ADD;
@@ -717,7 +718,7 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
                 pt.x = p.x(); pt.y = p.y(); pt.z = p.z();
                 dots.points.push_back(pt);
             }
-            rrt_path_pub_->publish(dots);
+            search_path_pub_->publish(dots);
         }
 
         // === STEP 3: Corner-adaptive densification of the A* shortcut. ===

@@ -137,16 +137,6 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     optimized_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/trajectory", sensor_qos);
     global_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/global", sensor_qos);
 
-    // Kept for future swarm/formation use: an external multi-drone node may
-    // publish /formation_target. Single-PC path triggers planning directly via
-    // trajectoryCommandCallback, so this is currently a dormant entry point.
-    rclcpp::SubscriptionOptions formation_target_options;
-    formation_target_options.callback_group = subscription_callback_group_;
-    formation_target_sub_ = node_->create_subscription<path_manager::msg::FormationTarget>(
-        topic_prefix + "/formation_target", sensor_qos,
-        std::bind(&ReplanFSM::formationTargetCallback, this, std::placeholders::_1),
-        formation_target_options);
-
     rclcpp::SubscriptionOptions trajectory_cmd_options;
     trajectory_cmd_options.callback_group = subscription_callback_group_;
     trajectory_cmd_sub_ = node_->create_subscription<formation_msgs::msg::TrajectoryCommand>(

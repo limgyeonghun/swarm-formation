@@ -120,12 +120,6 @@ def create_drone_nodes(context, *args, **kwargs):
             params['manager/world'] = world_arg
         # Note: start_point will be received from TrajectoryCommand message
 
-        # Loop the agent's broadcast_traj_send back into broadcast_traj_recv.
-        # (Single-agent: feeds the agent's own trajectory back to itself.)
-        all_remaps = [
-            ('/planning/broadcast_traj_send', '/planning/broadcast_traj_recv'),
-        ]
-
         # Build parameter list with scenario config.
         # `params` goes LAST so launch-time overrides (e.g. manager/world from
         # the RViz LaunchControlPanel) win over the yaml defaults.
@@ -142,7 +136,6 @@ def create_drone_nodes(context, *args, **kwargs):
                 name=f'replan_fsm_drone_{i}',
                 output='screen',
                 parameters=replan_params,
-                remappings=all_remaps,
             )
         )
 
@@ -185,16 +178,12 @@ def create_drone_nodes(context, *args, **kwargs):
         # Create directory if it doesn't exist
         os.makedirs(bag_dir, exist_ok=True)
 
-        target_position_topic = '/target_position'
-        formation_target_topic = '/formation_target'
+        record_topics = ['/planning/trajectory', '/planning/global']
 
         print(f"ROSbag recording enabled: {bag_path}")
-        print(f"Recording: /opt_trajectory, {target_position_topic}, formation debug topics")
+        print(f"Recording: {', '.join(record_topics)}")
         rosbag_process = ExecuteProcess(
-            cmd=['ros2', 'bag', 'record',
-                 '-o', bag_path,
-                 target_position_topic,
-                 formation_target_topic],
+            cmd=['ros2', 'bag', 'record', '-o', bag_path] + record_topics,
             output='screen',
             shell=False
         )

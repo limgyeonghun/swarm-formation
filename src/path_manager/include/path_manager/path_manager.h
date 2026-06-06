@@ -296,7 +296,7 @@ namespace path_manager
     bool has_valid_state_;
 
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr simple_path_pub_;
-    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr rrt_path_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr search_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr shorten_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr esdf_occ_pub_;
     // Dynamic obstacle visualization (one MarkerArray republished on every add/clear).
