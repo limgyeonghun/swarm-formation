@@ -96,6 +96,9 @@ public:
 private:
     rclcpp::Node::SharedPtr node_;
     bool planFromGlobalTraj(int trial_times = 1);
+    // Pure planning trigger: runs global planning for given waypoints and handles
+    // success/FSM transition. No message dependency (uses member state + waypoints).
+    void triggerGlobalPlan(const std::vector<Eigen::Vector3d>& waypoints);
     void changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_call);
     bool isMapReady(const Eigen::Vector3d& start_pos);
     bool callEmergencyStop(const Eigen::Vector3d& stop_pos);
@@ -119,7 +122,6 @@ private:
     rclcpp::Subscription<path_manager::msg::RiskZoneArray>::SharedPtr
         load_risk_zones_sub_;
     double dynamic_obstacle_radius_;  // m, applied to clicked-point spheres
-    rclcpp::Publisher<path_manager::msg::FormationTarget>::SharedPtr formation_target_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr waypoint_marker_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
 

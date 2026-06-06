@@ -147,6 +147,9 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         std::bind(&ReplanFSM::recvBroadcastPolyTrajCallback, this, std::placeholders::_1),
         broadcast_options);
 
+    // Kept for future swarm/formation use: an external multi-drone node may
+    // publish /formation_target. Single-PC path triggers planning directly via
+    // trajectoryCommandCallback, so this is currently a dormant entry point.
     rclcpp::SubscriptionOptions formation_target_options;
     formation_target_options.callback_group = subscription_callback_group_;
     formation_target_sub_ = node_->create_subscription<path_manager::msg::FormationTarget>(
@@ -160,9 +163,6 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
         topic_prefix + "/trajectory_command", sensor_qos,
         std::bind(&ReplanFSM::trajectoryCommandCallback, this, std::placeholders::_1),
         trajectory_cmd_options);
-
-    formation_target_pub_ = node_->create_publisher<path_manager::msg::FormationTarget>(
-        topic_prefix + "/formation_target", sensor_qos);
 
     waypoint_marker_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
         "/viz/waypoints", 10);
@@ -690,8 +690,6 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
                    start_pt_(0), start_pt_(1), start_pt_(2));
     }
 
-    bool success = false;
-
     std::vector<Eigen::Vector3d> waypoints;
 
     if (!msg->formation_positions.empty()) {
@@ -761,13 +759,23 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
                     drone_id_, waypoints.size(), marker.header.frame_id.c_str(), marker.ns.c_str());
     }
 
+    triggerGlobalPlan(waypoints);
+
+    auto callback_end = std::chrono::high_resolution_clock::now();
+    auto callback_duration = std::chrono::duration_cast<std::chrono::milliseconds>(callback_end - callback_start).count();
+    double ros_time_end = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
+    FSM_LOG_INFO("[DEBUG TARGET] formationTargetCallback COMPLETED in %ld ms at time %.3f (total elapsed: %.3f ms)",
+                 callback_duration, ros_time_end, (ros_time_end - ros_time_start) * 1000);
+}
+
+void ReplanFSM::triggerGlobalPlan(const std::vector<Eigen::Vector3d>& waypoints) {
     // Use formation pattern received via TrajectoryCommand
     auto formation_setup_start = std::chrono::high_resolution_clock::now();
     path_manager_->setFormationInfo(drone_id_, current_formation_type_, current_formation_pattern_);
 
     auto global_traj_start = std::chrono::high_resolution_clock::now();
     FSM_LOG_INFO("[TIMING] Starting global trajectory planning");
-    success = path_manager_->planGlobalTraj(
+    bool success = path_manager_->planGlobalTraj(
         start_pt_, start_vel_, start_acc_,
         waypoints, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
@@ -812,13 +820,8 @@ void ReplanFSM::formationTargetCallback(const path_manager::msg::FormationTarget
         RCLCPP_ERROR(node_->get_logger(), "Unable to generate global trajectory for drone %d!", drone_id_);
         log_manager_->errorf("Unable to generate global trajectory for drone %d!", drone_id_);
     }
-
-    auto callback_end = std::chrono::high_resolution_clock::now();
-    auto callback_duration = std::chrono::duration_cast<std::chrono::milliseconds>(callback_end - callback_start).count();
-    double ros_time_end = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
-    FSM_LOG_INFO("[DEBUG TARGET] formationTargetCallback COMPLETED in %ld ms at time %.3f (total elapsed: %.3f ms)",
-                 callback_duration, ros_time_end, (ros_time_end - ros_time_start) * 1000);
 }
+
 bool ReplanFSM::isMapReady(const Eigen::Vector3d& start_pos) {
     if (!path_manager_) {
         RCLCPP_WARN(node_->get_logger(), "PathManager not initialized yet");
@@ -953,7 +956,7 @@ void ReplanFSM::trajectoryCommandCallback(const formation_msgs::msg::TrajectoryC
                 formation_offset.x(), formation_offset.y(), formation_offset.z(),
                 waypoints.size());
 
-    // Publish to formationTargetCallback (which will trigger trajectory planning)
+    // Build the formation target and trigger planning directly (no topic round-trip)
     publishFormationTarget(target_position, waypoints, false, formation_offset);
 
     auto callback_end = std::chrono::high_resolution_clock::now();
@@ -1011,7 +1014,10 @@ void ReplanFSM::publishFormationTarget(const Eigen::Vector3d& target, const std:
                    drone_id_);
     }
 
-    formation_target_pub_->publish(target_msg);
+    // Single-PC: call planning trigger directly instead of self-publishing to
+    // /formation_target (drops the topic round-trip). Same callback group
+    // (MutuallyExclusive) so threading behavior is unchanged.
+    formationTargetCallback(std::make_shared<path_manager::msg::FormationTarget>(target_msg));
 
 }
 
