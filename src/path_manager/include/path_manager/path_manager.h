@@ -273,6 +273,14 @@ namespace path_manager
     // bounding box given in world coords. Returns true on success.
     bool buildSDFForBounds(const Eigen::Vector3d &lo, const Eigen::Vector3d &hi);
 
+    // Stage 1 (front-end): A*/FM2 search + corner-adaptive densification.
+    // Produces the route (full_route) and densified path (clean_path) the
+    // optimizer consumes. SDF must already be built. Returns true on success.
+    bool planFrontEnd(const Eigen::Vector3d &start_pos,
+                      const std::vector<Eigen::Vector3d> &waypoints,
+                      std::vector<Eigen::Vector3d> &full_route,
+                      std::vector<Eigen::Vector3d> &clean_path);
+
     // Stage 2 (trajectory optimization): MINCO initial trajectory + L-BFGS.
     // Takes the front-end path; sets traj_ global/local. Returns true on success.
     bool optimizeStage(std::vector<Eigen::Vector3d> &clean_path,

@@ -512,6 +512,35 @@ namespace path_manager
                 (int)obs.shape, obs.param1);
         }
 
+        // === STEP 2~3: front-end search + densification ===
+        std::vector<Eigen::Vector3d> full_route, clean_path;
+        if (!planFrontEnd(start_pos, waypoints, full_route, clean_path)) {
+            return false;
+        }
+
+        // === STEP 4~5: trajectory optimization (MINCO + L-BFGS) ===
+        bool opt_ok = optimizeStage(clean_path, full_route,
+                                    start_pos, start_vel, start_acc, waypoints);
+
+        auto t_total_end = std::chrono::steady_clock::now();
+        log_manager_->infof("[TIMING] === TOTAL planGlobalTraj: %.1f ms ===",
+            std::chrono::duration<double, std::milli>(t_total_end - t_total_start).count());
+
+        return opt_ok;
+    }
+
+bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
+                               const std::vector<Eigen::Vector3d> &waypoints,
+                               std::vector<Eigen::Vector3d> &full_route,
+                               std::vector<Eigen::Vector3d> &clean_path)
+{
+        // Segment list: start -> wp1 -> ... -> wpN
+        std::vector<Eigen::Vector3d> all_points;
+        all_points.push_back(start_pos);
+        for (const auto& wp : waypoints) {
+            all_points.push_back(wp);
+        }
+
         // === STEP 2: 3D A* search + visibility-thinning simple_path ===
         // Bind SDF + risk zones to the A* front-end. A* collision check uses
         // the ESDF (distance < obstacle_clearance_ == blocked), and risk
@@ -575,7 +604,7 @@ namespace path_manager
         }
 
         auto t_astar_start = std::chrono::steady_clock::now();
-        std::vector<Eigen::Vector3d> full_route;
+        full_route.clear();
         full_route.push_back(start_pos);
         for (size_t seg = 0; seg < all_points.size() - 1; ++seg)
         {
@@ -724,7 +753,7 @@ namespace path_manager
             return ang_deg >= corner_angle_thresh_deg;
         };
 
-        std::vector<Eigen::Vector3d> clean_path;
+        clean_path.clear();
         clean_path.reserve(full_route.size() * 8);
         clean_path.push_back(full_route.front());
 
@@ -783,16 +812,8 @@ namespace path_manager
             return false;
         }
 
-        // === STEP 4~5: trajectory optimization (MINCO + L-BFGS) ===
-        bool opt_ok = optimizeStage(clean_path, full_route,
-                                    start_pos, start_vel, start_acc, waypoints);
-
-        auto t_total_end = std::chrono::steady_clock::now();
-        log_manager_->infof("[TIMING] === TOTAL planGlobalTraj: %.1f ms ===",
-            std::chrono::duration<double, std::milli>(t_total_end - t_total_start).count());
-
-        return opt_ok;
-    }
+        return true;
+}
 
 bool PathManager::optimizeStage(std::vector<Eigen::Vector3d> &clean_path,
                                 const std::vector<Eigen::Vector3d> &full_route,
