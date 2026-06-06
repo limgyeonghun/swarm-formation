@@ -1,5 +1,4 @@
 #include "path_manager/path_manager.h"
-#include "path_manager/polynomial_traj.h"
 
 namespace path_manager
 {

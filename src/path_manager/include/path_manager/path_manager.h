@@ -2,10 +2,8 @@
 #define PATH_MANAGER_H
 
 #include <rclcpp/rclcpp.hpp>
-#include "path_planner/gcopter/sfc_gen.hpp"
 #include "path_planner/sdf/sdf_manager.h"
 #include "path_planner/sdf/sdf_query_adapter.h"
-#include "path_planner/sdf/path_shortening.h"
 #include "path_planner/dyn_a_star.h"
 #include "path_optimizer/poly_traj_optimizer.h"
 #include "path_optimizer/plan_container.hpp"

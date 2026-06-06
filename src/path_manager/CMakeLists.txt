@@ -48,7 +48,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 add_library(${PROJECT_NAME}_lib
   src/path_manager.cpp
-  src/polynomial_traj.cpp
   src/replan_fsm.cpp
   ../common/log_manager.cpp
 )

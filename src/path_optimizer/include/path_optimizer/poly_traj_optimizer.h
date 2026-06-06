@@ -14,7 +14,6 @@ using LogManager = swarm_formation::LogManager;
 #include "lbfgs.hpp"
 #include "plan_container.hpp"
 #include "poly_traj_utils.hpp"
-#include "munkres_algorithm.hpp"
 #include "path_planner/sdf/sdf_manager.h"
 
 #define LOG_INFO(msg, ...) do { \
