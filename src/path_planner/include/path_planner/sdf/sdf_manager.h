@@ -24,6 +24,8 @@
 #include <memory>
 #include <string>
 
+#include "path_planner/sdf/distance_field.h"
+
 namespace path_planner {
 namespace sdf {
 
@@ -43,10 +45,10 @@ struct PrimitiveSpec {
   Eigen::Vector3d size = Eigen::Vector3d::Ones();
 };
 
-class SDFManager {
+class SDFManager : public IDistanceField {
  public:
   SDFManager();
-  ~SDFManager();
+  ~SDFManager() override;
 
   SDFManager(const SDFManager&) = delete;
   SDFManager& operator=(const SDFManager&) = delete;
@@ -67,14 +69,14 @@ class SDFManager {
 
   // Returns signed distance in meters: min(static, dynamic patches).
   // +inf if outside map or unobserved by any layer.
-  float getDistance(const Eigen::Vector3d& pos) const;
+  float getDistance(const Eigen::Vector3d& pos) const override;
 
   // Distance + gradient. Gradient is taken from whichever layer (static or
   // a dynamic patch) produces the minimum at pos; this is the sub-gradient
   // of the min and is what downstream gradient-based optimizers expect.
   bool getDistanceAndGradient(const Eigen::Vector3d& pos,
                               float* distance,
-                              Eigen::Vector3d* gradient) const;
+                              Eigen::Vector3d* gradient) const override;
 
   // ----- dynamic obstacle layer -----
   //
@@ -100,7 +102,7 @@ class SDFManager {
   size_t numActiveObstacles() const;
 
   bool isInitialized() const;
-  bool hasData() const;
+  bool hasData() const override;
   double voxelSize() const;
   size_t numAllocatedBlocks() const;
 

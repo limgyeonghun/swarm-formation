@@ -14,7 +14,7 @@ using LogManager = swarm_formation::LogManager;
 #include "lbfgs.hpp"
 #include "plan_container.hpp"
 #include "poly_traj_utils.hpp"
-#include "path_planner/sdf/sdf_manager.h"
+#include "path_planner/sdf/distance_field.h"
 
 #define LOG_INFO(msg, ...) do { \
   if (!enable_debug_logs_) { \
@@ -128,7 +128,7 @@ namespace ego_planner
     rclcpp::Node::SharedPtr node_;
 
     // SDF-based obstacle avoidance (replaces SFC corridor penalty).
-    const path_planner::sdf::SDFManager *sdf_manager_{nullptr};
+    const path_planner::sdf::IDistanceField *sdf_manager_{nullptr};
     double obstacle_clearance_{0.5};  // safety margin used by SDF penalty
 
     // Hard half-space constraints applied outside the SDF so the clearance
@@ -147,7 +147,7 @@ namespace ego_planner
 
     void setParam(const rclcpp::Node::SharedPtr &node);
     void setLogManager(swarm_formation::LogManager::Ptr log_manager);
-    void setSDFManager(const path_planner::sdf::SDFManager *sdf) { sdf_manager_ = sdf; }
+    void setSDFManager(const path_planner::sdf::IDistanceField *sdf) { sdf_manager_ = sdf; }
     void setObstacleClearance(double c) { obstacle_clearance_ = c; }
     void setGroundHeight(double h)      { ground_height_ = h; }
     void setVirtualCeilHeight(double h) { virtual_ceil_height_ = h; }

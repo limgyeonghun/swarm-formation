@@ -6,7 +6,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include <Eigen/Eigen>
-#include "path_planner/sdf/sdf_manager.h"
+#include "path_planner/sdf/distance_field.h"
 #include "../../common/log_manager.hpp"
 #include <queue>
 #include <vector>
@@ -77,7 +77,7 @@ public:
 private:
     // SDF query backend. We do not need a separate occupancy map: a voxel is
     // considered blocked when sdf_distance < obstacle_margin_.
-    path_planner::sdf::SDFManager *sdf_ = nullptr;
+    const path_planner::sdf::IDistanceField *sdf_ = nullptr;
     const std::vector<RiskZoneLite> *risk_zones_ = nullptr;
     double obstacle_margin_ = 0.5;  // meters
     // When true, the A* graph expansion ignores obstacles (every voxel is
@@ -269,7 +269,7 @@ public:
 
     void setLogManager(swarm_formation::LogManager::Ptr log_manager) { log_manager_ = log_manager; }
 
-    void setSDF(path_planner::sdf::SDFManager *sdf,
+    void setSDF(const path_planner::sdf::IDistanceField *sdf,
                 const Eigen::Vector3d &origin,
                 const Eigen::Vector3d &size,
                 double resolution) {
