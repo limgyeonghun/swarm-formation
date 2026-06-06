@@ -20,7 +20,6 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
       num_drones_(4),
       current_formation_type_("square"),
       current_formation_scale_(2.0),
-      has_formation_command_(false),
       last_received_sequence_(-1),
       current_mission_id_(""),
       next_mission_id_(""),
@@ -69,17 +68,6 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     node_->get_parameter("enable_global_trajectory_pub", enable_global_trajectory_pub_);
     FSM_LOG_INFO("enable_global_trajectory_pub: %s", enable_global_trajectory_pub_ ? "true" : "false");
 
-    // 3D formation parameters
-    node_->declare_parameter("formation_z_spacing", 2.0);
-    node_->get_parameter("formation_z_spacing", formation_z_spacing_);
-    FSM_LOG_INFO("3D formation z_spacing: %.2f", formation_z_spacing_);
-
-    node_->declare_parameter("fsm/hungarian_distance_weight", 1.0);
-    node_->declare_parameter("fsm/hungarian_crossing_penalty", 50.0);
-    node_->get_parameter("fsm/hungarian_distance_weight", hungarian_distance_weight_);
-    node_->get_parameter("fsm/hungarian_crossing_penalty", hungarian_crossing_penalty_);
-    FSM_LOG_INFO("Hungarian assignment weights - distance: %.1f, crossing penalty: %.1f",
-                 hungarian_distance_weight_, hungarian_crossing_penalty_);
 
     // Start position will be received from TrajectoryCommand message
     // Initialize with zero until we receive the command
@@ -90,9 +78,8 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     RCLCPP_INFO(node_->get_logger(), "  Waiting for trajectory command...");
     log_manager_->infof("  Waiting for trajectory command...");
 
-    offset_pt_ = Eigen::Vector3d::Zero();
-    start_pt_ = offset_pt_;
-    current_pos_ = offset_pt_;  // Initialize current_pos_ to zero, will be updated from TrajectoryCommand
+    start_pt_ = Eigen::Vector3d::Zero();
+    current_pos_ = Eigen::Vector3d::Zero();  // Updated from TrajectoryCommand
     current_vel_ = Eigen::Vector3d::Zero();  // Initialize velocity to zero
     end_pt_ = Eigen::Vector3d::Zero();  // Initialize end_pt_ to avoid uninitialized access
     have_target_ = false;  // Wait for trajectory command
@@ -755,7 +742,6 @@ void ReplanFSM::trajectoryCommandCallback(const formation_msgs::msg::TrajectoryC
             msg->start_position.z
         );
 
-        offset_pt_ = new_start_pos;
         start_pt_ = new_start_pos;
         current_pos_ = new_start_pos;
         start_position_received_ = true;
@@ -799,8 +785,6 @@ void ReplanFSM::trajectoryCommandCallback(const formation_msgs::msg::TrajectoryC
     // Update formation parameters (for compatibility with existing code)
     current_formation_type_ = msg->formation_type;
     current_formation_scale_ = msg->formation_scale;
-
-    has_formation_command_ = true;
 
     // Pass trajectory parameters to PathManager
     if (msg->length_per_piece > 0.0) {

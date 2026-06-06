@@ -102,7 +102,3 @@
 
     # RViz "Publish Point" → spawn a sphere obstacle at the click. Radius in m.
     manager/dynamic_obstacle_radius: 50.0
-
-    # Hungarian Assignment Parameters
-    fsm/hungarian_distance_weight: 1.0
-    fsm/hungarian_crossing_penalty: 0.0

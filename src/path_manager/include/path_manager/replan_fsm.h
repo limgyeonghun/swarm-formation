@@ -132,7 +132,6 @@ private:
     Eigen::Vector3d current_vel_;
     Eigen::Vector3d start_pt_, start_vel_, start_acc_;
     Eigen::Vector3d end_pt_;
-    Eigen::Vector3d offset_pt_;
     double current_time_;
     double last_start_time_;
     bool rviz_simulation_;
@@ -140,9 +139,6 @@ private:
     bool enable_debug_logs_;
     bool enable_waypoint_markers_;
     bool enable_global_trajectory_pub_;
-    double formation_z_spacing_;  // Vertical spacing for 3D formations
-    double hungarian_distance_weight_;   // Weight for distance cost in Hungarian assignment
-    double hungarian_crossing_penalty_;  // Penalty weight for path crossings in Hungarian assignment
 
     // Formation manager variables
     int num_drones_;
@@ -150,7 +146,6 @@ private:
     double current_formation_scale_;
     Eigen::Vector3d current_formation_center_;
     std::vector<Eigen::Vector3d> current_formation_pattern_;  // Full formation pattern from TrajectoryCommand
-    bool has_formation_command_;
 
     // Mission sequencing for robustness
     int last_received_sequence_;        // Last received sequence number to check duplicates
