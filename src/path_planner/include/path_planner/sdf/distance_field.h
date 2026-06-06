@@ -1,6 +1,6 @@
 // IDistanceField: abstract distance-field query interface.
 //
-// Decouples the front-end (AStar/FM2) and back-end (PolyTrajOptimizer) from the
+// Decouples the front-end (PathSearcher: A*/FM2) and back-end (PolyTrajOptimizer) from the
 // concrete SDFManager so an alternative distance-field provider can be injected.
 // These are the only three methods both consumers use.
 

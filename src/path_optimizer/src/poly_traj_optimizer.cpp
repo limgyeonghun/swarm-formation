@@ -799,7 +799,7 @@ namespace ego_planner
   }
 
   // V3: quadratic moat + probabilistic-OR composition.
-  // Matches AStar::getRiskCost shape (without the alpha multiplier — the
+  // Matches PathSearcher::getRiskCost shape (without the alpha multiplier — the
   // back-end uses its own wei_risk weight applied in RiskGradCostP).
   double PolyTrajOptimizer::getRiskLevel(const Eigen::Vector3d &pos) const
   {

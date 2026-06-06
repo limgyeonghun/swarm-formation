@@ -313,7 +313,7 @@ namespace path_manager
 
         // === STEP 2 preamble: build SDF-based auxiliary query adapter. ===
         // Kept for logging/debug of obstacle_centers_; A* uses sdf_manager_
-        // directly via astar_.setSDF().
+        // directly via searcher_.setSDF().
         // SDF-based collision query. Risk zones stay separate.
         std::vector<path_planner::sdf::RiskZoneLite> sdf_risk_zones;
         sdf_risk_zones.reserve(risk_zones_.size());
@@ -545,17 +545,17 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
         // Bind SDF + risk zones to the A* front-end. A* collision check uses
         // the ESDF (distance < obstacle_clearance_ == blocked), and risk
         // cost is added to the A* g-score per visited cell.
-        std::vector<path_planner::astar::RiskZoneLite> astar_risks;
+        std::vector<path_planner::search::RiskZoneLite> astar_risks;
         astar_risks.reserve(risk_zones_.size());
         for (const auto &tz : risk_zones_) {
             astar_risks.push_back({tz.center, tz.reach, tz.peak});
         }
         Eigen::Vector3d map_size = map_upper_bound_ - map_lower_bound_;
-        astar_.setLogManager(log_manager_);
-        astar_.setSDF(&sdf_manager_, map_lower_bound_, map_size, sdf_voxel_size_);
-        const std::vector<path_planner::astar::RiskZoneLite> *astar_tz_ptr =
+        searcher_.setLogManager(log_manager_);
+        searcher_.setSDF(&sdf_manager_, map_lower_bound_, map_size, sdf_voxel_size_);
+        const std::vector<path_planner::search::RiskZoneLite> *astar_tz_ptr =
             astar_risks.empty() ? nullptr : &astar_risks;
-        astar_.setRiskZones(astar_tz_ptr);
+        searcher_.setRiskZones(astar_tz_ptr);
         log_manager_->infof("[PM DBG] setRiskZones: %zu zones (ptr=%p) weight=%.3f",
             astar_risks.size(), (const void*)astar_tz_ptr, risk_weight_);
         // A* must see obstacles so the simple_path it returns is already an
@@ -566,18 +566,18 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
         // the cylinder's rotational symmetry pins it at a zero-gradient
         // saddle, which matches what main-branch would also suffer under the
         // same debug configuration.
-        astar_.setObstacleMargin(obstacle_clearance_);
-        astar_.setSearchIgnoresObstacles(false);
-        astar_.setGroundHeight(ground_height_);
-        astar_.setVirtualCeilHeight(virtual_ceil_height_);
-        astar_.setRiskAlpha(risk_weight_);
-        astar_.setSmhaW(risk_smha_w_);
-        astar_.setFrontEnd(front_end_str_ == "fm2"
-            ? path_planner::astar::AStar::FrontEnd::FM2
-            : path_planner::astar::AStar::FrontEnd::ASTAR);
-        astar_.setFm2CoarseK(fm2_coarse_k_);
-        astar_.setFm2Star(fm2_star_);
-        astar_.setBypassShortcut(astar_bypass_shortcut_);
+        searcher_.setObstacleMargin(obstacle_clearance_);
+        searcher_.setSearchIgnoresObstacles(false);
+        searcher_.setGroundHeight(ground_height_);
+        searcher_.setVirtualCeilHeight(virtual_ceil_height_);
+        searcher_.setRiskAlpha(risk_weight_);
+        searcher_.setSmhaW(risk_smha_w_);
+        searcher_.setFrontEnd(front_end_str_ == "fm2"
+            ? path_planner::search::PathSearcher::FrontEnd::FM2
+            : path_planner::search::PathSearcher::FrontEnd::ASTAR);
+        searcher_.setFm2CoarseK(fm2_coarse_k_);
+        searcher_.setFm2Star(fm2_star_);
+        searcher_.setBypassShortcut(astar_bypass_shortcut_);
 
         // A* fine pool is only used by the A* front-end. FM2 runs on its
         // own coarse grid (fm2_F_, fm2_T_) and never touches pool_, so
@@ -591,13 +591,13 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
             Eigen::Vector3i desired = sdf_shape;
             if (!astar_initialized_) {
                 astar_pool_size_ = desired;
-                astar_.initGridMap(astar_pool_size_);
+                searcher_.initGridMap(astar_pool_size_);
                 astar_initialized_ = true;
                 log_manager_->infof("A* pool allocated: (%d,%d,%d)",
                     astar_pool_size_.x(), astar_pool_size_.y(), astar_pool_size_.z());
             } else if (desired != astar_pool_size_) {
                 astar_pool_size_ = desired;
-                astar_.resizePool(astar_pool_size_);
+                searcher_.resizePool(astar_pool_size_);
                 log_manager_->infof("A* pool resized: (%d,%d,%d)",
                     astar_pool_size_.x(), astar_pool_size_.y(), astar_pool_size_.z());
             }
@@ -609,7 +609,7 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
         for (size_t seg = 0; seg < all_points.size() - 1; ++seg)
         {
             std::vector<Eigen::Vector3d> seg_path =
-                astar_.astarSearchAndGetSimplePath(
+                searcher_.astarSearchAndGetSimplePath(
                     astar_step_size_, all_points[seg], all_points[seg + 1],
                     traj_.local_traj.drone_id);
 
@@ -999,7 +999,7 @@ void PathManager::setRiskZonesRuntime(const std::vector<RiskZone>& zones)
 {
     // Atomically replace the active zone list. The next planGlobalTraj
     // call will re-bind A* and the optimizer with the new set via the
-    // existing setup paths (see planGlobalTraj where astar_.setRiskZones
+    // existing setup paths (see planGlobalTraj where searcher_.setRiskZones
     // and poly_traj_opt_->setRiskZones are called).
     risk_zones_ = zones;
     if (log_manager_) {

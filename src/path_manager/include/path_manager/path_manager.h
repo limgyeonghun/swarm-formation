@@ -249,7 +249,7 @@ namespace path_manager
     double astar_step_size_ = 1.0;  // m
 
     // 3D A* front-end. Uses ESDF for collision, risk_zones_ for soft cost.
-    path_planner::astar::AStar astar_;
+    path_planner::search::PathSearcher searcher_;
     bool astar_initialized_ = false;
     Eigen::Vector3i astar_pool_size_ = Eigen::Vector3i(120, 120, 40);
 

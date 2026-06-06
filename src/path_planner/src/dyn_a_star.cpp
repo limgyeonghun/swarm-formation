@@ -8,11 +8,11 @@
 using namespace std;
 using namespace Eigen;
 
-namespace path_planner { namespace astar {
+namespace path_planner { namespace search {
 
-AStar::~AStar() = default;
+PathSearcher::~PathSearcher() = default;
 
-void AStar::initGridMap(const Eigen::Vector3i &pool_size)
+void PathSearcher::initGridMap(const Eigen::Vector3i &pool_size)
 {
     POOL_SIZE_ = pool_size;
     CENTER_IDX_ = pool_size / 2;
@@ -57,12 +57,12 @@ void AStar::initGridMap(const Eigen::Vector3i &pool_size)
     }
 }
 
-void AStar::resizePool(const Eigen::Vector3i &pool_size)
+void PathSearcher::resizePool(const Eigen::Vector3i &pool_size)
 {
     initGridMap(pool_size);
 }
 
-double AStar::getDiagHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
+double PathSearcher::getDiagHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
 {
     double dx = abs(i1(0) - i2(0));
     double dy = abs(i1(1) - i2(1));
@@ -89,7 +89,7 @@ double AStar::getDiagHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
     return h;
 }
 
-double AStar::getManhHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
+double PathSearcher::getManhHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
 {
     double dx = abs(i1(0) - i2(0));
     double dy = abs(i1(1) - i2(1));
@@ -97,13 +97,13 @@ double AStar::getManhHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
     return dx + dy + dz;
 }
 
-double AStar::getEuclHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
+double PathSearcher::getEuclHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
 {
     return (i2 - i1).cast<double>().norm();
 }
 
 
-vector<int> AStar::retrievePath(int current_flat)
+vector<int> PathSearcher::retrievePath(int current_flat)
 {
     vector<int> path;
     if (current_flat < 0) return path;
@@ -131,7 +131,7 @@ vector<int> AStar::retrievePath(int current_flat)
     return path;
 }
 
-bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d end_pt, Vector3i &start_idx, Vector3i &end_idx)
+bool PathSearcher::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d end_pt, Vector3i &start_idx, Vector3i &end_idx)
 {
     if (log_manager_) {
         log_manager_->debugf("시작/끝점 변환 시도 - Start: (%.2f,%.2f,%.2f), End: (%.2f,%.2f,%.2f)", 
@@ -183,7 +183,7 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
     return true;
 }
 
-bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_pt, bool use_esdf_check)
+bool PathSearcher::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_pt, bool use_esdf_check)
 {
     auto time_1 = rclcpp::Clock().now();
     ++rounds_;
@@ -463,7 +463,7 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
 }
 
 
-vector<Vector3d> AStar::getPath()
+vector<Vector3d> PathSearcher::getPath()
 {
     vector<Vector3d> path;
     path.reserve(gridPath_.size());
@@ -475,7 +475,7 @@ vector<Vector3d> AStar::getPath()
     return path;
 }
 
-vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vector3d start_pt, Vector3d end_pt, int drone_id){
+vector<Vector3d> PathSearcher::astarSearchAndGetSimplePath(const double step_size, Vector3d start_pt, Vector3d end_pt, int drone_id){
 
     if (log_manager_) {
         log_manager_->infof("드론 %d: 3D 경로 검색 및 단순화 시작", drone_id);
@@ -806,7 +806,7 @@ vector<Vector3d> AStar::astarSearchAndGetSimplePath(const double step_size, Vect
 // (dist * (1 + alpha*risk)), and store cost-to-go per coarse cell.
 // Obstacles: a coarse cell is blocked if its centre is occupied.
 // ---------------------------------------------------------------------------
-void AStar::buildCoarseValueField(const Eigen::Vector3d &goal_world)
+void PathSearcher::buildCoarseValueField(const Eigen::Vector3d &goal_world)
 {
     coarse_valid_ = false;
     if (map_size_.minCoeff() <= 0.0) return;
@@ -931,7 +931,7 @@ void AStar::buildCoarseValueField(const Eigen::Vector3d &goal_world)
               << gidx.z() << ") goal_g=" << coarse_g_[gflat] << "\n";
 }
 
-double AStar::coarseCostToGo(const Eigen::Vector3d &world) const
+double PathSearcher::coarseCostToGo(const Eigen::Vector3d &world) const
 {
     if (!coarse_valid_) return -1.0;
     const double fine_res = map_resolution_ > 1e-6 ? map_resolution_ : 1.0;
@@ -978,7 +978,7 @@ static constexpr double kEsdfSmoothCells = 1e9;
 static constexpr double kProxFloor       = 0.05;
 }
 
-void AStar::fm2BuildSpeedMap()
+void PathSearcher::fm2BuildSpeedMap()
 {
     fm2_valid_ = false;
     if (map_size_.minCoeff() <= 0.0) return;
@@ -1019,7 +1019,7 @@ void AStar::fm2BuildSpeedMap()
         }
 }
 
-void AStar::fm2SolveEikonal(const Eigen::Vector3d &goal_world,
+void PathSearcher::fm2SolveEikonal(const Eigen::Vector3d &goal_world,
                             const Eigen::Vector3d &start_world)
 {
     if (fm2_F_.empty()) return;
@@ -1161,7 +1161,7 @@ void AStar::fm2SolveEikonal(const Eigen::Vector3d &goal_world,
     fm2_valid_ = true;
 }
 
-double AStar::fm2SampleT(const Eigen::Vector3d &world) const
+double PathSearcher::fm2SampleT(const Eigen::Vector3d &world) const
 {
     if (!fm2_valid_) return std::numeric_limits<double>::infinity();
     const double fine_res = map_resolution_ > 1e-6 ? map_resolution_ : 1.0;
@@ -1177,7 +1177,7 @@ double AStar::fm2SampleT(const Eigen::Vector3d &world) const
                             : std::numeric_limits<double>::infinity();
 }
 
-std::vector<Eigen::Vector3d> AStar::fm2ExtractGeodesic(
+std::vector<Eigen::Vector3d> PathSearcher::fm2ExtractGeodesic(
     const Eigen::Vector3d &start_world,
     const Eigen::Vector3d &goal_world)
 {

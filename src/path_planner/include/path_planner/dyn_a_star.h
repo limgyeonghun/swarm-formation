@@ -13,7 +13,7 @@
 
 constexpr double inf = 1e20;
 
-namespace path_planner { namespace astar {
+namespace path_planner { namespace search {
 
 struct RiskZoneLite {
     Eigen::Vector3d center;
@@ -40,7 +40,7 @@ struct GridNode
     int cameFromFlat{-1};
 };
 
-class AStar;
+class PathSearcher;
 
 class NodeComparatorAnchor
 {
@@ -68,7 +68,7 @@ private:
     const std::vector<GridNode> *pool_ = nullptr;
 };
 
-class AStar
+class PathSearcher
 {
 public:
     // Front-end search selector (yaml manager/front_end).
@@ -262,10 +262,10 @@ private:
     int rounds_{0};
 
 public:
-    typedef std::shared_ptr<AStar> Ptr;
+    typedef std::shared_ptr<PathSearcher> Ptr;
 
-    AStar(){};
-    ~AStar();
+    PathSearcher(){};
+    ~PathSearcher();
 
     void setLogManager(swarm_formation::LogManager::Ptr log_manager) { log_manager_ = log_manager; }
 
@@ -330,12 +330,12 @@ public:
     Eigen::Vector3d getMapSize() const { return map_size_; }
 };
 
-inline double AStar::getHeuAnchor(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
+inline double PathSearcher::getHeuAnchor(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
 {
     return tie_breaker_ * getDiagHeu(i1, i2);
 }
 
-inline double AStar::getHeuInadmis(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
+inline double PathSearcher::getHeuInadmis(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
 {
     // Coarse risk-aware cost-to-go (see buildCoarseValueField). This
     // encodes the depression structure exactly, so the same heuristic
@@ -350,12 +350,12 @@ inline double AStar::getHeuInadmis(const Eigen::Vector3i &i1, const Eigen::Vecto
     return tie_breaker_ * smha_w_ * getDiagHeu(i1, i2);
 }
 
-inline Eigen::Vector3d AStar::Index2Coord(const Eigen::Vector3i &index) const
+inline Eigen::Vector3d PathSearcher::Index2Coord(const Eigen::Vector3i &index) const
 {
     return ((index - CENTER_IDX_).cast<double>() * step_size_) + center_;
 };
 
-inline bool AStar::Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector3i &idx) const
+inline bool PathSearcher::Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector3i &idx) const
 {
     // Use round() instead of "+0.5, cast<int>()" because the latter truncates
     // toward zero for negative values, which biases cells on the negative side

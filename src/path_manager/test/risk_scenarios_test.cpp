@@ -22,8 +22,8 @@
 
 namespace {
 
-using path_planner::astar::AStar;
-using path_planner::astar::RiskZoneLite;
+using path_planner::search::PathSearcher;
+using path_planner::search::RiskZoneLite;
 using path_planner::sdf::SDFManager;
 
 // CLI-selected front end: "astar" or "fm2" (default fm2).
@@ -126,7 +126,7 @@ double pathLength(const std::vector<Eigen::Vector3d> &p) {
 }
 
 // Path-integrated risk metric: sum segment_len * risk(midpoint).
-// Uses the same OR-moat formula as AStar::getRiskCost (with alpha=1).
+// Uses the same OR-moat formula as PathSearcher::getRiskCost (with alpha=1).
 double pathRisk(const std::vector<Eigen::Vector3d> &p,
                 const std::vector<RiskZoneLite> &zones) {
   double total = 0.0;
@@ -194,7 +194,7 @@ void run(const Scenario &s, double alpha, double h_weight, const MapSpec &map) {
     return;
   }
 
-  AStar astar;
+  PathSearcher astar;
   Eigen::Vector3d origin(0, 0, 0);
   astar.setSDF(&sdf, origin, map.size, map.voxel);
   astar.setRiskZones(&s.zones);
@@ -202,8 +202,8 @@ void run(const Scenario &s, double alpha, double h_weight, const MapSpec &map) {
   astar.setRiskAlpha(alpha);
   astar.setSmhaW(h_weight);
   astar.setFrontEnd(g_front_end == "fm2"
-      ? path_planner::astar::AStar::FrontEnd::FM2
-      : path_planner::astar::AStar::FrontEnd::ASTAR);
+      ? path_planner::search::PathSearcher::FrontEnd::FM2
+      : path_planner::search::PathSearcher::FrontEnd::ASTAR);
   astar.setFm2CoarseK(g_fm2_k);
   astar.setFm2Star(g_fm2_star);
   // Keep the raw front-end geodesic (no shortcut collapse) so the
