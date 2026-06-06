@@ -135,7 +135,7 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     std::string topic_prefix = "";
 
     optimized_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/trajectory", sensor_qos);
-    global_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/global", sensor_qos);
+    global_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/initial_trajectory", sensor_qos);
 
     rclcpp::SubscriptionOptions trajectory_cmd_options;
     trajectory_cmd_options.callback_group = subscription_callback_group_;

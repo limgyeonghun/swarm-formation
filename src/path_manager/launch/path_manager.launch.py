@@ -178,7 +178,7 @@ def create_drone_nodes(context, *args, **kwargs):
         # Create directory if it doesn't exist
         os.makedirs(bag_dir, exist_ok=True)
 
-        record_topics = ['/planning/trajectory', '/planning/global']
+        record_topics = ['/planning/trajectory', '/planning/initial_trajectory']
 
         print(f"ROSbag recording enabled: {bag_path}")
         print(f"Recording: {', '.join(record_topics)}")

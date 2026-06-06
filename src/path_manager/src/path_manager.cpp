@@ -169,7 +169,7 @@ namespace path_manager
         }
 
         simple_path_pub_ = node_->create_publisher<nav_msgs::msg::Path>(
-            "/viz/debug/simple_path", 10);
+            "/planning/front_end_path", 10);
         search_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
             "/viz/debug/search_path", 10);
         shorten_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
