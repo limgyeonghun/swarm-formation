@@ -10,6 +10,74 @@ namespace ego_planner
     log_manager_ = log_manager;
   }
 
+  bool PolyTrajOptimizer::optimizeFromPath(std::vector<Eigen::Vector3d> &clean_path,
+                                           const Eigen::Vector3d &start_pos,
+                                           const Eigen::Vector3d &start_vel,
+                                           const Eigen::Vector3d &start_acc,
+                                           const std::vector<Eigen::Vector3d> &waypoints,
+                                           double max_vel,
+                                           poly_traj::Trajectory &out_global,
+                                           poly_traj::Trajectory &out_local)
+  {
+    // === MINCO initial trajectory from clean_path ===
+    // Each shortcut vertex becomes one MINCO piece boundary directly;
+    // clean_path is already densified so pieces stay roughly equal length.
+
+    // Degenerate single-segment path → insert a midpoint so MINCO has >= 2 pieces.
+    if (static_cast<int>(clean_path.size()) < 3) {
+      Eigen::Vector3d mid = 0.5 * (clean_path.front() + clean_path.back());
+      clean_path.insert(clean_path.begin() + 1, mid);
+    }
+
+    int piece_num = static_cast<int>(clean_path.size()) - 1;
+    Eigen::MatrixXd innerPts(3, piece_num - 1);
+    for (int i = 0; i < piece_num - 1; ++i) {
+      innerPts.col(i) = clean_path[i + 1];
+    }
+
+    const double des_vel = max_vel;
+    Eigen::VectorXd time_vec(piece_num);
+    for (int i = 0; i < piece_num; ++i) {
+      double seg_len = (clean_path[i + 1] - clean_path[i]).norm();
+      time_vec(i) = std::max(0.05, seg_len / des_vel);
+    }
+
+    Eigen::Vector3d approach_dir =
+        (clean_path.back() - clean_path[clean_path.size() - 2]).normalized();
+    Eigen::Vector3d traj_end_vel = approach_dir * max_vel;
+    Eigen::Vector3d traj_end_acc = Eigen::Vector3d::Zero();
+
+    poly_traj::MinJerkOpt globalMJO;
+    Eigen::Matrix<double, 3, 3> headState, tailState;
+    headState << start_pos, start_vel, start_acc;
+    tailState << waypoints.back(), traj_end_vel, traj_end_acc;
+    globalMJO.reset(headState, tailState, piece_num);
+    globalMJO.generate(innerPts, time_vec);
+
+    out_global = globalMJO.getTraj();
+
+    // === L-BFGS optimization with SDF gradient penalty ===
+    poly_traj::Trajectory initTraj = globalMJO.getTraj();
+    Eigen::MatrixXd cps = globalMJO.getInitConstrainPoints(cps_num_prePiece_);
+    setControlPoints(cps);
+
+    int PN = initTraj.getPieceNum();
+    Eigen::MatrixXd all_pos = initTraj.getPositions();
+    Eigen::MatrixXd optInnerPts = all_pos.block(0, 1, 3, PN - 1);
+
+    Eigen::MatrixXd optimal_points;
+    bool use_formation = true;
+    bool opt_success = OptimizeTrajectory_lbfgs(
+        headState, tailState, optInnerPts, initTraj.getDurations(),
+        optimal_points, use_formation);
+    if (!opt_success) {
+      return false;
+    }
+
+    out_local = jerkOpt_.getTraj();
+    return true;
+  }
+
   bool PolyTrajOptimizer::OptimizeTrajectory_lbfgs(
       const Eigen::MatrixXd &iniState, const Eigen::MatrixXd &finState,
       const Eigen::MatrixXd &initInnerPts, const Eigen::VectorXd &initT,

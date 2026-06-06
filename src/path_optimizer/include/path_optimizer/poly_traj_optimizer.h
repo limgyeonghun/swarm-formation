@@ -172,6 +172,19 @@ namespace ego_planner
                                   const Eigen::MatrixXd &initInnerPts, const Eigen::VectorXd &initT,
                                   Eigen::MatrixXd &optimal_points, const bool use_formation);
 
+    // High-level entry: build a MINCO initial trajectory from the front-end
+    // path, then optimize it. This is the single replaceable seam — a custom
+    // optimizer backend reimplements this and never exposes MINCO internals.
+    // clean_path may be modified (a midpoint is inserted for degenerate input).
+    bool optimizeFromPath(std::vector<Eigen::Vector3d> &clean_path,
+                          const Eigen::Vector3d &start_pos,
+                          const Eigen::Vector3d &start_vel,
+                          const Eigen::Vector3d &start_acc,
+                          const std::vector<Eigen::Vector3d> &waypoints,
+                          double max_vel,
+                          poly_traj::Trajectory &out_global,
+                          poly_traj::Trajectory &out_local);
+
     void showFormationInformation(bool is_show, Eigen::Vector3d pos);
     void setDesiredFormation(int type);
     bool getFormationPos(std::vector<Eigen::Vector3d> &swarm_graph_pos, Eigen::Vector3d pos);

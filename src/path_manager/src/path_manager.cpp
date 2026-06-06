@@ -801,119 +801,37 @@ bool PathManager::optimizeStage(std::vector<Eigen::Vector3d> &clean_path,
                                 const Eigen::Vector3d &start_acc,
                                 const std::vector<Eigen::Vector3d> &waypoints)
 {
-        // === STEP 4: MINCO initial trajectory from clean_path ===
-        // Swarm-Formation style: each shortcut vertex becomes one MINCO
-        // piece boundary directly. clean_path was already densified so
-        // every segment is ≤ length_per_piece_; there is no extra
-        // per-segment splitting here. This keeps every piece roughly the
-        // same length, which is what stops the 5th-order polynomial from
-        // overshooting at direction changes (the loop/twist artefact).
-        auto t_minco_start = std::chrono::steady_clock::now();
-
-        // Degenerate single-segment path → insert a midpoint so MINCO
-        // still has at least two pieces.
-        if (static_cast<int>(clean_path.size()) < 3) {
-            Eigen::Vector3d mid =
-                0.5 * (clean_path.front() + clean_path.back());
-            clean_path.insert(clean_path.begin() + 1, mid);
-        }
-
-        int piece_num = static_cast<int>(clean_path.size()) - 1;
-        Eigen::MatrixXd innerPts(3, piece_num - 1);
-        for (int i = 0; i < piece_num - 1; ++i) {
-            innerPts.col(i) = clean_path[i + 1];
-        }
-
-        // Per-piece duration from segment length and max_vel (matches the
-        // Swarm-Formation reference).
-        const double des_vel = max_vel_;
-        Eigen::VectorXd time_vec(piece_num);
-        for (int i = 0; i < piece_num; ++i) {
-            double seg_len = (clean_path[i + 1] - clean_path[i]).norm();
-            time_vec(i) = std::max(0.05, seg_len / des_vel);
-        }
-
-        Eigen::Vector3d approach_dir =
-            (clean_path.back() - clean_path[clean_path.size() - 2]).normalized();
-        Eigen::Vector3d traj_end_vel = approach_dir * max_vel_;
-        Eigen::Vector3d traj_end_acc = Eigen::Vector3d::Zero();
-
-        poly_traj::MinJerkOpt globalMJO;
-        Eigen::Matrix<double, 3, 3> headState, tailState;
-        headState << start_pos, start_vel, start_acc;
-        tailState << waypoints.back(), traj_end_vel, traj_end_acc;
-        globalMJO.reset(headState, tailState, piece_num);
-        globalMJO.generate(innerPts, time_vec);
-
-        auto time_now = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
-        traj_.setGlobalTraj(globalMJO.getTraj(), time_now);
-        simple_path_ = full_route;
-
-        log_manager_->infof("MINCO: pieces=%d duration=%.3f max_vel=%.3f",
-            globalMJO.getTraj().getPieceNum(),
-            globalMJO.getTraj().getTotalDuration(),
-            globalMJO.getTraj().getMaxVelRate());
-
-        auto t_minco_end = std::chrono::steady_clock::now();
-        log_manager_->infof("[TIMING] MINCO trajectory generation: %.1f ms",
-            std::chrono::duration<double, std::milli>(t_minco_end - t_minco_start).count());
-
-        // STEP 5: L-BFGS optimization with SDF gradient penalty.
-        const bool run_optimizer = true;
-        auto t_opt_start = std::chrono::steady_clock::now();
-        if (run_optimizer && isOptimizerInitialized())
-        {
-            // Set control points from initial trajectory
-            poly_traj::Trajectory initTraj = globalMJO.getTraj();
-            Eigen::MatrixXd cps = globalMJO.getInitConstrainPoints(poly_traj_opt_->get_cps_num_prePiece_());
-            poly_traj_opt_->setControlPoints(cps);
-
-            // Prepare optimization inputs
-            int PN = initTraj.getPieceNum();
-            Eigen::MatrixXd all_pos = initTraj.getPositions();
-            Eigen::MatrixXd optInnerPts = all_pos.block(0, 1, 3, PN - 1);
-
-            // Run L-BFGS optimization (single shot, no replan)
-            Eigen::MatrixXd optimal_points;
-            bool use_formation = true;
-            bool opt_success = poly_traj_opt_->OptimizeTrajectory_lbfgs(
-                headState, tailState, optInnerPts, initTraj.getDurations(),
-                optimal_points, use_formation);
-
-            if (opt_success)
-            {
-                // Set optimized trajectory as local trajectory
-                poly_traj::Trajectory optTraj = poly_traj_opt_->getMinJerkOptPtr()->getTraj();
-                double start_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
-                traj_.setLocalTraj(optTraj, start_time, traj_.local_traj.drone_id);
-
-                log_manager_->infof("L-BFGS optimization SUCCESS: duration=%.3f, max_vel=%.3f",
-                    optTraj.getTotalDuration(), optTraj.getMaxVelRate());
-
-                // Control-point visualisation removed. For km-scale missions
-                // the CP count (≈ pieces × cps_num_prePiece) easily hits 10k,
-                // which stalls RViz. Inner points (inner_pts_opt) carry the
-                // same optimisation information and are orders of magnitude
-                // fewer, so they cover the debugging need.
-
-                // Terrain collision is now handled implicitly by the SDF
-                // penalty in the optimizer (phase 5). No post-check needed.
-            }
-            else
-            {
-                log_manager_->errorf("L-BFGS optimization failed");
-                return false;
-            }
-        }
-        else
-        {
+        // Stage 2 = trajectory optimization. The optimizer owns the MINCO
+        // initial-trajectory build + L-BFGS; we only pass the front-end path
+        // and store the results. Swap optimizeFromPath() to replace the backend.
+        if (!isOptimizerInitialized()) {
             log_manager_->errorf("Optimizer not initialized");
             return false;
         }
 
+        auto t_opt_start = std::chrono::steady_clock::now();
+
+        double global_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
+        poly_traj::Trajectory global_traj, local_traj;
+        bool opt_success = poly_traj_opt_->optimizeFromPath(
+            clean_path, start_pos, start_vel, start_acc, waypoints, max_vel_,
+            global_traj, local_traj);
+        if (!opt_success) {
+            log_manager_->errorf("Trajectory optimization failed");
+            return false;
+        }
+
+        // Local traj start_time is the trajectory-following reference; stamp it
+        // after optimization (matches pre-refactor behavior).
+        double local_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
+        traj_.setGlobalTraj(global_traj, global_time);
+        traj_.setLocalTraj(local_traj, local_time, traj_.local_traj.drone_id);
+        simple_path_ = full_route;
+
         auto t_opt_end = std::chrono::steady_clock::now();
-        log_manager_->infof("[TIMING] L-BFGS optimization: %.1f ms",
-            std::chrono::duration<double, std::milli>(t_opt_end - t_opt_start).count());
+        log_manager_->infof("[TIMING] trajectory optimization: %.1f ms, duration=%.3f max_vel=%.3f",
+            std::chrono::duration<double, std::milli>(t_opt_end - t_opt_start).count(),
+            local_traj.getTotalDuration(), local_traj.getMaxVelRate());
 
         return true;
 }
