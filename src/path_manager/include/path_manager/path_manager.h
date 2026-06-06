@@ -3,7 +3,6 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include "path_planner/sdf/sdf_manager.h"
-#include "path_planner/sdf/sdf_query_adapter.h"
 #include "path_planner/dyn_a_star.h"
 #include "path_optimizer/poly_traj_optimizer.h"
 #include "path_optimizer/plan_container.hpp"
@@ -186,30 +185,6 @@ namespace path_manager
     size_t numRiskZones() const { return risk_zones_.size(); }
 
   private:
-    // Helper functions for outer/inner line calculation
-    std::vector<Eigen::Vector3d> adjustWaypointsForFormation(
-        const std::vector<Eigen::Vector3d>& waypoints,
-        const Eigen::Vector3d& start_pos);
-
-    // Separate logic for line formations (no outer/inner line needed)
-    std::vector<Eigen::Vector3d> adjustWaypointsForLineFormation(
-        const std::vector<Eigen::Vector3d>& waypoints,
-        const Eigen::Vector3d& start_pos);
-
-    // Logic for other formations (outer/inner line with curvature)
-    std::vector<Eigen::Vector3d> adjustWaypointsWithCurvature(
-        const std::vector<Eigen::Vector3d>& waypoints,
-        const Eigen::Vector3d& start_pos);
-
-    double computePathCurvature(const Eigen::Vector3d& p1,
-                               const Eigen::Vector3d& p2,
-                               const Eigen::Vector3d& p3);
-
-    Eigen::Vector3d computeLateralOffset(const Eigen::Vector3d& prev_point,
-                                        const Eigen::Vector3d& curr_point,
-                                        const Eigen::Vector3d& next_point,
-                                        double offset_distance);
-
     std::shared_ptr<rclcpp::Node> node_;
     std::vector<Eigen::Vector3d> simple_path_;
     std::vector<Obstacle> obstacle_centers_;
@@ -315,7 +290,6 @@ namespace path_manager
     bool enable_debug_logs_;
 
     // Formation information for path adjustment
-    int current_drone_id_;
     std::string current_formation_type_;
     std::vector<Eigen::Vector3d> current_formation_pattern_;
 

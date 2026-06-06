@@ -89,20 +89,6 @@ double PathSearcher::getDiagHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i
     return h;
 }
 
-double PathSearcher::getManhHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
-{
-    double dx = abs(i1(0) - i2(0));
-    double dy = abs(i1(1) - i2(1));
-    double dz = abs(i1(2) - i2(2));
-    return dx + dy + dz;
-}
-
-double PathSearcher::getEuclHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2)
-{
-    return (i2 - i1).cast<double>().norm();
-}
-
-
 vector<int> PathSearcher::retrievePath(int current_flat)
 {
     vector<int> path;
@@ -965,15 +951,9 @@ double PathSearcher::coarseCostToGo(const Eigen::Vector3d &world) const
 namespace {
 constexpr float kFMin = 1e-3f;          // blocked-cell speed (never 0)
 
-// ESDF speed-map smoothing (FM2* approximation quality). Free-space
-// speed is scaled by clamp(d_obstacle / d0, floor, 1) so the speed map
-// is spatially continuous (reference FM2's first-wave benefit, via the
-// ESDF we already have). d0 is auto-derived from grid resolution — no
-// tuning knob. floor keeps F > 0 next to hard walls (Eikonal safety).
-// DISABLED (2026-05-19): set huge so d/d0 -> prox saturates to 1 and
-// the modulation is inert. Measurement showed it did not reduce the
-// FM2*-vs-FM2 gap and pushed paths to excessive altitude (z 34m -> 43m
-// on the sdf2 diagonal mission). Code kept for easy re-enable.
+// ESDF speed-map smoothing: scale free-space speed by clamp(d/d0, floor, 1)
+// for a continuous speed map. DISABLED (kEsdfSmoothCells huge → inert): it
+// didn't help and pushed paths too high. Kept for easy re-enable.
 static constexpr double kEsdfSmoothCells = 1e9;
 static constexpr double kProxFloor       = 0.05;
 }

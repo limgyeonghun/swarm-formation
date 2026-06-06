@@ -185,9 +185,7 @@ namespace ego_planner
                           poly_traj::Trajectory &out_global,
                           poly_traj::Trajectory &out_local);
 
-    void showFormationInformation(bool is_show, Eigen::Vector3d pos);
     void setDesiredFormation(int type);
-    bool getFormationPos(std::vector<Eigen::Vector3d> &swarm_graph_pos, Eigen::Vector3d pos);
 
   private:
     static double costFunctionCallback(void *func_data, const double *x, double *grad, const int n);

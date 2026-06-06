@@ -122,7 +122,6 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
 
     FSM_EXEC_STATE exec_state_;
-    int continously_called_times_;
     bool have_target_;
     bool have_new_target_;
     bool have_local_traj_;
@@ -158,10 +157,6 @@ private:
     std::string current_mission_id_;    // Current mission being executed
     std::string next_mission_id_;       // Next mission to execute
     bool is_final_mission_;             // True if no more missions after current
-
-
-    // Swarm position tracking for formation management
-    std::map<int, Eigen::Vector3d> swarm_positions_;  // drone_id -> current position
 
     std::unique_ptr<swarm_formation::LogManager> log_manager_;
 };

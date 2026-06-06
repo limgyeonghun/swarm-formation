@@ -8,7 +8,6 @@ namespace path_manager
           max_vel_(-1.0),
           max_acc_(-1.0),
           is_optimizer_initialized_(false),
-          current_drone_id_(-1),
           current_formation_type_("")
     {
         log_manager_ = std::make_shared<swarm_formation::LogManager>(
@@ -51,20 +50,9 @@ namespace path_manager
         node_->get_parameter("manager/virtual_ceil_height", virtual_ceil_height_);
 
         // ESDF cache resolution:
-        //   manager/world           : map name (e.g. "sample", "dokdo"). The
-        //                             RViz MapSelector pushes this to every
-        //                             replan_fsm_* node when you click Load
-        //                             Map, so the typical workflow is "pick
-        //                             the map first, start path_manager after".
-        //                             If never set, falls back to "dokdo".
-        //   manager/esdf_dir        : directory the .esdf is read from / written
-        //                             to. Resolved against the process CWD,
-        //                             which is /ws under run_docker.sh.
-        //   manager/{save,load}_terrain_esdf :
-        //                             optional explicit overrides. Non-empty
-        //                             values win over the world-derived path,
-        //                             which is useful when you want to point
-        //                             at a hand-built cache.
+        //   manager/world  : map name (default "dokdo"); derives the .esdf path.
+        //   manager/esdf_dir : .esdf read/write dir (relative to process CWD).
+        //   manager/{save,load}_terrain_esdf : explicit path overrides (win over world).
         node_->declare_parameter("manager/world", std::string("dokdo"));
         node_->declare_parameter("manager/esdf_dir", std::string("src/mmp_terrain/data"));
         node_->declare_parameter("manager/save_terrain_esdf", std::string());
@@ -311,21 +299,6 @@ namespace path_manager
             all_points.push_back(wp);
         }
 
-        // === STEP 2 preamble: build SDF-based auxiliary query adapter. ===
-        // Kept for logging/debug of obstacle_centers_; A* uses sdf_manager_
-        // directly via searcher_.setSDF().
-        // SDF-based collision query. Risk zones stay separate.
-        std::vector<path_planner::sdf::RiskZoneLite> sdf_risk_zones;
-        sdf_risk_zones.reserve(risk_zones_.size());
-        for (const auto &tz : risk_zones_) {
-            sdf_risk_zones.push_back({tz.center, tz.reach, tz.peak});
-        }
-        path_planner::sdf::SDFQueryAdapter map_adapter;
-        map_adapter.sdf = &sdf_manager_;
-        map_adapter.risk_zones = sdf_risk_zones.empty() ? nullptr : &sdf_risk_zones;
-        map_adapter.safety_margin = obstacle_clearance_;
-        map_adapter.risk_alpha = risk_weight_;
-
         // Compute map bounds from waypoints
         map_lower_bound_ = start_pos;
         map_upper_bound_ = start_pos;
@@ -504,13 +477,6 @@ namespace path_manager
             esdf_occ_pub_->publish(cubes);
         }
 
-        // Debug: check obstacle query at known obstacle positions
-        for (const auto &obs : obstacle_centers_) {
-            int q = map_adapter.query(obs.center);
-            log_manager_->infof("Obstacle at (%.2f,%.2f,%.2f): query=%d (shape=%d, param1=%.2f)",
-                obs.center.x(), obs.center.y(), obs.center.z(), q,
-                (int)obs.shape, obs.param1);
-        }
 
         // === STEP 2~3: front-end search + densification ===
         std::vector<Eigen::Vector3d> full_route, clean_path;
@@ -722,24 +688,9 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
         }
 
         // === STEP 3: Corner-adaptive densification of the A* shortcut. ===
-        // A single uniform spacing cannot satisfy both requirements at
-        // once: small spacing keeps the trajectory glued to the A* polyline
-        // (stiff), large spacing lets MINCO's 5th-order polynomials
-        // overshoot at direction changes (loops).  We split the spacing
-        // into two regimes based on how sharp each shortcut vertex is:
-        //
-        //   * near a sharp corner → dense (length_per_piece_) so a bunch
-        //     of small piece-boundary kinks absorb the direction change
-        //     without letting the polynomial curl back on itself;
-        //   * in long straights    → coarse (length_per_piece_ × k) so
-        //     L-BFGS has big, loosely-linked pieces to reshape freely
-        //     around terrain / risks.
-        //
-        // Concretely, each shortcut segment is split by linear
-        // interpolation, with the step chosen per position:
-        //   step(α) = dense   if α is within `corner_band` of either end
-        //                       AND an actual corner is there,
-        //           = coarse  otherwise.
+        // Two spacing regimes: dense near sharp corners (small kinks absorb the
+        // turn so the 5th-order MINCO polynomial can't loop), coarse on long
+        // straights (big loosely-linked pieces L-BFGS can reshape freely).
         const double dense_step  = std::max(0.5, length_per_piece_);
         const double coarse_step = std::max(dense_step, length_per_piece_ * 4.0);
         const double corner_band = 6.0 * dense_step;   // m around each corner
@@ -865,7 +816,6 @@ bool PathManager::isMapReady(const Eigen::Vector3d& /*start_pos*/) const {
 
 void PathManager::setFormationInfo(int drone_id, const std::string& formation_type,
                                    const std::vector<Eigen::Vector3d>& formation_pattern) {
-    current_drone_id_ = drone_id;
     current_formation_type_ = formation_type;
     current_formation_pattern_ = formation_pattern;
 
@@ -1047,216 +997,6 @@ void PathManager::publishDynamicObstacles()
         arr.markers.push_back(m);
     }
     dyn_obstacle_pub_->publish(arr);
-}
-
-double PathManager::computePathCurvature(const Eigen::Vector3d& p1,
-                                        const Eigen::Vector3d& p2,
-                                        const Eigen::Vector3d& p3) {
-    // Compute curvature using three consecutive points
-    // κ = 2 * area(triangle) / (|p1-p2| * |p2-p3| * |p3-p1|)
-
-    Eigen::Vector3d v1 = p2 - p1;
-    Eigen::Vector3d v2 = p3 - p2;
-
-    double len1 = v1.norm();
-    double len2 = v2.norm();
-
-    if (len1 < 1e-6 || len2 < 1e-6) {
-        return 0.0;  // Straight line or degenerate case
-    }
-
-    // Cross product gives twice the area of triangle
-    Eigen::Vector3d cross = v1.cross(v2);
-    double area = cross.norm() / 2.0;
-
-    double len3 = (p3 - p1).norm();
-
-    if (len3 < 1e-6) {
-        return 0.0;
-    }
-
-    // Curvature (only magnitude, sign determined separately)
-    double curvature = 2.0 * area / (len1 * len2 * len3);
-
-    return curvature;
-}
-
-Eigen::Vector3d PathManager::computeLateralOffset(const Eigen::Vector3d& prev_point,
-                                                  const Eigen::Vector3d& curr_point,
-                                                  const Eigen::Vector3d& next_point,
-                                                  double offset_distance) {
-    // Compute the direction vectors
-    Eigen::Vector3d v1 = curr_point - prev_point;
-    Eigen::Vector3d v2 = next_point - curr_point;
-
-    if (v1.norm() < 1e-6 || v2.norm() < 1e-6) {
-        return curr_point;  // No offset for degenerate case
-    }
-
-    // Normalize
-    v1.normalize();
-    v2.normalize();
-
-    // Compute the average tangent direction
-    Eigen::Vector3d tangent = (v1 + v2).normalized();
-
-    // 3D: Use cross product with world up vector
-    Eigen::Vector3d up(0.0, 0.0, 1.0);
-    Eigen::Vector3d normal = tangent.cross(up);
-
-    // Handle case where tangent is parallel to up vector
-    if (normal.norm() < 1e-6) {
-        // Use alternative perpendicular vector
-        Eigen::Vector3d alt_up(0.0, 1.0, 0.0);
-        normal = tangent.cross(alt_up);
-    }
-    normal.normalize();
-
-    // Apply offset: positive offset_distance means move to the right (outer line for CCW turn)
-    Eigen::Vector3d offset_point = curr_point + normal * offset_distance;
-
-    return offset_point;
-}
-
-std::vector<Eigen::Vector3d> PathManager::adjustWaypointsForFormation(
-    const std::vector<Eigen::Vector3d>& waypoints,
-    const Eigen::Vector3d& start_pos) {
-
-    // If no formation info set, return original waypoints
-    if (current_drone_id_ < 0 || current_formation_pattern_.empty()) {
-        RCLCPP_WARN(node_->get_logger(), "No formation info set, using original waypoints");
-        return waypoints;
-    }
-
-    // Check for NONE mode - skip all formation adjustments
-    bool is_none_mode = (current_formation_type_ == "none" || current_formation_type_ == "NONE");
-    if (is_none_mode) {
-        RCLCPP_INFO(node_->get_logger(),
-                   "NONE mode found: returning original waypoints without any formation adjustments");
-        return waypoints;
-    }
-
-    // Check if this is a line formation
-    bool is_line_formation = (current_formation_type_.find("line") != std::string::npos);
-
-    if (is_line_formation) {
-        RCLCPP_INFO(node_->get_logger(),
-                   "Line formation found: using simple offset without outer/inner line");
-        return adjustWaypointsForLineFormation(waypoints, start_pos);
-    } else {
-        RCLCPP_INFO(node_->get_logger(),
-                   "Non-line formation (%s): using outer/inner line calculation",
-                   current_formation_type_.c_str());
-        return adjustWaypointsWithCurvature(waypoints, start_pos);
-    }
-}
-
-std::vector<Eigen::Vector3d> PathManager::adjustWaypointsForLineFormation(
-    const std::vector<Eigen::Vector3d>& waypoints,
-    const Eigen::Vector3d& start_pos) {
-
-    // For line formations, waypoints already have offsets applied by FSM
-    // Line formation is designed to be parallel to travel direction
-    // No additional adjustment needed - just return original waypoints
-
-    Eigen::Vector3d my_formation_offset = current_formation_pattern_[current_drone_id_];
-
-    RCLCPP_INFO(node_->get_logger(),
-                "Line formation: drone %d, formation offset (%.3f, %.3f, %.3f) - using original waypoints",
-                current_drone_id_,
-                my_formation_offset.x(), my_formation_offset.y(), my_formation_offset.z());
-
-    RCLCPP_INFO(node_->get_logger(),
-                "Line formation: returning %zu original waypoints without modification",
-                waypoints.size());
-
-    // Simply return the original waypoints
-    return waypoints;
-}
-
-std::vector<Eigen::Vector3d> PathManager::adjustWaypointsWithCurvature(
-    const std::vector<Eigen::Vector3d>& waypoints,
-    const Eigen::Vector3d& start_pos) {
-
-    // For non-line formations: apply outer/inner line calculation with curvature
-
-    Eigen::Vector3d my_formation_offset = current_formation_pattern_[current_drone_id_];
-
-    // Use Y component as lateral offset (perpendicular to path)
-    double lateral_offset = my_formation_offset.y();
-
-    RCLCPP_INFO(node_->get_logger(),
-                "Adjusting waypoints for drone %d with lateral offset %.3fm (formation Y: %.3f)",
-                current_drone_id_, lateral_offset, my_formation_offset.y());
-
-    std::vector<Eigen::Vector3d> adjusted_waypoints;
-    adjusted_waypoints.reserve(waypoints.size());
-
-    // Add start position
-    std::vector<Eigen::Vector3d> all_points;
-    all_points.push_back(start_pos);
-    all_points.insert(all_points.end(), waypoints.begin(), waypoints.end());
-
-    // For each waypoint, apply lateral offset based on path curvature
-    for (size_t i = 0; i < all_points.size(); ++i) {
-        Eigen::Vector3d adjusted_point;
-
-        if (i == 0) {
-            // First point: use next point for direction
-            if (all_points.size() > 1) {
-                // Use computeLateralOffset for proper 3D handling
-                // Create a virtual previous point by extrapolating backwards
-                Eigen::Vector3d dir = (all_points[1] - all_points[0]).normalized();
-                Eigen::Vector3d virtual_prev = all_points[0] - dir;
-                adjusted_point = computeLateralOffset(virtual_prev, all_points[0], all_points[1], lateral_offset);
-            } else {
-                adjusted_point = all_points[0];
-            }
-        } else if (i == all_points.size() - 1) {
-            // Last point: use previous point for direction
-            // Create a virtual next point by extrapolating forwards
-            Eigen::Vector3d dir = (all_points[i] - all_points[i-1]).normalized();
-            Eigen::Vector3d virtual_next = all_points[i] + dir;
-            adjusted_point = computeLateralOffset(all_points[i-1], all_points[i], virtual_next, lateral_offset);
-        } else {
-            // Middle points: compute curvature and adjust offset
-            double curvature = computePathCurvature(all_points[i-1], all_points[i], all_points[i+1]);
-
-            // For curved sections, adjust the offset distance
-            // Outer line (positive lateral_offset on CCW turn) needs larger radius
-            // Inner line (negative lateral_offset on CCW turn) needs smaller radius
-            double curvature_threshold = 0.01;  // Threshold to identify significant curves
-
-            if (std::abs(curvature) > curvature_threshold) {
-                // In curved section: apply additional offset based on curvature
-                // This creates the outer/inner line effect
-                double curvature_factor = 1.0 + curvature * 10.0;  // Scale factor
-                adjusted_point = computeLateralOffset(
-                    all_points[i-1], all_points[i], all_points[i+1],
-                    lateral_offset * curvature_factor);
-
-                RCLCPP_DEBUG(node_->get_logger(),
-                            "Waypoint %zu: curvature=%.4f, factor=%.3f",
-                            i, curvature, curvature_factor);
-            } else {
-                // Straight section: simple lateral offset
-                adjusted_point = computeLateralOffset(
-                    all_points[i-1], all_points[i], all_points[i+1],
-                    lateral_offset);
-            }
-        }
-
-        // Skip start position, only add waypoints
-        if (i > 0) {
-            adjusted_waypoints.push_back(adjusted_point);
-        }
-    }
-
-    RCLCPP_INFO(node_->get_logger(),
-                "Adjusted %zu waypoints with outer/inner line calculation",
-                adjusted_waypoints.size());
-
-    return adjusted_waypoints;
 }
 
 // Voxelize terrain + geometry obstacles into an occupancy grid and build ESDF.

@@ -175,8 +175,6 @@ private:
     swarm_formation::LogManager::Ptr log_manager_;
 
     double getDiagHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2);
-    double getManhHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2);
-    double getEuclHeu(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2);
     // Admissible anchor heuristic (pure Euclidean diag with tie breaker).
     inline double getHeuAnchor(const Eigen::Vector3i &i1, const Eigen::Vector3i &i2);
     // Inadmissible heuristic — same shape as anchor, scaled by (1 + alpha*risk(n))

@@ -9,7 +9,6 @@ namespace path_manager {
 ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
     : node_(node),
       exec_state_(FSM_EXEC_STATE::INIT),
-      continously_called_times_(0),
       have_target_(false),
       have_new_target_(false),
       have_local_traj_(false),
@@ -106,12 +105,6 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
     // Initialize PathManager in constructor to avoid nullptr access
     path_manager_ = std::make_shared<PathManager>(node_);
-
-    // Initialize swarm_positions_ map for all drones
-    for (int i = 0; i < num_drones_; ++i) {
-        swarm_positions_[i] = Eigen::Vector3d::Zero();  // Will be updated from broadcast
-    }
-    FSM_LOG_INFO("Initialized swarm_positions_ for %d drones", num_drones_);
 
     RCLCPP_INFO(node_->get_logger(), "PathManager initialized, waiting for trajectory command");
     log_manager_->infof("PathManager initialized, waiting for trajectory command");
@@ -443,7 +436,6 @@ bool ReplanFSM::planFromGlobalTraj(int trial_times) {
         // local_traj was already set by planGlobalTraj() — publish and go
         log_manager_->infof("[planFromGlobalTraj] Using pre-optimized trajectory (duration=%.3f)", local_traj->duration);
 
-        // Publish trajectory
         path_manager::msg::PolyTraj msg;
         polyTraj2ROSMsg(msg);
         optimized_path_pub_->publish(msg);
@@ -466,12 +458,6 @@ bool ReplanFSM::planFromGlobalTraj(int trial_times) {
 }
 
 void ReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, std::string pos_call) {
-    if (new_state == exec_state_) {
-        continously_called_times_++;
-    } else {
-        continously_called_times_ = 1;
-    }
-
     static std::string state_str[6] = {"INIT", "WAIT_POSITION", "GEN_NEW_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START"};
 
     // Throttle frequent state transitions
@@ -757,10 +743,8 @@ void ReplanFSM::trajectoryCommandCallback(const formation_msgs::msg::TrajectoryC
         return;
     }
 
-    // Update sequence number
     last_received_sequence_ = msg->sequence;
 
-    // Update mission tracking
     current_mission_id_ = msg->mission_id;
 
     // Update start position if this is the first command or if position changed significantly
@@ -786,13 +770,11 @@ void ReplanFSM::trajectoryCommandCallback(const formation_msgs::msg::TrajectoryC
                 msg->start_position.x, msg->start_position.y, msg->start_position.z,
                 msg->target_position.x, msg->target_position.y, msg->target_position.z);
 
-    // Extract waypoints
     std::vector<Eigen::Vector3d> waypoints;
     for (const auto& wp : msg->waypoints) {
         waypoints.emplace_back(wp.x, wp.y, wp.z);
     }
 
-    // Extract target position
     Eigen::Vector3d target_position(
         msg->target_position.x,
         msg->target_position.y,
@@ -806,14 +788,12 @@ void ReplanFSM::trajectoryCommandCallback(const formation_msgs::msg::TrajectoryC
         msg->formation_offset.z
     );
 
-    // Extract full formation pattern from message
     std::vector<Eigen::Vector3d> formation_pattern;
     formation_pattern.reserve(msg->formation_pattern.size());
     for (const auto& pt : msg->formation_pattern) {
         formation_pattern.emplace_back(pt.x, pt.y, pt.z);
     }
 
-    // Store formation pattern for use in formationTargetCallback
     current_formation_pattern_ = formation_pattern;
 
     // Update formation parameters (for compatibility with existing code)

@@ -101,24 +101,9 @@ namespace ego_planner
     auto t1 = node_->get_clock()->now();
     auto t2 = node_->get_clock()->now();
 
-    // L-BFGS parameter setup — GCOPTER-style global one-shot planning.
-    // Converge by relative cost delta only; no iteration cap, no gradient
-    // norm test. Large Hessian memory for long trajectories.
-    // L-BFGS parameters — Swarm-Formation reference scaled up for global
-    // planning. The reference values (mem_size 16, g_epsilon 0.1,
-    // max_iter 60) were tuned for local replan on ~20 variables; dev runs
-    // global plans with several hundred variables and more diverse cost
-    // landscapes, so we:
-    //   * raise mem_size so the Hessian approximation can actually capture
-    //     the curvature across that many variables (but not so high that
-    //     stale curvature info from early iterations gets mixed in and
-    //     breaks line-search — the GCOPTER-style 256 was too many and
-    //     caused -1005 line-search failures before);
-    //   * keep the gradient-norm stopping rule but loosen it a touch,
-    //     since with many variables the aggregate ||G|| never drops as
-    //     low as in the short local problem;
-    //   * raise max_iter accordingly so real convergence has room to
-    //     happen, with a hard cap to avoid runaway.
+    // L-BFGS params scaled up from the Swarm-Formation local-replan reference
+    // (mem_size 16 / max_iter 60) for global planning with hundreds of vars.
+    // mem_size capped at 64: 256 caused -1005 line-search failures.
     lbfgs::lbfgs_parameter_t lbfgs_params;
     lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
     lbfgs_params.mem_size       = 64;       // ref 16 → 64 (global scale)
@@ -200,8 +185,6 @@ namespace ego_planner
                  dbg_cost_formation_, wei_formation_, debug_similarity_);
     }
     optimal_points = cps_.points;
-
-    showFormationInformation(false, start_pos);
 
     if (occ)
       return false;
@@ -905,75 +888,6 @@ namespace ego_planner
       if (i != N)
       {
         gdp.col(i) += wei_sqrvar_ * (-4.0 * (dsqrs(i) - dsqrmean) / N * dps.col(i));
-      }
-    }
-  }
-
-  bool PolyTrajOptimizer::getFormationPos(vector<Eigen::Vector3d> &swarm_graph_pos, Eigen::Vector3d pos)
-  {
-    if (swarm_trajs_->size() < formation_size_ || !use_formation_)
-    {
-      return false;
-    }
-    else
-    {
-      // Ensure swarm_graph_pos has the correct size
-      if (static_cast<int>(swarm_graph_pos.size()) != formation_size_) {
-        RCLCPP_WARN(node_->get_logger(), 
-                    "Resizing swarm_graph_pos from %zu to %d", 
-                    swarm_graph_pos.size(), formation_size_);
-        swarm_graph_pos.resize(formation_size_, Eigen::Vector3d::Zero());
-      }
-      
-      // Bounds check for drone_id_
-      if (drone_id_ < 0 || drone_id_ >= formation_size_) {
-        RCLCPP_ERROR(node_->get_logger(), "drone_id_ %d out of bounds (formation_size: %d)", 
-                     drone_id_, formation_size_);
-        return false;
-      }
-      
-      double pt_time = t_now_;
-      swarm_graph_pos[drone_id_] = pos;
-      for (size_t id = 0; id < swarm_trajs_->size(); id++)
-      {
-        if (swarm_trajs_->at(id).drone_id < 0 || swarm_trajs_->at(id).drone_id == drone_id_)
-          continue;
-        double traj_i_satrt_time = swarm_trajs_->at(id).start_time;
-        Eigen::Vector3d swarm_p, swarm_v;
-        if (pt_time < traj_i_satrt_time + swarm_trajs_->at(id).duration)
-        {
-          swarm_p = swarm_trajs_->at(id).traj.getPos(pt_time - traj_i_satrt_time);
-          swarm_v = swarm_trajs_->at(id).traj.getVel(pt_time - traj_i_satrt_time);
-        }
-        else
-        {
-          double exceed_time = pt_time - (traj_i_satrt_time + swarm_trajs_->at(id).duration);
-          swarm_v = swarm_trajs_->at(id).traj.getVel(swarm_trajs_->at(id).duration);
-          swarm_p = swarm_trajs_->at(id).traj.getPos(swarm_trajs_->at(id).duration) +
-                    exceed_time * swarm_v;
-        }
-        swarm_graph_pos[id] = swarm_p;
-      }
-      return true;
-    }
-  }
-
-  void PolyTrajOptimizer::showFormationInformation(bool is_show, Eigen::Vector3d pos)
-  {
-    if (!is_show)
-      return;
-
-    if (swarm_trajs_->size() < formation_size_ || drone_id_ != 0 || !use_formation_)
-      return;
-    else
-    {
-      vector<Eigen::Vector3d> swarm_graph_pos(formation_size_);
-      if (getFormationPos(swarm_graph_pos, pos)) {
-        if (!swarm_graph_->updateGraph(swarm_graph_pos)) {
-          RCLCPP_DEBUG(node_->get_logger(), "Failed to update swarm graph in showFormationInformation");
-        }
-      } else {
-        RCLCPP_DEBUG(node_->get_logger(), "Failed to get formation positions in showFormationInformation");
       }
     }
   }
