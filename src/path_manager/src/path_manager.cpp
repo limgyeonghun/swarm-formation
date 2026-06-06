@@ -1026,31 +1026,6 @@ namespace path_manager
         return true;
     }
 
-bool PathManager::checkCollision(int drone_id)
-{
-    if (traj_.local_traj.start_time < 1e9) // It means my first planning has not started
-      return false;
-
-    double my_traj_start_time = traj_.local_traj.start_time;
-    double other_traj_start_time = traj_.swarm_traj[drone_id].start_time;
-
-    double t_start = std::max(my_traj_start_time, other_traj_start_time);
-    double t_end = std::min(my_traj_start_time + traj_.local_traj.duration * 2 / 3,
-                            other_traj_start_time + traj_.swarm_traj[drone_id].duration);
-
-    for (double t = t_start; t < t_end; t += 0.03)
-    {
-      if ((traj_.local_traj.traj.getPos(t - my_traj_start_time) -
-           traj_.swarm_traj[drone_id].traj.getPos(t - other_traj_start_time))
-              .norm() < poly_traj_opt_->getSwarmClearance())
-      {
-        return true;
-      }
-    }
-
-    return false;
-}
-
 bool PathManager::isMapReady(const Eigen::Vector3d& /*start_pos*/) const {
     // Phase 4: obstacles are always loaded from yaml, so map is always ready.
     return true;

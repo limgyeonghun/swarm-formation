@@ -136,16 +136,6 @@ ReplanFSM::ReplanFSM(rclcpp::Node::SharedPtr node)
 
     optimized_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/trajectory", sensor_qos);
     global_path_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/global", sensor_qos);
-    broadcast_traj_pub_ = node_->create_publisher<path_manager::msg::PolyTraj>(topic_prefix + "/planning/broadcast_traj_send", sensor_qos);
-
-    // Swarm trajectory exchange: members publish broadcast_traj_send and
-    // subscribe broadcast_traj_recv. Single-drone is a self-loopback.
-    rclcpp::SubscriptionOptions broadcast_options;
-    broadcast_options.callback_group = subscription_callback_group_;
-    broadcast_traj_sub_ = node_->create_subscription<path_manager::msg::PolyTraj>(
-        topic_prefix + "/planning/broadcast_traj_recv", sensor_qos,
-        std::bind(&ReplanFSM::recvBroadcastPolyTrajCallback, this, std::placeholders::_1),
-        broadcast_options);
 
     // Kept for future swarm/formation use: an external multi-drone node may
     // publish /formation_target. Single-PC path triggers planning directly via
@@ -377,105 +367,6 @@ void ReplanFSM::computeAndPublishPaths() {
     }
 }
 
-
-void ReplanFSM::recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg) {
-    auto callback_start = std::chrono::high_resolution_clock::now();
-    FSM_LOG_DEBUG("[CALLBACK START] recvBroadcastPolyTrajCallback");
-
-    if (!path_manager_) {
-        RCLCPP_ERROR(node_->get_logger(), "PathManager is not initialized!");
-        log_manager_->errorf("PathManager is not initialized!");
-        return;
-    }
-    if (msg->drone_id < 0 || msg->drone_id >= num_drones_) {
-        RCLCPP_ERROR(node_->get_logger(),
-                    "Invalid drone_id: %d (valid range: 0-%d)",
-                    msg->drone_id, num_drones_-1);
-        log_manager_->errorf("Invalid drone_id: %d (valid range: 0-%d)",
-                            msg->drone_id, num_drones_-1);
-        return;
-    }
-    if (msg->order != 5) {
-        RCLCPP_ERROR(node_->get_logger(), "Only support trajectory order equals 5 now!");
-        log_manager_->errorf("Only support trajectory order equals 5 now!");
-        return;
-    }
-    if (msg->duration.size() * (msg->order + 1) != msg->coef_x.size()) {
-        RCLCPP_ERROR(node_->get_logger(), "WRONG trajectory parameters.");
-        log_manager_->errorf("WRONG trajectory parameters.");
-        return;
-    }
-    rclcpp::Time msg_time(msg->start_time);
-    double time_diff = (rclcpp::Clock(RCL_ROS_TIME).now() - msg_time).seconds();
-    if (std::abs(time_diff) > 0.25) {
-        // RCLCPP_WARN(node_->get_logger(), "Time stamp diff: Local - Remote Agent %d = %fs",
-        //            msg->drone_id, time_diff);
-        // log_manager_->warnf("Time stamp diff: Local - Remote Agent %d = %fs",
-        //            msg->drone_id, time_diff);
-        return;
-    }
-
-    const size_t recv_id = static_cast<size_t>(msg->drone_id);
-    if (static_cast<int>(recv_id) == drone_id_) {
-        return;
-    }
-
-    /* Fill up the buffer */
-    if (path_manager_->traj_.swarm_traj.size() <= recv_id) {
-        for (size_t i = path_manager_->traj_.swarm_traj.size(); i <= recv_id; i++) {
-            LocalTrajData blank;
-            blank.drone_id = -1;
-            path_manager_->traj_.swarm_traj.push_back(blank);
-        }
-    }
-
-    /* Store data */
-    path_manager_->traj_.swarm_traj[recv_id].drone_id = recv_id;
-    path_manager_->traj_.swarm_traj[recv_id].traj_id = msg->traj_id;
-    path_manager_->traj_.swarm_traj[recv_id].start_time = msg_time.seconds();
-
-    int piece_nums = msg->duration.size();
-    std::vector<double> dura(piece_nums);
-    std::vector<poly_traj::CoefficientMat> cMats(piece_nums);
-    for (int i = 0; i < piece_nums; ++i) {
-        int i6 = i * 6;
-        cMats[i].row(0) << msg->coef_x[i6 + 0], msg->coef_x[i6 + 1], msg->coef_x[i6 + 2],
-                           msg->coef_x[i6 + 3], msg->coef_x[i6 + 4], msg->coef_x[i6 + 5];
-        cMats[i].row(1) << msg->coef_y[i6 + 0], msg->coef_y[i6 + 1], msg->coef_y[i6 + 2],
-                           msg->coef_y[i6 + 3], msg->coef_y[i6 + 4], msg->coef_y[i6 + 5];
-        cMats[i].row(2) << msg->coef_z[i6 + 0], msg->coef_z[i6 + 1], msg->coef_z[i6 + 2],
-                           msg->coef_z[i6 + 3], msg->coef_z[i6 + 4], msg->coef_z[i6 + 5];
-        dura[i] = msg->duration[i];
-    }
-
-    poly_traj::Trajectory trajectory(dura, cMats);
-    path_manager_->traj_.swarm_traj[recv_id].traj = trajectory;
-    path_manager_->traj_.swarm_traj[recv_id].duration = trajectory.getTotalDuration();
-    path_manager_->traj_.swarm_traj[recv_id].start_pos = trajectory.getPos(0.0);
-
-    swarm_positions_[recv_id] = trajectory.getPos(0.0);
-
-    if (path_manager_->checkCollision(recv_id)) {
-        changeFSMExecState(SEQUENTIAL_START, "SWARM_CHECK");
-    }
-
-    /* Check if receive agents have lower drone id */
-    if (!have_recv_pre_agent_) {
-        if (static_cast<int>(path_manager_->traj_.swarm_traj.size()) >= drone_id_) {
-            for (int i = 0; i < drone_id_; ++i) {
-                if (path_manager_->traj_.swarm_traj[i].drone_id != i) {
-                    break;
-                }
-                have_recv_pre_agent_ = true;
-            }
-        }
-    }
-
-    auto callback_end = std::chrono::high_resolution_clock::now();
-    auto callback_duration = std::chrono::duration_cast<std::chrono::microseconds>(callback_end - callback_start).count();
-    FSM_LOG_DEBUG("[CALLBACK END] recvBroadcastPolyTrajCallback (took %ld us)", callback_duration);
-}
-
 void ReplanFSM::polyTraj2ROSMsg(path_manager::msg::PolyTraj &msg)
 {
     if (!path_manager_) {
@@ -566,7 +457,6 @@ bool ReplanFSM::planFromGlobalTraj(int trial_times) {
         path_manager::msg::PolyTraj msg;
         polyTraj2ROSMsg(msg);
         optimized_path_pub_->publish(msg);
-        broadcast_traj_pub_->publish(msg);
 
         have_local_traj_ = true;
         have_new_target_ = false;
@@ -852,7 +742,6 @@ bool ReplanFSM::callEmergencyStop(const Eigen::Vector3d& stop_pos) {
     path_manager::msg::PolyTraj msg;
     polyTraj2ROSMsg(msg);
     optimized_path_pub_->publish(msg);
-    broadcast_traj_pub_->publish(msg);
 
     return true;
 }

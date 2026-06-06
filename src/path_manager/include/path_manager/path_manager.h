@@ -132,7 +132,6 @@ namespace path_manager
     bool planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel,
                         const Eigen::Vector3d &start_acc, const std::vector<Eigen::Vector3d> &waypoints,
                         const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
-    bool checkCollision(int drone_id);
 
     void deliverTrajToOptimizer(void) {
         if (isOptimizerInitialized()) {

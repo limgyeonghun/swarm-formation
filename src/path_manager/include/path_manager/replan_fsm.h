@@ -71,7 +71,6 @@ public:
     
     void init();
     void computeAndPublishPaths();
-    void recvBroadcastPolyTrajCallback(const path_manager::msg::PolyTraj::SharedPtr msg);
     void formationTargetCallback(const path_manager::msg::FormationTarget::SharedPtr msg);
     void trajectoryCommandCallback(const formation_msgs::msg::TrajectoryCommand::SharedPtr msg);
     void terrainCallback(const grid_map_msgs::msg::GridMap::SharedPtr msg);
@@ -110,8 +109,6 @@ private:
 
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr optimized_path_pub_;
     rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr global_path_pub_;
-    rclcpp::Publisher<path_manager::msg::PolyTraj>::SharedPtr broadcast_traj_pub_;
-    rclcpp::Subscription<path_manager::msg::PolyTraj>::SharedPtr broadcast_traj_sub_;
     rclcpp::Subscription<path_manager::msg::FormationTarget>::SharedPtr formation_target_sub_;
     rclcpp::Subscription<formation_msgs::msg::TrajectoryCommand>::SharedPtr trajectory_cmd_sub_;
     rclcpp::Subscription<grid_map_msgs::msg::GridMap>::SharedPtr terrain_sub_;
