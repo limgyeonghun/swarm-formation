@@ -273,6 +273,15 @@ namespace path_manager
     // bounding box given in world coords. Returns true on success.
     bool buildSDFForBounds(const Eigen::Vector3d &lo, const Eigen::Vector3d &hi);
 
+    // Stage 2 (trajectory optimization): MINCO initial trajectory + L-BFGS.
+    // Takes the front-end path; sets traj_ global/local. Returns true on success.
+    bool optimizeStage(std::vector<Eigen::Vector3d> &clean_path,
+                       const std::vector<Eigen::Vector3d> &full_route,
+                       const Eigen::Vector3d &start_pos,
+                       const Eigen::Vector3d &start_vel,
+                       const Eigen::Vector3d &start_acc,
+                       const std::vector<Eigen::Vector3d> &waypoints);
+
     ego_planner::PolyTrajOptimizer::Ptr poly_traj_opt_;
     bool is_optimizer_initialized_;
     Eigen::Vector3d current_start_pt_, current_target_pt_;
@@ -281,12 +290,7 @@ namespace path_manager
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr simple_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr rrt_path_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr shorten_path_pub_;
-    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr init_minco_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr esdf_occ_pub_;
-    // Inner points = MINCO piece boundaries; these are the variables L-BFGS
-    // actually moves. Publishing pre/post gives a visual diff of optimizer work.
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr inner_pts_init_pub_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr inner_pts_opt_pub_;
     // Dynamic obstacle visualization (one MarkerArray republished on every add/clear).
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr dyn_obstacle_pub_;
     // Terrain ESDF cache status string (RViz panel reads this).

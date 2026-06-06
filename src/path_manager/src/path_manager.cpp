@@ -174,14 +174,8 @@ namespace path_manager
             "/agent/debug/rrt_path", 10);
         shorten_path_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
             "/agent/debug/shorten_path", 10);
-        init_minco_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
-            "/agent/debug/init_minco_path", 10);
         esdf_occ_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
             "/agent/debug/esdf_occupied", 1);
-        inner_pts_init_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/agent/debug/inner_pts_init", 10);
-        inner_pts_opt_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-            "/agent/debug/inner_pts_opt", 10);
         // TRANSIENT_LOCAL so RViz, joining late, still gets the latest set.
         rclcpp::QoS dyn_qos(1);
         dyn_qos.reliability(rclcpp::ReliabilityPolicy::Reliable);
@@ -789,6 +783,24 @@ namespace path_manager
             return false;
         }
 
+        // === STEP 4~5: trajectory optimization (MINCO + L-BFGS) ===
+        bool opt_ok = optimizeStage(clean_path, full_route,
+                                    start_pos, start_vel, start_acc, waypoints);
+
+        auto t_total_end = std::chrono::steady_clock::now();
+        log_manager_->infof("[TIMING] === TOTAL planGlobalTraj: %.1f ms ===",
+            std::chrono::duration<double, std::milli>(t_total_end - t_total_start).count());
+
+        return opt_ok;
+    }
+
+bool PathManager::optimizeStage(std::vector<Eigen::Vector3d> &clean_path,
+                                const std::vector<Eigen::Vector3d> &full_route,
+                                const Eigen::Vector3d &start_pos,
+                                const Eigen::Vector3d &start_vel,
+                                const Eigen::Vector3d &start_acc,
+                                const std::vector<Eigen::Vector3d> &waypoints)
+{
         // === STEP 4: MINCO initial trajectory from clean_path ===
         // Swarm-Formation style: each shortcut vertex becomes one MINCO
         // piece boundary directly. clean_path was already densified so
@@ -842,35 +854,6 @@ namespace path_manager
             globalMJO.getTraj().getTotalDuration(),
             globalMJO.getTraj().getMaxVelRate());
 
-        // Publish the initial (pre-L-BFGS) MINCO trajectory as a dense green
-        // LINE_STRIP so the user can compare it to the optimized result.
-        if (init_minco_pub_) {
-            visualization_msgs::msg::Marker line;
-            line.header.frame_id = "map";
-            line.header.stamp = node_->get_clock()->now();
-            line.ns = "init_minco_path";
-            line.id = 0;
-            line.type = visualization_msgs::msg::Marker::LINE_STRIP;
-            line.action = visualization_msgs::msg::Marker::ADD;
-            line.pose.orientation.w = 1.0;
-            line.scale.x = 1.5;
-            line.color.r = 0.0f; line.color.g = 1.0f; line.color.b = 0.2f; line.color.a = 1.0f;
-            const auto &initTraj = globalMJO.getTraj();
-            const double dt = 0.1;
-            const double T = initTraj.getTotalDuration();
-            for (double t = 0.0; t < T; t += dt) {
-                Eigen::Vector3d p = initTraj.getPos(t);
-                geometry_msgs::msg::Point pt;
-                pt.x = p.x(); pt.y = p.y(); pt.z = p.z();
-                line.points.push_back(pt);
-            }
-            Eigen::Vector3d pe = initTraj.getPos(T);
-            geometry_msgs::msg::Point pte;
-            pte.x = pe.x(); pte.y = pe.y(); pte.z = pe.z();
-            line.points.push_back(pte);
-            init_minco_pub_->publish(line);
-        }
-
         auto t_minco_end = std::chrono::steady_clock::now();
         log_manager_->infof("[TIMING] MINCO trajectory generation: %.1f ms",
             std::chrono::duration<double, std::milli>(t_minco_end - t_minco_start).count());
@@ -890,37 +873,6 @@ namespace path_manager
             Eigen::MatrixXd all_pos = initTraj.getPositions();
             Eigen::MatrixXd optInnerPts = all_pos.block(0, 1, 3, PN - 1);
 
-            // Publish initial inner points (orange spheres) — MINCO piece
-            // boundaries before L-BFGS starts.
-            if (inner_pts_init_pub_ && optInnerPts.cols() > 0) {
-                visualization_msgs::msg::MarkerArray arr;
-                const auto stamp = node_->get_clock()->now();
-                visualization_msgs::msg::Marker del;
-                del.action = visualization_msgs::msg::Marker::DELETEALL;
-                del.header.frame_id = "map";
-                del.header.stamp = stamp;
-                arr.markers.push_back(del);
-                for (int i = 0; i < optInnerPts.cols(); ++i) {
-                    visualization_msgs::msg::Marker s;
-                    s.header.frame_id = "map";
-                    s.header.stamp = stamp;
-                    s.ns = "inner_pts_init";
-                    s.id = i;
-                    s.type = visualization_msgs::msg::Marker::SPHERE;
-                    s.action = visualization_msgs::msg::Marker::ADD;
-                    s.pose.position.x = optInnerPts(0, i);
-                    s.pose.position.y = optInnerPts(1, i);
-                    s.pose.position.z = optInnerPts(2, i);
-                    s.pose.orientation.w = 1.0;
-                    s.scale.x = 2.5; s.scale.y = 2.5; s.scale.z = 2.5;
-                    s.color.r = 1.0f; s.color.g = 0.55f; s.color.b = 0.0f; s.color.a = 0.9f;
-                    arr.markers.push_back(s);
-                }
-                inner_pts_init_pub_->publish(arr);
-                log_manager_->infof("Published %d initial inner points (orange)",
-                                    (int)optInnerPts.cols());
-            }
-
             // Run L-BFGS optimization (single shot, no replan)
             Eigen::MatrixXd optimal_points;
             bool use_formation = true;
@@ -937,62 +889,6 @@ namespace path_manager
 
                 log_manager_->infof("L-BFGS optimization SUCCESS: duration=%.3f, max_vel=%.3f",
                     optTraj.getTotalDuration(), optTraj.getMaxVelRate());
-
-                // Publish optimized inner points (yellow spheres with labels)
-                // — same piece boundaries after L-BFGS has moved them.
-                if (inner_pts_opt_pub_) {
-                    int PNo = optTraj.getPieceNum();
-                    Eigen::MatrixXd all_pos_opt = optTraj.getPositions();
-                    if (PNo >= 2) {
-                        Eigen::MatrixXd optInnerOpt = all_pos_opt.block(0, 1, 3, PNo - 1);
-                        visualization_msgs::msg::MarkerArray arr;
-                        const auto stamp = node_->get_clock()->now();
-                        visualization_msgs::msg::Marker del;
-                        del.action = visualization_msgs::msg::Marker::DELETEALL;
-                        del.header.frame_id = "map";
-                        del.header.stamp = stamp;
-                        arr.markers.push_back(del);
-                        for (int i = 0; i < optInnerOpt.cols(); ++i) {
-                            visualization_msgs::msg::Marker s;
-                            s.header.frame_id = "map";
-                            s.header.stamp = stamp;
-                            s.ns = "inner_pts_opt";
-                            s.id = i;
-                            s.type = visualization_msgs::msg::Marker::SPHERE;
-                            s.action = visualization_msgs::msg::Marker::ADD;
-                            s.pose.position.x = optInnerOpt(0, i);
-                            s.pose.position.y = optInnerOpt(1, i);
-                            s.pose.position.z = optInnerOpt(2, i);
-                            s.pose.orientation.w = 1.0;
-                            s.scale.x = 2.8; s.scale.y = 2.8; s.scale.z = 2.8;
-                            s.color.r = 1.0f; s.color.g = 1.0f; s.color.b = 0.0f; s.color.a = 1.0f;
-                            arr.markers.push_back(s);
-
-                            visualization_msgs::msg::Marker lbl;
-                            lbl.header.frame_id = "map";
-                            lbl.header.stamp = stamp;
-                            lbl.ns = "inner_pts_opt_label";
-                            lbl.id = i;
-                            lbl.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-                            lbl.action = visualization_msgs::msg::Marker::ADD;
-                            lbl.pose.position.x = optInnerOpt(0, i);
-                            lbl.pose.position.y = optInnerOpt(1, i);
-                            lbl.pose.position.z = optInnerOpt(2, i) + 0.9;
-                            lbl.pose.orientation.w = 1.0;
-                            lbl.scale.z = 0.5;
-                            lbl.color.r = 1.0f; lbl.color.g = 1.0f; lbl.color.b = 1.0f; lbl.color.a = 1.0f;
-                            lbl.text = "ip" + std::to_string(i);
-                            arr.markers.push_back(lbl);
-                        }
-                        inner_pts_opt_pub_->publish(arr);
-                        log_manager_->infof("Published %d optimized inner points (yellow)",
-                                            (int)optInnerOpt.cols());
-                        for (int i = 0; i < optInnerOpt.cols(); ++i) {
-                            log_manager_->infof("  IP[%d]: (%.2f, %.2f, %.2f)",
-                                i, optInnerOpt(0, i), optInnerOpt(1, i), optInnerOpt(2, i));
-                        }
-                    }
-                }
 
                 // Control-point visualisation removed. For km-scale missions
                 // the CP count (≈ pieces × cps_num_prePiece) easily hits 10k,
@@ -1019,12 +915,8 @@ namespace path_manager
         log_manager_->infof("[TIMING] L-BFGS optimization: %.1f ms",
             std::chrono::duration<double, std::milli>(t_opt_end - t_opt_start).count());
 
-        auto t_total_end = std::chrono::steady_clock::now();
-        log_manager_->infof("[TIMING] === TOTAL planGlobalTraj: %.1f ms ===",
-            std::chrono::duration<double, std::milli>(t_total_end - t_total_start).count());
-
         return true;
-    }
+}
 
 bool PathManager::isMapReady(const Eigen::Vector3d& /*start_pos*/) const {
     // Phase 4: obstacles are always loaded from yaml, so map is always ready.
