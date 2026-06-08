@@ -9,7 +9,10 @@
 #include "../../common/log_manager.hpp"
 #include <Eigen/Eigen>
 #include <vector>
+#include <map>
+#include <string>
 #include <chrono>
+#include <random>
 #include "path_manager/msg/poly_traj.hpp"
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <nav_msgs/msg/path.hpp>
@@ -172,7 +175,11 @@ namespace path_manager
     // Dynamic obstacle interface (RViz-driven). Patches are layered on top of
     // the static terrain ESDF; the next plan picks them up via min(static,dyn).
     // Returns patch id (>= 0) on success, -1 if SDF not built yet or out of map.
-    int  addDynamicSphere(const Eigen::Vector3d& center, double radius);
+    int  addDynamicSphere(const Eigen::Vector3d& center, double radius,
+                          const std::string& model = "");
+    // Axis-aligned box: collision (SDF kCube) == visual mesh bbox. size = full extents.
+    int  addDynamicBox(const Eigen::Vector3d& center, const Eigen::Vector3d& size,
+                       const std::string& model = "");
     void clearDynamicObstacles();
     size_t numDynamicObstacles() const { return sdf_manager_.numActiveObstacles(); }
 
@@ -190,6 +197,7 @@ namespace path_manager
     std::vector<Obstacle> obstacle_centers_;
     std::vector<RiskZone> risk_zones_;
     double risk_weight_;
+    double risk_barrier_{100.0};   // front-end finite "hard wall" inside zones
     double risk_smha_w_{2.0};
     std::string front_end_str_{"fm2"};
     int fm2_coarse_k_{4};
@@ -283,7 +291,27 @@ namespace path_manager
     // Tracks live patch ids so clearObstacles + visualization stay in sync.
     std::vector<int> dyn_patch_ids_;
     std::vector<Eigen::Vector3d> dyn_patch_centers_;
-    std::vector<double> dyn_patch_radii_;
+    std::vector<Eigen::Vector3d> dyn_patch_sizes_;   // full extents [m]: box=(sx,sy,sz), sphere=(2r,2r,2r)
+    std::vector<uint8_t> dyn_patch_is_box_;          // 1=box (collision==visual), 0=sphere
+    std::vector<std::string> dyn_patch_models_;      // visual mesh catalog key per patch
+    std::vector<double> dyn_patch_yaws_;             // per-spawn random yaw [rad] (visual only)
+    std::mt19937 yaw_rng_{std::random_device{}()};   // RNG for spawn orientations
+
+    // Dynamic obstacles requested before the SDF exists (e.g. no ESDF cache on a
+    // fresh run) are deferred here, then added once the SDF is built.
+    struct PendingObstacle {
+      bool is_box; Eigen::Vector3d center; Eigen::Vector3d size; double radius; std::string model;
+    };
+    std::vector<PendingObstacle> pending_obstacles_;
+    void flushPendingObstacles();
+    // Visual mesh catalog: model name -> mesh resource + rendered native size [m]
+    // (convention: mesh base at z=0, XY centered). Collision is independent (SDF).
+    struct ObstacleMeshInfo { std::string resource; Eigen::Vector3d native_size; };
+    std::map<std::string, ObstacleMeshInfo> mesh_catalog_;
+    const ObstacleMeshInfo& meshFor(const std::string& model) const;
+    // /viz/dynamic_obstacles rendering. obstacle_mesh_resource_ = default ("building").
+    std::string obstacle_mesh_resource_;
+    double obstacle_mesh_height_{60.0};   // fixed building height [m] (spheres only)
     void publishDynamicObstacles();
 
     std::shared_ptr<swarm_formation::LogManager> log_manager_;

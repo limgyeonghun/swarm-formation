@@ -30,7 +30,16 @@
     #   - S3 transit max_depth=1.6m (intentional, no detour available),
     #   - S5 real-sdf2: α=3 left 14m penetration; α=30 brings it to ~2.6m.
     #   α=100 makes max_depth=0 on sdf2 but pessimistic on S3 transit.
+    # Avoidance is handled by manager/risk_barrier (below); risk_weight now only
+    # breaks ties toward the least-moat crossing when forced to enter a zone.
     manager/risk_weight: 30.0
+
+    # Front-end finite "hard wall": a large constant added to the edge cost for
+    # any cell inside a non-exempt zone. Unlike risk_weight*moat (~0 at the
+    # boundary) it is a step across the whole reach, so the search detours fully
+    # around a zone when a route exists, else crosses at the least-moat point.
+    # Finite => the graph never disconnects. 0 disables.
+    manager/risk_barrier: 100.0
 
     # SMHA* (Aine et al., IJRR 2016) shared-g dual-queue A*, single
     # unified algorithm — NO mode switch. The inadmissible queue uses a

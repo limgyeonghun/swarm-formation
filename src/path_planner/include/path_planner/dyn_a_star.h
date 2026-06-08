@@ -89,6 +89,8 @@ private:
     double ground_height_ = -1.0;
     double virtual_ceil_height_ = -1.0;
     double risk_alpha_ = 1.0;
+    double risk_barrier_ = 0.0;   // finite "hard wall" K added inside non-exempt zones
+    std::vector<char> zone_no_barrier_;  // per-zone: 1 = exempt (contains start/goal)
     // SMHA* (Aine et al., IJRR 2016) shared-g, dual-heuristic A*, run
     // unconditionally for every query — NO binary mode switch.
     //
@@ -208,13 +210,16 @@ private:
         if (!risk_zones_ || risk_zones_->empty()) return 0.0;
         double survival = 1.0;
         for (const auto &tz : *risk_zones_) {
+            // Vertical-cylinder threat: moat decays with HORIZONTAL distance and
+            // is z-flat within |dz| < reach (the ceiling), so climbing buys no
+            // risk reduction; above the ceiling risk is 0.
+            const double dz = pos.z() - tz.center.z();
+            if (std::abs(dz) >= tz.reach) continue;
             const double dx = pos.x() - tz.center.x();
             if (std::abs(dx) >= tz.reach) continue;
             const double dy = pos.y() - tz.center.y();
             if (std::abs(dy) >= tz.reach) continue;
-            const double dz = pos.z() - tz.center.z();
-            if (std::abs(dz) >= tz.reach) continue;
-            const double d = std::sqrt(dx*dx + dy*dy + dz*dz);
+            const double d = std::sqrt(dx*dx + dy*dy);   // horizontal only
             if (d >= tz.reach) continue;
             const double u = 1.0 - d / tz.reach;
             const double moat = tz.peak * u * u;
@@ -224,8 +229,45 @@ private:
         return 1.0 - survival;
     }
 
+    // Mark zones containing the start or goal as barrier-exempt (must enter).
+    // Call once per search before evaluating risk costs.
+    void prepareBarrier(const Eigen::Vector3d &start, const Eigen::Vector3d &goal) {
+        zone_no_barrier_.clear();
+        if (!risk_zones_) return;
+        zone_no_barrier_.assign(risk_zones_->size(), 0);
+        for (size_t i = 0; i < risk_zones_->size(); ++i) {
+            const auto &tz = (*risk_zones_)[i];
+            const double r2 = tz.reach * tz.reach;
+            if ((start - tz.center).squaredNorm() < r2 ||
+                (goal  - tz.center).squaredNorm() < r2)
+                zone_no_barrier_[i] = 1;
+        }
+    }
+
+    // Inside a barrier-applied zone? Zones containing the start/goal are exempt
+    // (zone_no_barrier_) — they must be entered, so they stay soft (moat only).
+    inline bool insideBarrierZone(const Eigen::Vector3d &pos) const {
+        if (!risk_zones_ || risk_barrier_ <= 0.0) return false;
+        for (size_t i = 0; i < risk_zones_->size(); ++i) {
+            if (i < zone_no_barrier_.size() && zone_no_barrier_[i]) continue;
+            const auto &tz = (*risk_zones_)[i];
+            // Vertical cylinder, consistent with getRiskNorm.
+            const double dz = pos.z() - tz.center.z();
+            if (std::abs(dz) >= tz.reach) continue;
+            const double dx = pos.x() - tz.center.x();
+            const double dy = pos.y() - tz.center.y();
+            if (dx*dx + dy*dy < tz.reach * tz.reach) return true;
+        }
+        return false;
+    }
+
     inline double getRiskCost(const Eigen::Vector3d &pos) const {
-        return risk_alpha_ * getRiskNorm(pos);
+        // alpha*moat (all zones) + finite barrier K on non-exempt zones. K is
+        // large but finite, so the graph never disconnects: detour when a route
+        // exists, else cross at the least-moat point.
+        double cost = risk_alpha_ * getRiskNorm(pos);
+        if (insideBarrierZone(pos)) cost += risk_barrier_;
+        return cost;
     }
 
     std::vector<int> retrievePath(int current_flat);
@@ -282,6 +324,7 @@ public:
     void setGroundHeight(double h)      { ground_height_ = h; }
     void setVirtualCeilHeight(double h) { virtual_ceil_height_ = h; }
     void setRiskAlpha(double a) { risk_alpha_ = a; }
+    void setRiskBarrier(double k) { risk_barrier_ = (k > 0.0 ? k : 0.0); }
     void setSmhaW(double w) { smha_w_ = w; }
     void setFrontEnd(FrontEnd fe) { front_end_ = fe; }
     void setFm2CoarseK(int k) { fm2_coarse_k_ = (k >= 1 ? k : 1); }

@@ -30,6 +30,7 @@ using path_planner::sdf::SDFManager;
 std::string g_front_end = "fm2";
 int g_fm2_k = 4;
 bool g_fm2_star = true;
+double g_barrier = 0.0;   // front-end finite "hard wall" K (7th CLI arg)
 
 int g_passed = 0;
 int g_failed = 0;
@@ -200,6 +201,7 @@ void run(const Scenario &s, double alpha, double h_weight, const MapSpec &map) {
   astar.setRiskZones(&s.zones);
   astar.setObstacleMargin(0.5);
   astar.setRiskAlpha(alpha);
+  astar.setRiskBarrier(g_barrier);
   astar.setSmhaW(h_weight);
   astar.setFrontEnd(g_front_end == "fm2"
       ? path_planner::search::PathSearcher::FrontEnd::FM2
@@ -403,6 +405,7 @@ int main(int argc, char **argv) {
   if (argc > 4) g_front_end = argv[4];          // astar | fm2
   if (argc > 5) g_fm2_k = std::stoi(argv[5]);
   if (argc > 6) g_fm2_star = (std::string(argv[6]) != "0");
+  if (argc > 7) g_barrier = std::stod(argv[7]);   // finite hard-wall K (0=off)
   std::cout << "front_end=" << g_front_end
             << " fm2_k=" << g_fm2_k
             << " fm2_star=" << (g_fm2_star ? 1 : 0) << "\n";

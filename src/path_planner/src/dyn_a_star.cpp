@@ -469,6 +469,9 @@ vector<Vector3d> PathSearcher::astarSearchAndGetSimplePath(const double step_siz
                            start_pt(0), start_pt(1), start_pt(2), end_pt(0), end_pt(1), end_pt(2));
     }
 
+    // Zones containing the start/goal are barrier-exempt (must enter them).
+    prepareBarrier(start_pt, end_pt);
+
     // === FM2 front-end (heuristic-free Eikonal). Produces `path`, then
     //     joins the SAME simplification block the A* path uses. ===
     bool fm2_done = false;
@@ -483,11 +486,11 @@ vector<Vector3d> PathSearcher::astarSearchAndGetSimplePath(const double step_siz
         if (log_manager_) {
             log_manager_->infof(
                 "[FM2] grid=%dx%dx%d valid=%s eikonal=%.1fms geodesic=%.1fms "
-                "wp=%zu start_risk=%.3f goal_risk=%.3f alpha=%.2f",
+                "wp=%zu start_risk=%.3f goal_risk=%.3f alpha=%.2f barrier=%.1f",
                 fcnx_, fcny_, fcnz_, fm2_valid_ ? "ok" : "FAIL",
                 (tf1 - tf0).seconds()*1000.0, (tf2 - tf1).seconds()*1000.0,
                 fm2_path.size(), getRiskNorm(start_pt), getRiskNorm(end_pt),
-                risk_alpha_);
+                risk_alpha_, risk_barrier_);
         }
         if (fm2_path.size() < 2) {
             if (log_manager_)
@@ -984,9 +987,11 @@ void PathSearcher::fm2BuildSpeedMap()
             if (blocked) {
                 fm2_F_[fm2Flat(i, j, k)] = kFMin;
             } else {
-                // Free-space speed: risk slowdown, modulated by distance
-                // to the nearest obstacle so the map is C0-continuous.
+                // Free-space speed: risk slowdown (alpha*risk + finite barrier K
+                // inside non-exempt zones), modulated by obstacle distance.
                 const double r = getRiskNorm(w);
+                double risk_cost = risk_alpha_ * r;
+                if (insideBarrierZone(w)) risk_cost += risk_barrier_;
                 const double d0 = kEsdfSmoothCells * cres;
                 double prox = (double)sdf_->getDistance(w) / d0;
                 if (!std::isfinite(prox) || prox < kProxFloor)
@@ -994,7 +999,7 @@ void PathSearcher::fm2BuildSpeedMap()
                 else if (prox > 1.0)
                     prox = 1.0;
                 fm2_F_[fm2Flat(i, j, k)] =
-                    (float)(prox * (1.0 / (1.0 + risk_alpha_ * r)));
+                    (float)(prox * (1.0 / (1.0 + risk_cost)));
             }
         }
 }
@@ -1141,20 +1146,38 @@ void PathSearcher::fm2SolveEikonal(const Eigen::Vector3d &goal_world,
     fm2_valid_ = true;
 }
 
+// Trilinear sample of fm2_T_. Values sit at cell centres ((i+0.5)*cres), so we
+// index relative to centres and blend the 8 surrounding cells. Out-of-range /
+// INF corners (obstacle, unreached) are dropped and the weights renormalised,
+// keeping T continuous near holes (a continuous T is what keeps the geodesic
+// gradient smooth instead of quantising to whole cells).
 double PathSearcher::fm2SampleT(const Eigen::Vector3d &world) const
 {
     if (!fm2_valid_) return std::numeric_limits<double>::infinity();
     const double fine_res = map_resolution_ > 1e-6 ? map_resolution_ : 1.0;
     const double cres = fine_res * static_cast<double>(fm2_coarse_k_);
-    const Eigen::Vector3d rel = (world - map_origin_) / cres;
-    const int i = (int)std::floor(rel.x());
-    const int j = (int)std::floor(rel.y());
-    const int k = (int)std::floor(rel.z());
-    if (i < 0 || i >= fcnx_ || j < 0 || j >= fcny_ ||
-        k < 0 || k >= fcnz_) return std::numeric_limits<double>::infinity();
-    const float v = fm2_T_[fm2Flat(i, j, k)];
-    return std::isfinite(v) ? (double)v
-                            : std::numeric_limits<double>::infinity();
+    const Eigen::Vector3d c =
+        (world - map_origin_) / cres - Eigen::Vector3d(0.5, 0.5, 0.5);
+    const int i0 = (int)std::floor(c.x());
+    const int j0 = (int)std::floor(c.y());
+    const int k0 = (int)std::floor(c.z());
+    const double fx = c.x() - i0, fy = c.y() - j0, fz = c.z() - k0;
+    double acc = 0.0, wsum = 0.0;
+    for (int dk = 0; dk < 2; ++dk)
+      for (int dj = 0; dj < 2; ++dj)
+        for (int di = 0; di < 2; ++di) {
+            const int i = i0 + di, j = j0 + dj, k = k0 + dk;
+            if (i < 0 || i >= fcnx_ || j < 0 || j >= fcny_ ||
+                k < 0 || k >= fcnz_) continue;
+            const float v = fm2_T_[fm2Flat(i, j, k)];
+            if (!std::isfinite(v)) continue;
+            const double w = (di ? fx : 1.0 - fx) *
+                             (dj ? fy : 1.0 - fy) *
+                             (dk ? fz : 1.0 - fz);
+            acc += w * (double)v;
+            wsum += w;
+        }
+    return wsum > 1e-9 ? acc / wsum : std::numeric_limits<double>::infinity();
 }
 
 std::vector<Eigen::Vector3d> PathSearcher::fm2ExtractGeodesic(
@@ -1194,8 +1217,8 @@ std::vector<Eigen::Vector3d> PathSearcher::fm2ExtractGeodesic(
     path.push_back(p);
     for (int it = 0; it < max_iter; ++it) {
         if ((p - goal_world).norm() < goal_tol) break;
-        Eigen::Vector3d g;
-        if (!gradT(p, g)) {
+        Eigen::Vector3d g1;
+        if (!gradT(p, g1)) {
             // Stalled (flat / NaN). Jump straight toward goal; the
             // back-end optimizer cleans residual.
             Eigen::Vector3d d = (goal_world - p);
@@ -1204,6 +1227,11 @@ std::vector<Eigen::Vector3d> PathSearcher::fm2ExtractGeodesic(
             path.push_back(p);
             continue;
         }
+        // RK2 (midpoint): re-evaluate -∇T half a step downhill and step with
+        // that, following the curved geodesic on the trilinear field.
+        Eigen::Vector3d g2;
+        const Eigen::Vector3d pmid = p - 0.5 * step * g1.normalized();
+        const Eigen::Vector3d g = gradT(pmid, g2) ? g2 : g1;
         p -= step * g.normalized();        // descend -∇T
         path.push_back(p);
     }

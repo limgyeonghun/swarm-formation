@@ -26,6 +26,7 @@ namespace path_manager
         node_->declare_parameter("manager/max_acc", -1.0);
         node_->declare_parameter("manager/length_per_piece", 3.0);
         node_->declare_parameter("manager/risk_weight", 1.0);
+        node_->declare_parameter("manager/risk_barrier", 100.0);
         node_->declare_parameter("manager/risk_smha_w", 2.0);
         node_->declare_parameter("manager/front_end", std::string("fm2"));
         node_->declare_parameter("manager/fm2_coarse_k", 4);
@@ -39,6 +40,7 @@ namespace path_manager
         node_->get_parameter("manager/max_acc", max_acc_);
         node_->get_parameter("manager/length_per_piece", length_per_piece_);
         node_->get_parameter("manager/risk_weight", risk_weight_);
+        node_->get_parameter("manager/risk_barrier", risk_barrier_);
         node_->get_parameter("manager/risk_smha_w", risk_smha_w_);
         node_->get_parameter("manager/front_end", front_end_str_);
         node_->get_parameter("manager/fm2_coarse_k", fm2_coarse_k_);
@@ -48,6 +50,23 @@ namespace path_manager
         node_->get_parameter("manager/sdf_voxel_size", sdf_voxel_size_);
         node_->get_parameter("manager/ground_height", ground_height_);
         node_->get_parameter("manager/virtual_ceil_height", virtual_ceil_height_);
+
+        // Building-mesh rendering of dynamic obstacles (see publishDynamicObstacles).
+        node_->declare_parameter("obstacle_mesh_resource",
+                                 std::string("package://mmp_visualization/meshes/building.dae"));
+        node_->declare_parameter("obstacle_mesh_height", 60.0);
+        node_->get_parameter("obstacle_mesh_resource", obstacle_mesh_resource_);
+        node_->get_parameter("obstacle_mesh_height", obstacle_mesh_height_);
+
+        // Visual mesh catalog: model name -> mesh resource + rendered native size [m]
+        // (mesh base at z=0, XY centered). Add a model = drop a .dae in
+        // mmp_visualization/meshes/ + one line here (measure size with trimesh).
+        mesh_catalog_["building"] = { obstacle_mesh_resource_,
+                                      Eigen::Vector3d(16.374, 13.358, 17.345) };
+        mesh_catalog_["car"]      = { "package://mmp_visualization/meshes/car.dae",
+                                      Eigen::Vector3d(17.679, 10.093, 4.620) };
+        mesh_catalog_["ship"]     = { "package://mmp_visualization/meshes/simple_ship.dae",
+                                      Eigen::Vector3d(9.972, 42.275, 10.234) };
 
         // ESDF cache resolution:
         //   manager/world  : map name (default "dokdo"); derives the .esdf path.
@@ -354,8 +373,9 @@ namespace path_manager
                 }
             }
         }
-        // Upper bound: terrain peak + vertical margin for trajectory room.
-        map_upper_bound_.z() = max_terrain_z + 20.0;
+        // Upper bound: max(terrain peak, flight altitude) + headroom. The max()
+        // keeps the flight altitude inside the box even over low terrain.
+        map_upper_bound_.z() = std::max(max_terrain_z, map_upper_bound_.z()) + 20.0;
 
         log_manager_->infof("Map bounds: lower=(%.2f,%.2f,%.2f), upper=(%.2f,%.2f,%.2f)",
             map_lower_bound_.x(), map_lower_bound_.y(), map_lower_bound_.z(),
@@ -432,6 +452,10 @@ namespace path_manager
             }
         }
 
+
+        // The SDF is now ready — add any obstacles deferred before it existed
+        // (no ESDF cache on a fresh run), so they make it into this first plan.
+        flushPendingObstacles();
 
         // SDF sanity probe at start/goal.
         {
@@ -537,6 +561,7 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
         searcher_.setGroundHeight(ground_height_);
         searcher_.setVirtualCeilHeight(virtual_ceil_height_);
         searcher_.setRiskAlpha(risk_weight_);
+        searcher_.setRiskBarrier(risk_barrier_);
         searcher_.setSmhaW(risk_smha_w_);
         searcher_.setFrontEnd(front_end_str_ == "fm2"
             ? path_planner::search::PathSearcher::FrontEnd::FM2
@@ -605,32 +630,32 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
         log_manager_->infof("A* route: %zu waypoints (%.1f ms)",
             full_route.size(),
             std::chrono::duration<double, std::milli>(t_rrt_end - t_astar_start).count());
-        // DEBUG: annotate each A* waypoint with per-zone distance and the
-        // Gaussian risk_cost that getRiskCost() would return there. If
-        // a waypoint sits inside a zone but its cost is ~0 we know the
-        // risk data passed to A* is wrong. If cost is huge but A* still
-        // picked the waypoint we know the detour weight vs heuristic is off.
+        // DEBUG: annotate each A* waypoint with the SAME risk the planner uses,
+        // i.e. the quadratic moat m_i = peak*(1 - d/reach)^2 (see dyn_a_star.h /
+        // poly_traj_optimizer RiskGradCostP) and the OR-composed risk
+        // = 1 - prod_i (1 - m_i), in [0,1]. (Previously this logged a Gaussian *
+        // risk_weight, which did NOT match the planner and made edge passes look
+        // far riskier than they are.)
         for (size_t ri = 0; ri < full_route.size(); ++ri) {
             const auto &p = full_route[ri];
-            double total = 0.0;
+            double survival = 1.0;
             std::string per_zone;
             for (size_t zi = 0; zi < risk_zones_.size(); ++zi) {
                 const auto &tz = risk_zones_[zi];
                 double dist = (p - tz.center).norm();
-                double zone_cost = 0.0;
+                double moat = 0.0;
                 if (dist < tz.reach) {
-                    double sigma = tz.reach / 3.0;
-                    double g = std::exp(-(dist * dist) / (2.0 * sigma * sigma));
-                    zone_cost = tz.peak * g * risk_weight_;
+                    double u = 1.0 - dist / tz.reach;
+                    moat = tz.peak * u * u;
                 }
-                total += zone_cost;
+                survival *= (1.0 - std::min(moat, 1.0 - 1e-3));
                 char buf[64];
-                std::snprintf(buf, sizeof(buf), " tz%zu(d=%.2f,c=%.2f)",
-                              zi, dist, zone_cost);
+                std::snprintf(buf, sizeof(buf), " tz%zu(d=%.2f,m=%.3f)",
+                              zi, dist, moat);
                 per_zone += buf;
             }
-            log_manager_->infof("  A*[%zu]: (%.2f, %.2f, %.2f) total_Risk=%.3f%s",
-                ri, p.x(), p.y(), p.z(), total, per_zone.c_str());
+            log_manager_->infof("  A*[%zu]: (%.2f, %.2f, %.2f) risk=%.3f%s",
+                ri, p.x(), p.y(), p.z(), 1.0 - survival, per_zone.c_str());
         }
 
         // Front-end route as nav_msgs/Path → mmp_visualization converts it to a
@@ -899,18 +924,31 @@ void PathManager::setTerrainData(const grid_map_msgs::msg::GridMap::SharedPtr &m
                 sdf_loaded_from_file_ = true;
                 log_manager_->infof("SDF eagerly loaded from %s",
                                     load_terrain_esdf_path_.c_str());
+                flushPendingObstacles();
             }
         }
     }
 }
 
-int PathManager::addDynamicSphere(const Eigen::Vector3d& center, double radius)
+const PathManager::ObstacleMeshInfo& PathManager::meshFor(const std::string& model) const
+{
+    auto it = mesh_catalog_.find(model.empty() ? std::string("building") : model);
+    if (it == mesh_catalog_.end()) it = mesh_catalog_.find("building");
+    return it->second;
+}
+
+int PathManager::addDynamicSphere(const Eigen::Vector3d& center, double radius,
+                                  const std::string& model)
 {
     if (!sdf_manager_.hasData()) {
-        log_manager_->warnf("addDynamicSphere: SDF not built yet, ignoring "
+        // Defer: the SDF (ESDF) is built lazily on the first plan. Without a
+        // cache it is not ready yet, so queue and add once it exists.
+        pending_obstacles_.push_back({false, center,
+            Eigen::Vector3d(radius, radius, radius), radius, model});
+        log_manager_->infof("addDynamicSphere: SDF not ready, deferred "
                             "(center=%.2f,%.2f,%.2f r=%.2f)",
                             center.x(), center.y(), center.z(), radius);
-        return -1;
+        return -2;  // deferred (not an error)
     }
     path_planner::sdf::PrimitiveSpec spec;
     spec.kind = path_planner::sdf::PrimitiveKind::kSphere;
@@ -927,9 +965,52 @@ int PathManager::addDynamicSphere(const Eigen::Vector3d& center, double radius)
     }
     dyn_patch_ids_.push_back(id);
     dyn_patch_centers_.push_back(center);
-    dyn_patch_radii_.push_back(radius);
+    dyn_patch_sizes_.push_back(Eigen::Vector3d(d, d, d));  // sphere stored as (2r,2r,2r)
+    dyn_patch_is_box_.push_back(0);
+    dyn_patch_models_.push_back(model);
+    dyn_patch_yaws_.push_back(
+        std::uniform_real_distribution<double>(0.0, 6.283185307179586)(yaw_rng_));
     log_manager_->infof("Dynamic sphere added: id=%d center=(%.2f,%.2f,%.2f) r=%.2f, total=%zu",
                         id, center.x(), center.y(), center.z(), radius,
+                        sdf_manager_.numActiveObstacles());
+    publishDynamicObstacles();
+    return id;
+}
+
+int PathManager::addDynamicBox(const Eigen::Vector3d& center, const Eigen::Vector3d& size,
+                               const std::string& model)
+{
+    if (!sdf_manager_.hasData()) {
+        // Defer until the SDF is built (see addDynamicSphere).
+        pending_obstacles_.push_back({true, center, size, 0.0, model});
+        log_manager_->infof("addDynamicBox: SDF not ready, deferred "
+                            "(center=%.2f,%.2f,%.2f)",
+                            center.x(), center.y(), center.z());
+        return -2;  // deferred (not an error)
+    }
+    path_planner::sdf::PrimitiveSpec spec;
+    spec.kind = path_planner::sdf::PrimitiveKind::kCube;
+    spec.center = center;
+    spec.size = size;  // full extents (sx, sy, sz)
+
+    int id = sdf_manager_.addObstacle(spec);
+    if (id < 0) {
+        log_manager_->warnf("addDynamicBox: addObstacle failed "
+                            "(center=%.2f,%.2f,%.2f size=%.2f,%.2f,%.2f)",
+                            center.x(), center.y(), center.z(),
+                            size.x(), size.y(), size.z());
+        return -1;
+    }
+    dyn_patch_ids_.push_back(id);
+    dyn_patch_centers_.push_back(center);
+    dyn_patch_sizes_.push_back(size);
+    dyn_patch_is_box_.push_back(1);
+    dyn_patch_models_.push_back(model);
+    dyn_patch_yaws_.push_back(
+        std::uniform_real_distribution<double>(0.0, 6.283185307179586)(yaw_rng_));
+    log_manager_->infof("Dynamic box added: id=%d center=(%.2f,%.2f,%.2f) size=(%.2f,%.2f,%.2f), total=%zu",
+                        id, center.x(), center.y(), center.z(),
+                        size.x(), size.y(), size.z(),
                         sdf_manager_.numActiveObstacles());
     publishDynamicObstacles();
     return id;
@@ -940,9 +1021,28 @@ void PathManager::clearDynamicObstacles()
     sdf_manager_.clearObstacles();
     dyn_patch_ids_.clear();
     dyn_patch_centers_.clear();
-    dyn_patch_radii_.clear();
+    dyn_patch_sizes_.clear();
+    dyn_patch_is_box_.clear();
+    dyn_patch_models_.clear();
+    dyn_patch_yaws_.clear();
+    pending_obstacles_.clear();
     log_manager_->infof("Dynamic obstacles cleared");
     publishDynamicObstacles();
+}
+
+// Add obstacles that were requested before the SDF existed. Called right after
+// the SDF is built/loaded, so they make it into the very first plan.
+void PathManager::flushPendingObstacles()
+{
+    if (pending_obstacles_.empty() || !sdf_manager_.hasData()) return;
+    std::vector<PendingObstacle> pend;
+    pend.swap(pending_obstacles_);  // addDynamic* see an empty queue -> no re-defer
+    for (const auto& p : pend) {
+        if (p.is_box) addDynamicBox(p.center, p.size, p.model);
+        else          addDynamicSphere(p.center, p.radius, p.model);
+    }
+    log_manager_->infof("Flushed %zu deferred dynamic obstacle(s) after SDF ready",
+                        pend.size());
 }
 
 void PathManager::setRiskZonesRuntime(const std::vector<RiskZone>& zones)
@@ -980,20 +1080,46 @@ void PathManager::publishDynamicObstacles()
     arr.markers.push_back(clear_marker);
 
     for (size_t i = 0; i < dyn_patch_centers_.size(); ++i) {
+        // Per-obstacle visual model from the catalog; collision (SDF) is separate.
+        const ObstacleMeshInfo& mi = meshFor(dyn_patch_models_[i]);
         visualization_msgs::msg::Marker m;
         m.header.frame_id = "map";
         m.header.stamp = node_->now();
         m.ns = "dynamic_obstacles";
         m.id = dyn_patch_ids_[i];
-        m.type = visualization_msgs::msg::Marker::SPHERE;
+        // color all-zero => RViz uses the mesh's own embedded materials/textures.
+        m.type = visualization_msgs::msg::Marker::MESH_RESOURCE;
+        m.mesh_resource = mi.resource;
+        m.mesh_use_embedded_materials = true;
         m.action = visualization_msgs::msg::Marker::ADD;
-        m.pose.position.x = dyn_patch_centers_[i].x();
-        m.pose.position.y = dyn_patch_centers_[i].y();
-        m.pose.position.z = dyn_patch_centers_[i].z();
-        m.pose.orientation.w = 1.0;
-        const double d = 2.0 * dyn_patch_radii_[i];
-        m.scale.x = d; m.scale.y = d; m.scale.z = d;
-        m.color.r = 1.0f; m.color.g = 0.3f; m.color.b = 0.0f; m.color.a = 0.6f;
+        m.color.r = m.color.g = m.color.b = m.color.a = 0.0f;  // use mesh textures
+
+        const Eigen::Vector3d& c = dyn_patch_centers_[i];
+        double foot_x, foot_y, height, base_z;
+        if (dyn_patch_is_box_[i]) {
+            // Box: mesh fills the collision box exactly (collision == visual bbox).
+            foot_x = dyn_patch_sizes_[i].x();
+            foot_y = dyn_patch_sizes_[i].y();
+            height = dyn_patch_sizes_[i].z();
+            base_z = c.z() - 0.5 * height;
+        } else {
+            // Sphere: fixed-height building from the ball's bottom.
+            const double radius = 0.5 * dyn_patch_sizes_[i].x();  // stored as (2r,2r,2r)
+            foot_x = foot_y = 2.0 * radius;
+            height = obstacle_mesh_height_;
+            base_z = c.z() - radius;
+        }
+
+        m.pose.position.x = c.x();
+        m.pose.position.y = c.y();
+        m.pose.position.z = base_z;
+        // Per-spawn random yaw about Z (visual only; SDF collision stays AABB).
+        const double yaw = (i < dyn_patch_yaws_.size()) ? dyn_patch_yaws_[i] : 0.0;
+        m.pose.orientation.z = std::sin(0.5 * yaw);
+        m.pose.orientation.w = std::cos(0.5 * yaw);
+        m.scale.x = foot_x / mi.native_size.x();
+        m.scale.y = foot_y / mi.native_size.y();
+        m.scale.z = height / mi.native_size.z();
         arr.markers.push_back(m);
     }
     dyn_obstacle_pub_->publish(arr);

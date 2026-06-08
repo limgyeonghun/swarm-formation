@@ -904,27 +904,36 @@ void ReplanFSM::loadObstaclesCallback(
     }
     size_t added = 0;
     size_t skipped = 0;
+    size_t deferred = 0;  // queued until the SDF exists (no cache on first run)
     for (const auto& spec : msg->obstacles) {
-        if (spec.kind != path_manager::msg::DynamicObstacleSpec::KIND_SPHERE) {
+        const Eigen::Vector3d c(spec.center.x, spec.center.y, spec.center.z);
+        int id = -1;
+        if (spec.kind == path_manager::msg::DynamicObstacleSpec::KIND_CUBE) {
+            const Eigen::Vector3d size(spec.size.x, spec.size.y, spec.size.z);
+            id = path_manager_->addDynamicBox(c, size, spec.model);
+            if (id == -1) {
+                FSM_LOG_WARN(
+                    "loadObstacles: addDynamicBox rejected at (%.2f,%.2f,%.2f) size=(%.2f,%.2f,%.2f)",
+                    c.x(), c.y(), c.z(), size.x(), size.y(), size.z());
+            }
+        } else if (spec.kind == path_manager::msg::DynamicObstacleSpec::KIND_SPHERE) {
+            id = path_manager_->addDynamicSphere(c, spec.radius, spec.model);
+            if (id == -1) {
+                FSM_LOG_WARN(
+                    "loadObstacles: addDynamicSphere rejected at (%.2f,%.2f,%.2f) r=%.2f",
+                    c.x(), c.y(), c.z(), spec.radius);
+            }
+        } else {
             FSM_LOG_WARN(
-                "loadObstacles: skipping non-sphere spec kind=%u "
-                "(cube/cylinder not exposed yet)", spec.kind);
+                "loadObstacles: skipping unsupported spec kind=%u (cylinder not exposed)",
+                spec.kind);
             ++skipped;
             continue;
         }
-        Eigen::Vector3d c(spec.center.x, spec.center.y, spec.center.z);
-        int id = path_manager_->addDynamicSphere(c, spec.radius);
-        if (id < 0) {
-            FSM_LOG_WARN(
-                "loadObstacles: addDynamicSphere rejected at (%.2f,%.2f,%.2f) r=%.2f",
-                c.x(), c.y(), c.z(), spec.radius);
-            ++skipped;
-        } else {
-            ++added;
-        }
+        if (id == -1) ++skipped; else if (id == -2) ++deferred; else ++added;
     }
-    FSM_LOG_INFO("loadObstacles: added=%zu skipped=%zu (total in msg=%zu)",
-                 added, skipped, msg->obstacles.size());
+    FSM_LOG_INFO("loadObstacles: added=%zu deferred=%zu skipped=%zu (total in msg=%zu)",
+                 added, deferred, skipped, msg->obstacles.size());
 }
 
 void ReplanFSM::loadRiskZonesCallback(
