@@ -10,6 +10,8 @@
 #include "../../common/log_manager.hpp"
 #include <queue>
 #include <vector>
+#include <algorithm>
+#include <limits>
 
 constexpr double inf = 1e20;
 
@@ -80,6 +82,7 @@ private:
     const path_planner::sdf::IDistanceField *sdf_ = nullptr;
     const std::vector<RiskZoneLite> *risk_zones_ = nullptr;
     double obstacle_margin_ = 0.5;  // meters
+    double dyn_obstacle_margin_ = 0.0;  // dynamic-obstacle berth; 0 = off
     // When true, the A* graph expansion ignores obstacles (every voxel is
     // traversable); shortcut / downstream checks still use obstacle_margin_.
     bool search_ignores_obstacles_ = false;
@@ -145,12 +148,30 @@ private:
     // (FrontEnd enum is public — see below.)
     FrontEnd front_end_ = FrontEnd::ASTAR;
     int   fm2_coarse_k_ = 4;            // Eikonal grid downsample factor
+    size_t fm2_max_cells_ = 8'000'000; // FMM grid cell-count cap (OOM/hang guard)
     bool  fm2_star_ = true;             // FM2*: cost-to-go heuristic on
                                         // the FMM queue (same trajectory)
     int   fcnx_ = 0, fcny_ = 0, fcnz_ = 0;
     std::vector<float> fm2_T_;          // arrival time / cost-to-go
     std::vector<float> fm2_F_;          // speed map in (0, 1]
     bool  fm2_valid_ = false;
+    // Altitude-band penalty: slow the wave outside the mission altitude band
+    // so the geodesic holds altitude and leaves the band only where terrain
+    // blocks it. Without it T(z) is nearly flat (free space has no altitude
+    // cost) and the over-the-terrain wave is a hair faster than the
+    // valley-weaving one, so gradient descent integrates that tiny bias into
+    // a ~1000 m climb (and with only an upper penalty it dives to the floor).
+    // alt_cost = w * dist_outside_band(z) / zscale, added to risk_cost.
+    // Band = [min(start,goal)z - cell, max(start,goal)z + cell]. w=0 disables.
+    // Asymmetric: the up-side stays gentle so the wall-climb gradient at a
+    // terrain ridge still wins (a steep up-side cancels it and the descent
+    // deadlocks at the wall foot); the down-side is stiff since nothing ever
+    // requires diving below the mission altitude.
+    double fm2_alt_w_ = 2.0;            // penalty weight (per zscale outside)
+    double fm2_alt_zscale_ = 10.0;      // up-side ramp (z-units per w)
+    double fm2_alt_zscale_dn_ = 2.0;    // down-side ramp (stiff: no diving)
+    double fm2_alt_zlo_ = -1.0;         // set per-search from start/goal z
+    double fm2_alt_zhi_ = -1.0;
 
     inline int fm2Flat(int i, int j, int k) const {
         return i + fcnx_ * (j + fcny_ * k);
@@ -193,7 +214,14 @@ private:
         if (!sdf_ || !sdf_->hasData()) return false;
         float d = sdf_->getDistance(pos);
         if (!std::isfinite(d)) return true;  // outside map = blocked
-        return d < obstacle_margin_;
+        if (d < obstacle_margin_) return true;
+        // Dynamic obstacles (cars/buildings spawned at runtime) get a more
+        // generous berth than terrain: blocked out to dyn_obstacle_margin_.
+        // Applies to FM2, A* and the shortcut consistently (they all come
+        // through here). Capped in range by the SDF patch influence radius.
+        if (dyn_obstacle_margin_ > obstacle_margin_ &&
+            sdf_->getDynamicDistance(pos) < dyn_obstacle_margin_) return true;
+        return false;
     }
     inline bool checkOccupancy(const Eigen::Vector3d &pos) {
         return checkOccupancy_esdf(pos);
@@ -235,11 +263,19 @@ private:
         zone_no_barrier_.clear();
         if (!risk_zones_) return;
         zone_no_barrier_.assign(risk_zones_->size(), 0);
+        // Same vertical-cylinder membership as getRiskNorm/insideBarrierZone.
+        // The old 3D-sphere test disagreed with them: an endpoint inside the
+        // cylinder but outside the sphere kept the barrier on a zone the
+        // route MUST enter, walling off its own start/goal.
+        auto in_zone = [](const Eigen::Vector3d &p, const RiskZoneLite &tz) {
+            if (std::abs(p.z() - tz.center.z()) >= tz.reach) return false;
+            const double dx = p.x() - tz.center.x();
+            const double dy = p.y() - tz.center.y();
+            return dx * dx + dy * dy < tz.reach * tz.reach;
+        };
         for (size_t i = 0; i < risk_zones_->size(); ++i) {
             const auto &tz = (*risk_zones_)[i];
-            const double r2 = tz.reach * tz.reach;
-            if ((start - tz.center).squaredNorm() < r2 ||
-                (goal  - tz.center).squaredNorm() < r2)
+            if (in_zone(start, tz) || in_zone(goal, tz))
                 zone_no_barrier_[i] = 1;
         }
     }
@@ -259,6 +295,17 @@ private:
             if (dx*dx + dy*dy < tz.reach * tz.reach) return true;
         }
         return false;
+    }
+
+    // Altitude-band cost shared by the FM2 speed map and the shortcut cost
+    // metric (zlo/zhi set per-search from the mission endpoints).
+    inline double altBandCost(double z) const {
+        if (fm2_alt_w_ <= 0.0 || fm2_alt_zhi_ < 0.0) return 0.0;
+        if (z > fm2_alt_zhi_)
+            return fm2_alt_w_ * (z - fm2_alt_zhi_) / fm2_alt_zscale_;
+        if (z < fm2_alt_zlo_)
+            return fm2_alt_w_ * (fm2_alt_zlo_ - z) / fm2_alt_zscale_dn_;
+        return 0.0;
     }
 
     inline double getRiskCost(const Eigen::Vector3d &pos) const {
@@ -320,6 +367,8 @@ public:
     }
     void setRiskZones(const std::vector<RiskZoneLite> *zones) { risk_zones_ = zones; }
     void setObstacleMargin(double m) { obstacle_margin_ = m; }
+    // Extra berth around dynamic obstacles only (<= obstacle_margin_ disables).
+    void setDynObstacleMargin(double m) { dyn_obstacle_margin_ = m; }
     void setSearchIgnoresObstacles(bool b) { search_ignores_obstacles_ = b; }
     void setGroundHeight(double h)      { ground_height_ = h; }
     void setVirtualCeilHeight(double h) { virtual_ceil_height_ = h; }
@@ -328,7 +377,20 @@ public:
     void setSmhaW(double w) { smha_w_ = w; }
     void setFrontEnd(FrontEnd fe) { front_end_ = fe; }
     void setFm2CoarseK(int k) { fm2_coarse_k_ = (k >= 1 ? k : 1); }
+    // Clamped to INT_MAX: all FM2 flat indices (fm2Flat, the FMM queue
+    // payload, the i/j/k decode) are int, so a larger cap would let flat
+    // indexing wrap negative (UB) instead of failing cleanly at the cap.
+    void setFm2MaxCells(size_t n) {
+        if (n > 0)
+            fm2_max_cells_ = std::min<size_t>(
+                n, static_cast<size_t>(std::numeric_limits<int>::max()));
+    }
     void setFm2Star(bool on) { fm2_star_ = on; }
+    void setFm2AltPenalty(double w, double zscale, double zscale_dn = 2.0) {
+        fm2_alt_w_ = (w >= 0.0 ? w : 0.0);
+        if (zscale > 1e-6) fm2_alt_zscale_ = zscale;
+        if (zscale_dn > 1e-6) fm2_alt_zscale_dn_ = zscale_dn;
+    }
     void setBypassShortcut(bool b) { bypass_shortcut_ = b; }
 
     // ----- Visualization dump accessors (read-only, post-search) -----
@@ -350,8 +412,9 @@ public:
         out.reserve(static_cast<size_t>(POOL_SIZE_(0)) * POOL_SIZE_(1));
         for (int x = 0; x < POOL_SIZE_(0); ++x)
             for (int y = 0; y < POOL_SIZE_(1); ++y) {
-                int flat = (x * POOL_SIZE_(1) + y) * POOL_SIZE_(2) + z;
-                out.push_back(pool_[flat].gScore);
+                // pool_ is x-fastest (see flatIdx); the old z-fastest formula
+                // here read a scrambled slice.
+                out.push_back(pool_[flatIdx(x, y, z)].gScore);
             }
         return out;
     }

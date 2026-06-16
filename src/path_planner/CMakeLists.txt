@@ -29,6 +29,18 @@ if(OpenMP_CXX_FOUND)
   message(STATUS "OpenMP found and enabled")
 endif()
 
+# Optional CUDA: enables the GPU eikonal (Fast Iterative Method). When absent,
+# the build is CPU-only and FM2 uses the CPU FMM (no behaviour change).
+find_package(CUDAToolkit QUIET)
+set(PP_HAVE_CUDA OFF)
+if(CUDAToolkit_FOUND)
+  enable_language(CUDA)
+  set(PP_HAVE_CUDA ON)
+  message(STATUS "CUDA ${CUDAToolkit_VERSION} found - GPU eikonal enabled (sm_120)")
+else()
+  message(STATUS "CUDA not found - GPU eikonal disabled (CPU FMM only)")
+endif()
+
 # =====================================================================
 # path_planner_sdf : CPU ESDF (FH + OpenMP) + flat binary save/load
 # =====================================================================
@@ -55,10 +67,14 @@ set_target_properties(${PROJECT_NAME}_sdf PROPERTIES
 # =====================================================================
 # path_planner_lib : common utilities (log_manager) + A* front-end
 # =====================================================================
-add_library(${PROJECT_NAME}_lib
+set(PP_LIB_SOURCES
   ../common/log_manager.cpp
   src/dyn_a_star.cpp
 )
+if(PP_HAVE_CUDA)
+  list(APPEND PP_LIB_SOURCES src/fm2_gpu.cu)
+endif()
+add_library(${PROJECT_NAME}_lib ${PP_LIB_SOURCES})
 
 target_include_directories(${PROJECT_NAME}_lib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -76,6 +92,21 @@ ament_target_dependencies(${PROJECT_NAME}_lib
 # Plain-style linkage (ament_target_dependencies above forces plain style).
 target_link_libraries(${PROJECT_NAME}_lib ${PROJECT_NAME}_sdf)
 
+if(OpenMP_CXX_FOUND)
+  # FM2 speed-map build is per-cell independent -> parallelise it.
+  target_link_libraries(${PROJECT_NAME}_lib OpenMP::OpenMP_CXX)
+endif()
+
+if(PP_HAVE_CUDA)
+  target_compile_definitions(${PROJECT_NAME}_lib PRIVATE PP_HAVE_CUDA)
+  # Link cudart by path, NOT the CUDA::cudart imported target: ament exports
+  # this target's link interface, and an imported CUDA target would force every
+  # downstream package to find_package(CUDAToolkit). A plain .so path just rides
+  # the link line of the final executable and resolves at runtime.
+  target_link_libraries(${PROJECT_NAME}_lib ${CUDAToolkit_LIBRARY_DIR}/libcudart.so)
+  set_target_properties(${PROJECT_NAME}_lib PROPERTIES CUDA_ARCHITECTURES 120)
+endif()
+
 # =====================================================================
 # sdf_tool : sanity check binary
 # =====================================================================
@@ -85,6 +116,13 @@ target_link_libraries(sdf_tool PRIVATE ${PROJECT_NAME}_sdf)
 # sdf_dynamic_test : exercises the dynamic obstacle layer (addObstacle/...)
 add_executable(sdf_dynamic_test src/sdf/sdf_dynamic_test.cpp)
 target_link_libraries(sdf_dynamic_test PRIVATE ${PROJECT_NAME}_sdf)
+
+# fm2_gpu_test : standalone GPU eikonal correctness/perf check (CUDA only)
+if(PP_HAVE_CUDA)
+  add_executable(fm2_gpu_test src/fm2_gpu_test.cpp)
+  target_link_libraries(fm2_gpu_test ${PROJECT_NAME}_lib)
+  install(TARGETS fm2_gpu_test DESTINATION lib/${PROJECT_NAME})
+endif()
 
 # =====================================================================
 # Install

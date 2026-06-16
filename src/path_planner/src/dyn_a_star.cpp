@@ -1,4 +1,7 @@
 #include "path_planner/dyn_a_star.h"
+#ifdef PP_HAVE_CUDA
+#include "path_planner/fm2_gpu.h"
+#endif
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
@@ -20,6 +23,19 @@ void PathSearcher::initGridMap(const Eigen::Vector3i &pool_size)
     ny_ = pool_size(1);
     nz_ = pool_size(2);
     const size_t N = static_cast<size_t>(nx_) * ny_ * nz_;
+    if (N > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        // flatIdx/flatToIdx and the queue payloads are int: a larger pool
+        // overflows them (UB) before the self-check below could catch it.
+        // Empty the pool instead — Coord2Index then fails every query and
+        // AstarSearch returns false, so callers take their normal fallback.
+        if (log_manager_)
+            log_manager_->errorf("[A* INIT] pool %dx%dx%d exceeds INT_MAX cells - A* disabled for this map",
+                                 nx_, ny_, nz_);
+        POOL_SIZE_.setZero();
+        nx_ = ny_ = nz_ = 0;
+        pool_.clear();
+        return;
+    }
     pool_.assign(N, GridNode{});
     // Comparators bind to pool_ for f-score lookup (anchor/inadmis split).
     openSet_anchor_  = std::priority_queue<int, std::vector<int>, NodeComparatorAnchor>(
@@ -137,9 +153,14 @@ bool PathSearcher::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vect
             log_manager_->warnf("시작점이 장애물 내부에 위치 - Idx: (%d,%d,%d), Coord: (%.2f,%.2f,%.2f)", 
                                start_idx(0), start_idx(1), start_idx(2), start_pt(0), start_pt(1), start_pt(2));
         }
+        // Direction away from the goal; when start==goal normalized() would be
+        // NaN (zero vector) and the march never terminates — climb instead.
+        Eigen::Vector3d adj_dir = start_pt - end_pt;
+        adj_dir = (adj_dir.norm() > 1e-9) ? Eigen::Vector3d(adj_dir / adj_dir.norm())
+                                          : Eigen::Vector3d(0, 0, 1);
         do
         {
-            start_pt = (start_pt - end_pt).normalized() * step_size_ + start_pt;
+            start_pt += adj_dir * step_size_;
             if (!Coord2Index(start_pt, start_idx))
                 return false;
         } while (checkOccupancy(Index2Coord(start_idx)));
@@ -154,9 +175,12 @@ bool PathSearcher::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vect
         if (log_manager_) {
             log_manager_->warnf("도착점이 장애물 내부에 위치 - Coord: (%.2f,%.2f,%.2f)", end_pt(0), end_pt(1), end_pt(2));
         }
+        Eigen::Vector3d adj_dir = end_pt - start_pt;
+        adj_dir = (adj_dir.norm() > 1e-9) ? Eigen::Vector3d(adj_dir / adj_dir.norm())
+                                          : Eigen::Vector3d(0, 0, 1);
         do
         {
-            end_pt = (end_pt - start_pt).normalized() * step_size_ + end_pt;
+            end_pt += adj_dir * step_size_;
             if (!Coord2Index(end_pt, end_idx))
                 return false;
         } while (checkOccupancy(Index2Coord(end_idx)));
@@ -476,6 +500,14 @@ vector<Vector3d> PathSearcher::astarSearchAndGetSimplePath(const double step_siz
     //     joins the SAME simplification block the A* path uses. ===
     bool fm2_done = false;
     vector<Vector3d> fm2_path;
+    // Mission altitude band, used by the FM2 speed map AND the shortcut cost
+    // metric below (so chords that trade the altitude hold for a long
+    // diagonal ramp are priced fairly against the in-band detour). No slack:
+    // with coarse z-cells a one-cell allowance can park the whole bottom
+    // layer inside the band and the path settles a cell too low.
+    fm2_alt_zlo_ = std::min(start_pt.z(), end_pt.z());
+    fm2_alt_zhi_ = std::max(start_pt.z(), end_pt.z());
+
     if (front_end_ == FrontEnd::FM2) {
         auto tf0 = rclcpp::Clock().now();
         fm2BuildSpeedMap();
@@ -483,14 +515,21 @@ vector<Vector3d> PathSearcher::astarSearchAndGetSimplePath(const double step_siz
         auto tf1 = rclcpp::Clock().now();
         if (fm2_valid_) fm2_path = fm2ExtractGeodesic(start_pt, end_pt);
         auto tf2 = rclcpp::Clock().now();
+        double fm2_zmin = 1e9, fm2_zmax = -1e9;
+        for (const auto &p : fm2_path) {
+            fm2_zmin = std::min(fm2_zmin, p.z());
+            fm2_zmax = std::max(fm2_zmax, p.z());
+        }
         if (log_manager_) {
             log_manager_->infof(
                 "[FM2] grid=%dx%dx%d valid=%s eikonal=%.1fms geodesic=%.1fms "
-                "wp=%zu start_risk=%.3f goal_risk=%.3f alpha=%.2f barrier=%.1f",
+                "wp=%zu start_risk=%.3f goal_risk=%.3f alpha=%.2f barrier=%.1f "
+                "geo_z=[%.2f,%.2f] start_z=%.2f end_z=%.2f",
                 fcnx_, fcny_, fcnz_, fm2_valid_ ? "ok" : "FAIL",
                 (tf1 - tf0).seconds()*1000.0, (tf2 - tf1).seconds()*1000.0,
                 fm2_path.size(), getRiskNorm(start_pt), getRiskNorm(end_pt),
-                risk_alpha_, risk_barrier_);
+                risk_alpha_, risk_barrier_,
+                fm2_zmin, fm2_zmax, start_pt.z(), end_pt.z());
         }
         if (fm2_path.size() < 2) {
             if (log_manager_)
@@ -528,10 +567,13 @@ vector<Vector3d> PathSearcher::astarSearchAndGetSimplePath(const double step_siz
             cnx_, cny_, cnz_);
     }
 
-    // 3D A* search with ESDF
+    // 3D A* search with ESDF. The path may legitimately start away from
+    // start_pt when the start cell was occupied and got adjusted inside
+    // AstarSearch, so no distance gate on path[0] — rejecting those cascades
+    // to a straight line through the obstacle.
     if (AstarSearch(step_size, start_pt, end_pt, true)) {
         path = getPath();
-        if (path.size() > 1 && (path[0]-start_pt).norm() < step_size * 2.0) {
+        if (path.size() > 1) {
             if (log_manager_) {
                 log_manager_->infof("드론 %d: 3D A* 검색 성공 (ESDF 사용) - 경로 점 개수: %zu", drone_id, path.size());
             }
@@ -539,30 +581,14 @@ vector<Vector3d> PathSearcher::astarSearchAndGetSimplePath(const double step_siz
             search_success = true;
         }
     }
-
-    if (!search_success) {
-        if (log_manager_) {
-            log_manager_->warnf("드론 %d: 3D A* 검색 실패 (ESDF 사용), ESDF 없이 재시도", drone_id);
-        }
-        RCLCPP_WARN(rclcpp::get_logger("astar"), "3D A* search failed with ESDF, retrying without ESDF");
-
-        // 3D A* search without ESDF
-        if (AstarSearch(step_size, start_pt, end_pt, false)) {
-            path = getPath();
-            if (path.size() > 1 && (path[0]-start_pt).norm() < step_size * 2.0) {
-                if (log_manager_) {
-                    log_manager_->infof("드론 %d: 3D A* 검색 성공 (ESDF 비사용) - 경로 점 개수: %zu", drone_id, path.size());
-                }
-                RCLCPP_INFO(rclcpp::get_logger("astar"), "3D A* search successful without ESDF");
-                search_success = true;
-            }
-        }
-    }
+    // (The old "retry without ESDF" pass was removed: use_esdf_check only
+    // changed the log line, so the retry was a byte-identical search that
+    // could only fail again — up to tens of seconds wasted per replan.)
 
     // Fallback: Z축 상승 후 재시도
     if (!search_success) {
         Vector3d elevated_end = end_pt;
-        elevated_end(2) += 5.0;  // 5m 상승
+        elevated_end(2) += 5.0;  // 5 z-units (~220 m real) 상승
 
         if (log_manager_) {
             log_manager_->warnf("드론 %d: 3D A* 재시도 실패, 목표점 Z축 상승 시도 (%.2f → %.2fm)",
@@ -574,7 +600,7 @@ vector<Vector3d> PathSearcher::astarSearchAndGetSimplePath(const double step_siz
 
         if (AstarSearch(step_size, start_pt, elevated_end, true)) {
             path = getPath();
-            if (path.size() > 1 && (path[0]-start_pt).norm() < step_size * 2.0) {
+            if (path.size() > 1) {
                 if (log_manager_) {
                     log_manager_->infof("드론 %d: Z축 상승 후 A* 검색 성공 - 경로 점 개수: %zu", drone_id, path.size());
                 }
@@ -639,6 +665,7 @@ vector<Vector3d> PathSearcher::astarSearchAndGetSimplePath(const double step_siz
         return path;
     }
 
+    const auto t_sc0 = rclcpp::Clock().now();
     // Risk-aware shortcut (ported from the pre-A* RRT* pipeline).
     // Precompute cumulative edge cost (straight-line distance + Gaussian
     // risk integral) along the raw path. When trying to collapse points
@@ -659,23 +686,13 @@ vector<Vector3d> PathSearcher::astarSearchAndGetSimplePath(const double step_siz
             double t = (double)si / (double)kRiskSamples;
             Vector3d p = a + t * (b - a);
             double w = (si == 0 || si == kRiskSamples) ? 0.5 : 1.0;
-            // (1 + risk) multiplier form matches the RRT* reference.
-            sum += w * (1.0 + getRiskCost(p));
+            // (1 + risk) multiplier form matches the RRT* reference; the
+            // altitude-band term prices a chord that leaves the mission
+            // altitude (long diagonal ramp) against the in-band detour it
+            // replaces, so shortcutting preserves the hold-then-climb shape.
+            sum += w * (1.0 + getRiskCost(p) + altBandCost(p.z()));
         }
         return d * sum / (double)kRiskSamples;
-    };
-
-    // Shortcut visibility uses the same obstacle margin as A* search so the
-    // two stages stay consistent under debugging (e.g. setting margin very
-    // low to probe whether shortcut is producing obstacle-clipping straights).
-    auto segmentOccFree = [&](const Vector3d &a, const Vector3d &b) {
-        int n = std::max(1, (int)std::ceil((b - a).norm() / 0.5));
-        for (int k = 0; k <= n; ++k) {
-            double t = (double)k / (double)n;
-            Vector3d p = a + t * (b - a);
-            if (checkOccupancy_esdf(p)) return false;
-        }
-        return true;
     };
 
     // V3 shortcut risk filter: a shortcut is permitted iff its max
@@ -703,42 +720,114 @@ vector<Vector3d> PathSearcher::astarSearchAndGetSimplePath(const double step_siz
         seg_max[k] = segmentMaxRisk(path[k - 1], path[k]);
     }
 
-    auto segmentRiskOk = [&](size_t i, size_t j, const Vector3d &a, const Vector3d &b) {
-        if (!risk_zones_ || risk_zones_->empty()) return true;
-        // Max risk along the A*-chosen sub-polyline path[i..j].
-        double detour_max = 0.0;
-        for (size_t k = i + 1; k <= j; ++k) {
-            detour_max = std::max(detour_max, seg_max[k]);
-        }
-        const double shortcut_max = segmentMaxRisk(a, b);
-        // If the A* sub-polyline was risk-free, the shortcut must be too.
-        if (detour_max <= 1e-6) return shortcut_max <= 1e-6;
-        return shortcut_max <= detour_max * kShortcutRiskMargin;
-    };
-
     std::vector<double> cum_cost(path.size(), 0.0);
     for (size_t k = 1; k < path.size(); ++k) {
         cum_cost[k] = cum_cost[k - 1] + segmentRiskCost(path[k - 1], path[k]);
     }
 
-    vector<Vector3d> simple_path;
-    simple_path.push_back(path.front());
-    size_t i = 0;
-    while (i + 1 < path.size()) {
-        size_t farthest = i + 1;
-        for (size_t j = path.size() - 1; j > i + 1; --j) {
-            if (!segmentOccFree(path[i], path[j])) continue;
-            if (!segmentRiskOk(i, j, path[i], path[j])) continue;
-            double shortcut_cost = segmentRiskCost(path[i], path[j]);
-            double detour_cost   = cum_cost[j] - cum_cost[i];
-            if (shortcut_cost <= detour_cost * kShortcutMargin) {
-                farthest = j;
-                break;
+    // Single-pass chord check: occupancy + max-risk together, sampled in
+    // bisection order (stride L/2, L/4, ... down to <=0.5). A failing chord
+    // bails after a handful of coarse samples instead of paying the full
+    // 0.5-spacing scan; a passing chord ends up sampled at the same <=0.5
+    // density the old two-pass check used.
+    auto chordOccRisk = [&](const Vector3d &a, const Vector3d &b,
+                            double *max_risk_out) -> bool {
+        const bool need_risk = risk_zones_ && !risk_zones_->empty();
+        if (checkOccupancy_esdf(a) || checkOccupancy_esdf(b)) return false;
+        double mx = need_risk ? std::max(getRiskCost(a), getRiskCost(b)) : 0.0;
+        const double len = (b - a).norm();
+        if (len > 1e-9) {
+            for (double stride = 0.5 * len; ; stride *= 0.5) {
+                for (double sa = stride; sa < len; sa += 2.0 * stride) {
+                    const Vector3d p = a + (sa / len) * (b - a);
+                    if (checkOccupancy_esdf(p)) return false;
+                    if (need_risk) mx = std::max(mx, getRiskCost(p));
+                }
+                if (stride <= 0.5) break;
             }
         }
-        simple_path.push_back(path[farthest]);
+        if (max_risk_out) *max_risk_out = mx;
+        return true;
+    };
+
+    // Full chord acceptance: occupancy-free + V3 max-risk filter + cost
+    // margin (identical criteria to the old scan, evaluated once per chord).
+    auto chordOk = [&](size_t a, size_t b) -> bool {
+        if (b <= a + 1) return true;  // original segment, feasible by construction
+        double shortcut_max = 0.0;
+        if (!chordOccRisk(path[a], path[b], &shortcut_max)) return false;
+        if (risk_zones_ && !risk_zones_->empty()) {
+            double detour_max = 0.0;
+            for (size_t k = a + 1; k <= b; ++k)
+                detour_max = std::max(detour_max, seg_max[k]);
+            // If the A*-chosen sub-polyline was risk-free, the chord must be too.
+            if (detour_max <= 1e-6) {
+                if (shortcut_max > 1e-6) return false;
+            } else if (shortcut_max > detour_max * kShortcutRiskMargin) {
+                return false;
+            }
+        }
+        const double shortcut_cost = segmentRiskCost(path[a], path[b]);
+        const double detour_cost   = cum_cost[b] - cum_cost[a];
+        return shortcut_cost <= detour_cost * kShortcutMargin;
+    };
+
+    // Greedy farthest-feasible, found by exponential probe + binary search
+    // on the feasibility frontier: O(log n) chord tests per kept waypoint
+    // instead of the old end-backwards scan (O(n) full-length tests per
+    // waypoint, quadratic on curved sections where long chords keep
+    // failing). Feasibility is not strictly monotone in chord length, so
+    // around concave corners this can keep a point or two the exhaustive
+    // scan would have dropped — the MINCO back-end smooths those anyway.
+    std::vector<size_t> kept;
+    kept.push_back(0);
+    size_t i = 0;
+    const size_t last = path.size() - 1;
+    while (i + 1 < path.size()) {
+        size_t farthest;
+        if (chordOk(i, last)) {
+            farthest = last;  // straight-corridor fast path
+        } else {
+            size_t ok = i + 1, bad = last;
+            size_t step = 2;
+            while (i + step < last && chordOk(i, i + step)) {
+                ok = i + step;
+                step <<= 1;
+            }
+            if (i + step < last) bad = i + step;
+            while (ok + 1 < bad) {
+                const size_t mid = ok + (bad - ok) / 2;
+                if (chordOk(i, mid)) ok = mid;
+                else bad = mid;
+            }
+            farthest = ok;
+        }
+        kept.push_back(farthest);
         i = farthest;
     }
+
+    // Polish: feasibility is not monotone in chord length, so the frontier
+    // search can keep redundant corner points — a 17-unit segment wedged
+    // between 1000-unit ones. Such extreme spacing imbalance makes the MINCO
+    // time allocation loiter (looping knots at the short pieces), so try
+    // dropping each interior point and repeat until stable.
+    {
+        bool dropped = true;
+        while (dropped && kept.size() > 2) {
+            dropped = false;
+            for (size_t n = 1; n + 1 < kept.size(); ++n) {
+                if (chordOk(kept[n - 1], kept[n + 1])) {
+                    kept.erase(kept.begin() + n);
+                    dropped = true;
+                    --n;
+                }
+            }
+        }
+    }
+
+    vector<Vector3d> simple_path;
+    simple_path.reserve(kept.size());
+    for (size_t n : kept) simple_path.push_back(path[n]);
     if (log_manager_) {
         double max_risk_simple = 0.0;
         for (size_t k = 1; k < simple_path.size(); ++k) {
@@ -747,9 +836,10 @@ vector<Vector3d> PathSearcher::astarSearchAndGetSimplePath(const double step_siz
         }
         log_manager_->infof(
             "[A* SHORTCUT] raw=%zu → simple=%zu cost_margin=%.2f "
-            "risk_margin=%.2f max_risk_simple=%.3f",
+            "risk_margin=%.2f max_risk_simple=%.3f (%.1f ms)",
             path.size(), simple_path.size(),
-            kShortcutMargin, kShortcutRiskMargin, max_risk_simple);
+            kShortcutMargin, kShortcutRiskMargin, max_risk_simple,
+            (rclcpp::Clock().now() - t_sc0).seconds() * 1000.0);
     }
 
     // Remove near points (3D distance)
@@ -953,18 +1043,23 @@ double PathSearcher::coarseCostToGo(const Eigen::Vector3d &world) const
 // ===========================================================================
 namespace {
 constexpr float kFMin = 1e-3f;          // blocked-cell speed (never 0)
-
-// ESDF speed-map smoothing: scale free-space speed by clamp(d/d0, floor, 1)
-// for a continuous speed map. DISABLED (kEsdfSmoothCells huge → inert): it
-// didn't help and pushed paths too high. Kept for easy re-enable.
-static constexpr double kEsdfSmoothCells = 1e9;
-static constexpr double kProxFloor       = 0.05;
+// (An ESDF prox term used to multiply free-space speed here. Its "disabled"
+// setting actually clamped every free cell to 0.05, collapsing the intended
+// free:blocked speed ratio from 1000:1 to 50:1 — the wave could tunnel
+// through thin obstacles, barrier zones became slower than real walls, and
+// the FM2* heuristic (designed for F_max = 1) ran 20x weaker. Removed.)
 }
 
 void PathSearcher::fm2BuildSpeedMap()
 {
     fm2_valid_ = false;
-    if (map_size_.minCoeff() <= 0.0) return;
+    // Every early return must clear BOTH the dims and the buffer: leaving the
+    // new (larger) dims with last query's smaller fm2_F_ makes fm2SolveEikonal
+    // index out of bounds (heap OOB write at the goal cell, OOB cudaMemcpy on
+    // the GPU path), and leaving both stale silently solves on the previous
+    // map's speed field.
+    fm2_F_.clear();
+    if (map_size_.minCoeff() <= 0.0) { fcnx_ = fcny_ = fcnz_ = 0; return; }
 
     const double fine_res = map_resolution_ > 1e-6 ? map_resolution_ : 1.0;
     const double cres = fine_res * static_cast<double>(fm2_coarse_k_);
@@ -972,9 +1067,12 @@ void PathSearcher::fm2BuildSpeedMap()
     fcny_ = std::max(1, (int)std::ceil(map_size_.y() / cres));
     fcnz_ = std::max(1, (int)std::ceil(map_size_.z() / cres));
     const size_t N = (size_t)fcnx_ * fcny_ * fcnz_;
-    if (N == 0 || N > 8'000'000) return;
+    if (N == 0 || N > fm2_max_cells_) { fcnx_ = fcny_ = fcnz_ = 0; return; }
 
     fm2_F_.assign(N, 1.0f);
+    // Per-cell independent (distinct fm2_F_ writes; getRiskNorm/getDistance are
+    // read-only) -> parallelise. On the k=1 grid this is ~8 s single-threaded.
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int k = 0; k < fcnz_; ++k)
       for (int j = 0; j < fcny_; ++j)
         for (int i = 0; i < fcnx_; ++i) {
@@ -992,14 +1090,12 @@ void PathSearcher::fm2BuildSpeedMap()
                 const double r = getRiskNorm(w);
                 double risk_cost = risk_alpha_ * r;
                 if (insideBarrierZone(w)) risk_cost += risk_barrier_;
-                const double d0 = kEsdfSmoothCells * cres;
-                double prox = (double)sdf_->getDistance(w) / d0;
-                if (!std::isfinite(prox) || prox < kProxFloor)
-                    prox = kProxFloor;
-                else if (prox > 1.0)
-                    prox = 1.0;
+                // Altitude-band penalty (see altBandCost): keeps the
+                // geodesic at mission altitude over open water; it leaves the
+                // band only where the in-band route is blocked by terrain.
+                risk_cost += altBandCost(w.z());
                 fm2_F_[fm2Flat(i, j, k)] =
-                    (float)(prox * (1.0 / (1.0 + risk_cost)));
+                    (float)(1.0 / (1.0 + risk_cost));
             }
         }
 }
@@ -1007,10 +1103,12 @@ void PathSearcher::fm2BuildSpeedMap()
 void PathSearcher::fm2SolveEikonal(const Eigen::Vector3d &goal_world,
                             const Eigen::Vector3d &start_world)
 {
-    if (fm2_F_.empty()) return;
+    // Require the buffer to match the dims exactly — a stale buffer from a
+    // previous query with new dims would index out of bounds below.
+    const size_t N = (size_t)fcnx_ * fcny_ * fcnz_;
+    if (fm2_F_.empty() || fm2_F_.size() != N) return;
     const double fine_res = map_resolution_ > 1e-6 ? map_resolution_ : 1.0;
     const double cres = fine_res * static_cast<double>(fm2_coarse_k_);
-    const size_t N = (size_t)fcnx_ * fcny_ * fcnz_;
 
     Eigen::Vector3d rel = (goal_world - map_origin_) / cres;
     int gi = (int)std::floor(rel.x());
@@ -1018,6 +1116,28 @@ void PathSearcher::fm2SolveEikonal(const Eigen::Vector3d &goal_world,
     int gk = (int)std::floor(rel.z());
     if (gi < 0 || gi >= fcnx_ || gj < 0 || gj >= fcny_ ||
         gk < 0 || gk >= fcnz_) return;
+
+#ifdef PP_HAVE_CUDA
+    // GPU eikonal (Fast Iterative Method): same Godunov as the CPU FMM below,
+    // orders of magnitude faster on large grids. Solves the whole field (no
+    // FM2* early stop needed). Any failure / missing device falls through to
+    // the CPU FMM. fm2EikonalGPU writes a large sentinel for unreached cells;
+    // convert it back to +inf so the geodesic sampler treats them as holes.
+    // Debug: PP_FM2_FORCE_CPU=1 skips the GPU solver to compare solutions.
+    const char *force_cpu = std::getenv("PP_FM2_FORCE_CPU");
+    if (!(force_cpu && std::string(force_cpu) == "1") && fm2CudaAvailable()) {
+      fm2_T_.resize(N);
+      const int gpu_gflat = fm2Flat(gi, gj, gk);
+      if (fm2_F_[gpu_gflat] <= kFMin) fm2_F_[gpu_gflat] = 0.5f;
+      if (fm2EikonalGPU(fm2_F_.data(), fcnx_, fcny_, fcnz_,
+                        static_cast<float>(cres), gi, gj, gk, fm2_T_.data())) {
+        const float inf = std::numeric_limits<float>::infinity();
+        for (float &t : fm2_T_) if (t >= 1e17f) t = inf;
+        fm2_valid_ = true;
+        return;
+      }
+    }
+#endif
 
     const float INF = std::numeric_limits<float>::infinity();
     fm2_T_.assign(N, INF);
@@ -1233,9 +1353,34 @@ std::vector<Eigen::Vector3d> PathSearcher::fm2ExtractGeodesic(
         const Eigen::Vector3d pmid = p - 0.5 * step * g1.normalized();
         const Eigen::Vector3d g = gradT(pmid, g2) ? g2 : g1;
         p -= step * g.normalized();        // descend -∇T
+        // Keep the descent inside the grid: outside it the trilinear sample
+        // clamps and the z-gradient degenerates to 0, so the path can drift
+        // below the map floor (z<0) with nothing to push it back.
+        p.z() = std::clamp(p.z(), map_origin_.z() + 0.5 * cres,
+                           map_origin_.z() + map_size_.z() - 0.5 * cres);
         path.push_back(p);
     }
     path.push_back(goal_world);
+
+    // Moving-average smoothing of z ONLY (endpoints pinned). The descent
+    // leaves a small cell-scale sawtooth in z; averaging removes it. xy stays
+    // exactly on the descent so risk-zone detours keep their horizontal
+    // clearance — a full 3D average can cut corners INTO a zone. (Zones do
+    // have a z-cap at |z - center.z| >= reach, so z-smoothing is not strictly
+    // zone-neutral; but the window only moves z by a fraction of a cell,
+    // while the cap sits hundreds of metres above any flown path.)
+    if (path.size() > 8) {
+        const int W = 4;  // half-window, in samples (step = 0.6*cres)
+        std::vector<double> zs(path.size());
+        for (size_t n = 0; n < path.size(); ++n) zs[n] = path[n].z();
+        for (size_t n = 1; n + 1 < path.size(); ++n) {
+            const int lo = std::max<int>(0, (int)n - W);
+            const int hi = std::min<int>((int)path.size() - 1, (int)n + W);
+            double acc = 0.0;
+            for (int m = lo; m <= hi; ++m) acc += zs[m];
+            path[n].z() = acc / double(hi - lo + 1);
+        }
+    }
     return path;
 }
 

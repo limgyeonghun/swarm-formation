@@ -127,6 +127,7 @@ bool SDFManager::initialize(double voxel_size) {
 bool SDFManager::buildFromVoxels(const uint8_t* occupancy,
                                   int nx, int ny, int nz,
                                   const Eigen::Vector3d& origin) {
+  ++revision_;
   if (!impl_->initialized) {
     std::cerr << "[SDFManager] buildFromVoxels: not initialized\n";
     return false;
@@ -323,6 +324,7 @@ bool SDFManager::saveToFile(const std::string& path) const {
 bool SDFManager::loadFromFile(const std::string& path,
                                const Eigen::Vector3d& /*bbox_lo*/,
                                const Eigen::Vector3d& /*bbox_hi*/) {
+  ++revision_;
   std::ifstream f(path, std::ios::binary);
   if (!f) {
     std::cerr << "[SDFManager] loadFromFile: cannot open " << path << "\n";
@@ -607,6 +609,22 @@ float SDFManager::getDistance(const Eigen::Vector3d& pos) const {
   return best;
 }
 
+float SDFManager::getDynamicDistance(const Eigen::Vector3d& pos) const {
+  // Patch-only distance (no static terrain). +inf outside every patch AABB,
+  // so it is only meaningful within influenceRadius() of an obstacle — which
+  // is exactly the range a stand-off margin needs.
+  float best = std::numeric_limits<float>::infinity();
+  if (!impl_->initialized) return best;
+  for (const auto& patch : impl_->patches) {
+    float d_p;
+    if (samplePatch(patch, impl_->voxel_size, impl_->origin, pos,
+                    &d_p, nullptr)) {
+      if (d_p < best) best = d_p;
+    }
+  }
+  return best;
+}
+
 bool SDFManager::getDistanceAndGradient(const Eigen::Vector3d& pos,
                                          float* distance,
                                          Eigen::Vector3d* gradient) const {
@@ -681,6 +699,7 @@ double SDFManager::influenceRadius() const {
 }
 
 int SDFManager::addObstacle(const PrimitiveSpec& spec) {
+  ++revision_;
   if (!impl_->initialized || !impl_->has_data) {
     std::cerr << "[SDFManager] addObstacle: static layer not built\n";
     return -1;
@@ -748,6 +767,7 @@ int SDFManager::addObstacle(const PrimitiveSpec& spec) {
 }
 
 void SDFManager::removeObstacle(int patch_id) {
+  ++revision_;
   if (patch_id < 0 ||
       static_cast<size_t>(patch_id) >= impl_->patches.size()) return;
   auto& p = impl_->patches[patch_id];
@@ -756,6 +776,7 @@ void SDFManager::removeObstacle(int patch_id) {
 }
 
 void SDFManager::clearObstacles() {
+  ++revision_;
   impl_->patches.clear();
 }
 

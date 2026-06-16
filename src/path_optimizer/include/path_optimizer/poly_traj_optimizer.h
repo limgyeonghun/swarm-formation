@@ -139,6 +139,11 @@ namespace ego_planner
     // Risk zone data for trajectory optimization.
     std::vector<RiskZone> risk_zones_;
     bool use_risk_zones_{false};
+    // Altitude band cap: cubic penalty on z above alt_zhi_ (mission altitude
+    // + allowance). Keeps the sparse-piece quintic from ballooning hundreds
+    // of metres above ridge crossings; 0 weight disables.
+    double wei_alt_{0.0};
+    double alt_zhi_{-1.0};
 
   public:
     PolyTrajOptimizer() {}
@@ -159,6 +164,11 @@ namespace ego_planner
     void setRiskZones(const std::vector<RiskZone> &zones) {
         risk_zones_ = zones;
         use_risk_zones_ = !zones.empty();
+    }
+
+    void setAltitudeBand(double z_hi, double weight) {
+        alt_zhi_ = z_hi;
+        wei_alt_ = std::max(0.0, weight);
     }
 
     inline ConstrainPoints getControlPoints() { return cps_; }

@@ -208,10 +208,18 @@ void run(const Scenario &s, double alpha, double h_weight, const MapSpec &map) {
       : path_planner::search::PathSearcher::FrontEnd::ASTAR);
   astar.setFm2CoarseK(g_fm2_k);
   astar.setFm2Star(g_fm2_star);
+  // Allow runtime-scale grids in offline debugging (default cap is 8M cells).
+  if (const char *mc = std::getenv("FM2_MAX_CELLS"))
+    astar.setFm2MaxCells(static_cast<size_t>(std::strtoull(mc, nullptr, 10)));
+  // Match the runtime obstacle margin when reproducing live-flight issues.
+  if (const char *om = std::getenv("OBSTACLE_MARGIN"))
+    astar.setObstacleMargin(std::atof(om));
   // Keep the raw front-end geodesic (no shortcut collapse) so the
   // path-integrated risk metric reflects the actual route taken,
   // not a 4-point straight-line simplification.
-  astar.setBypassShortcut(true);
+  bool bypass_sc = true;
+  if (const char *bs = std::getenv("BYPASS_SHORTCUT")) bypass_sc = (std::string(bs) != "0");
+  astar.setBypassShortcut(bypass_sc);
   Eigen::Vector3i pool(
       static_cast<int>(map.size.x() / map.voxel),
       static_cast<int>(map.size.y() / map.voxel),

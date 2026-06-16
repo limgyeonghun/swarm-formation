@@ -30,12 +30,21 @@ namespace path_manager
         node_->declare_parameter("manager/risk_smha_w", 2.0);
         node_->declare_parameter("manager/front_end", std::string("fm2"));
         node_->declare_parameter("manager/fm2_coarse_k", 4);
+        node_->declare_parameter("manager/fm2_max_cells", 8000000);
         node_->declare_parameter("manager/fm2_star", true);
+        node_->declare_parameter("manager/fm2_alt_penalty", 2.0);
+        node_->declare_parameter("manager/fm2_alt_zscale", 10.0);
+        node_->declare_parameter("manager/fm2_alt_zscale_down", 2.0);
         node_->declare_parameter("manager/astar_bypass_shortcut", false);
         node_->declare_parameter("manager/astar_step_size", 1.0);
         node_->declare_parameter("manager/sdf_voxel_size", 1.0);
         node_->declare_parameter("manager/ground_height", -0.1);
         node_->declare_parameter("manager/virtual_ceil_height", -0.1);
+        node_->declare_parameter("manager/obstacle_clearance", 0.3);
+        node_->declare_parameter("manager/dyn_obstacle_margin", 3.0);
+        node_->declare_parameter("optimization/obstacle_clearance", 0.7);
+        node_->declare_parameter("optimization/weight_altitude", 1000.0);
+        node_->declare_parameter("manager/corner_fillet_radius", 0.0);
         node_->get_parameter("manager/max_vel", max_vel_);
         node_->get_parameter("manager/max_acc", max_acc_);
         node_->get_parameter("manager/length_per_piece", length_per_piece_);
@@ -44,12 +53,25 @@ namespace path_manager
         node_->get_parameter("manager/risk_smha_w", risk_smha_w_);
         node_->get_parameter("manager/front_end", front_end_str_);
         node_->get_parameter("manager/fm2_coarse_k", fm2_coarse_k_);
+        node_->get_parameter("manager/fm2_max_cells", fm2_max_cells_);
         node_->get_parameter("manager/fm2_star", fm2_star_);
+        node_->get_parameter("manager/fm2_alt_penalty", fm2_alt_penalty_);
+        node_->get_parameter("manager/fm2_alt_zscale", fm2_alt_zscale_);
+        node_->get_parameter("manager/fm2_alt_zscale_down", fm2_alt_zscale_dn_);
         node_->get_parameter("manager/astar_bypass_shortcut", astar_bypass_shortcut_);
         node_->get_parameter("manager/astar_step_size", astar_step_size_);
         node_->get_parameter("manager/sdf_voxel_size", sdf_voxel_size_);
         node_->get_parameter("manager/ground_height", ground_height_);
         node_->get_parameter("manager/virtual_ceil_height", virtual_ceil_height_);
+        node_->get_parameter("manager/obstacle_clearance", obstacle_clearance_);
+        node_->get_parameter("manager/dyn_obstacle_margin", dyn_obstacle_margin_);
+        node_->get_parameter("optimization/obstacle_clearance", opt_obstacle_clearance_);
+        node_->get_parameter("optimization/weight_altitude", weight_altitude_);
+        node_->get_parameter("manager/corner_fillet_radius", corner_fillet_radius_);
+        // Patches must extend at least as far as the dynamic berth, or the
+        // distance query reads +inf before the margin is reached.
+        if (dyn_obstacle_margin_ > sdf_manager_.influenceRadius())
+            sdf_manager_.setInfluenceRadius(dyn_obstacle_margin_);
 
         // Building-mesh rendering of dynamic obstacles (see publishDynamicObstacles).
         node_->declare_parameter("obstacle_mesh_resource",
@@ -264,7 +286,12 @@ namespace path_manager
 
             // Wire SDF-based obstacle avoidance into the optimizer.
             poly_traj_opt_->setSDFManager(&sdf_manager_);
-            poly_traj_opt_->setObstacleClearance(obstacle_clearance_);
+            // Strictly below the front-end margin: a margin-respecting path then
+            // carries ZERO obstacle cost, so its 10000-weighted gradient cannot
+            // pin the geometry to the polyline and smoothness can round corners
+            // inside the (margin - clearance) buffer.
+            poly_traj_opt_->setObstacleClearance(
+                std::min(opt_obstacle_clearance_, obstacle_clearance_));
             poly_traj_opt_->setGroundHeight(ground_height_);
             poly_traj_opt_->setVirtualCeilHeight(virtual_ceil_height_);
 
@@ -438,16 +465,21 @@ namespace path_manager
                 }
                 return false;
             }
+            // A successful full-terrain build is valid in memory whether or
+            // not it can be persisted — gating the skip-rebuild flag on the
+            // file save meant an unwritable esdf_dir forced the multi-minute
+            // rebuild on EVERY plan.
+            if (use_cache) sdf_loaded_from_file_ = true;
             // Persist on first successful build if requested (terrain must exist).
             if (will_persist) {
                 if (sdf_manager_.saveToFile(save_terrain_esdf_path_)) {
                     log_manager_->infof("SDF saved to %s",
                                         save_terrain_esdf_path_.c_str());
-                    sdf_loaded_from_file_ = true;  // skip rebuild next mission
                     publishTerrainStatus("ESDF cache ready: " + save_terrain_esdf_path_);
                 } else {
                     publishTerrainStatus(
-                        "ESDF build done but save failed → " + save_terrain_esdf_path_);
+                        "ESDF build done but save failed (cache kept in memory) → " +
+                        save_terrain_esdf_path_);
                 }
             }
         }
@@ -456,6 +488,36 @@ namespace path_manager
         // The SDF is now ready — add any obstacles deferred before it existed
         // (no ESDF cache on a fresh run), so they make it into this first plan.
         flushPendingObstacles();
+
+        // Static yaml obstacles ride the dynamic-patch layer (they are no
+        // longer baked into the terrain ESDF — see buildSDFForBounds). Apply
+        // once per process; the patches persist on the SDF afterwards.
+        if (!static_obstacles_applied_ && !obstacle_centers_.empty()) {
+            int applied = 0;
+            for (const auto &obs : obstacle_centers_) {
+                path_planner::sdf::PrimitiveSpec spec;
+                // Cube (L∞) footprint for circles too, matching the old bake:
+                // an analytic cylinder has zero horizontal SDF gradient on its
+                // axis, which pins L-BFGS at a saddle.
+                spec.kind = path_planner::sdf::PrimitiveKind::kCube;
+                const double r = (obs.param1 > 0) ? obs.param1 : 0.5;
+                const double sx = (obs.shape == ObstacleShape::CIRCLE) ? 2.0 * r : obs.param1;
+                const double sy = (obs.shape == ObstacleShape::CIRCLE) ? 2.0 * r : obs.param2;
+                // z_extent == 0 means "infinite column" (full map span).
+                const double z0 = (obs.z_extent > 0.0) ? obs.center.z() : sdf_lo.z();
+                const double z1 = (obs.z_extent > 0.0) ? obs.center.z() + obs.z_extent
+                                                       : sdf_hi.z();
+                spec.center = Eigen::Vector3d(obs.center.x(), obs.center.y(),
+                                              0.5 * (z0 + z1));
+                spec.size = Eigen::Vector3d(sx, sy, std::max(z1 - z0, sdf_voxel_size_));
+                if (sdf_manager_.addObstacle(spec) >= 0) ++applied;
+                else log_manager_->warnf("static obstacle patch failed at (%.1f,%.1f)",
+                                         obs.center.x(), obs.center.y());
+            }
+            static_obstacles_applied_ = true;
+            log_manager_->infof("Applied %d/%zu static yaml obstacles as SDF patches",
+                                applied, obstacle_centers_.size());
+        }
 
         // SDF sanity probe at start/goal.
         {
@@ -469,7 +531,12 @@ namespace path_manager
         // Sample the ESDF on a coarse grid and publish occupied voxels as a
         // CUBE_LIST so the user can overlay them on the terrain mesh in RViz
         // to confirm terrain → SDF mapping.
-        if (esdf_occ_pub_) {
+        if (esdf_occ_pub_ && sdf_manager_.revision() != esdf_viz_revision_) {
+            esdf_viz_revision_ = sdf_manager_.revision();
+            // Re-sampling the whole mission volume (hundreds of millions of
+            // SDF queries -> tens of seconds) every plan is pointless while
+            // the SDF is unchanged; the revision gate republishes only after
+            // a rebuild/load or dynamic-obstacle change.
             const double step = 1.0;
             Eigen::Vector3d lo = map_lower_bound_;
             Eigen::Vector3d hi = map_upper_bound_;
@@ -567,7 +634,10 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
             ? path_planner::search::PathSearcher::FrontEnd::FM2
             : path_planner::search::PathSearcher::FrontEnd::ASTAR);
         searcher_.setFm2CoarseK(fm2_coarse_k_);
+        searcher_.setFm2MaxCells(static_cast<size_t>(fm2_max_cells_));
         searcher_.setFm2Star(fm2_star_);
+        searcher_.setFm2AltPenalty(fm2_alt_penalty_, fm2_alt_zscale_, fm2_alt_zscale_dn_);
+        searcher_.setDynObstacleMargin(dyn_obstacle_margin_);
         searcher_.setBypassShortcut(astar_bypass_shortcut_);
 
         // A* fine pool is only used by the A* front-end. FM2 runs on its
@@ -626,6 +696,83 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
             }
         }
 
+        // === Corner fillets: replace each polyline kink with a circular arc ===
+        // The back-end has no minimum-speed/curvature constraint (quadrotor
+        // heritage): given a kinked polyline it just brakes at the kink, so
+        // the optimized geometry stays angular no matter the accel limit. A
+        // fixed-radius fillet bakes the coordinated-turn shape into the input
+        // instead. Arcs that would clip terrain (SDF below clearance) or
+        // enter a risk zone the corner itself avoids shrink R and retry.
+        if (corner_fillet_radius_ > 1e-6 && full_route.size() >= 3) {
+            auto sample_ok = [&](const Eigen::Vector3d &p,
+                                 const Eigen::Vector3d &corner) {
+                if (sdf_manager_.hasData() &&
+                    sdf_manager_.getDistance(p) < obstacle_clearance_) return false;
+                for (const auto &tz : risk_zones_) {
+                    const double dz_c = corner.z() - tz.center.z();
+                    const double dz_p = p.z() - tz.center.z();
+                    const bool corner_in =
+                        std::abs(dz_c) < tz.reach &&
+                        (corner.head<2>() - tz.center.head<2>()).squaredNorm() <
+                            tz.reach * tz.reach;
+                    const bool p_in =
+                        std::abs(dz_p) < tz.reach &&
+                        (p.head<2>() - tz.center.head<2>()).squaredNorm() <
+                            tz.reach * tz.reach;
+                    if (p_in && !corner_in) return false;  // arc dips INTO a zone
+                }
+                return true;
+            };
+
+            std::vector<Eigen::Vector3d> rounded;
+            rounded.reserve(full_route.size() * 4);
+            rounded.push_back(full_route.front());
+            for (size_t n = 1; n + 1 < full_route.size(); ++n) {
+                const Eigen::Vector3d &A = full_route[n - 1];
+                const Eigen::Vector3d &B = full_route[n];
+                const Eigen::Vector3d &C = full_route[n + 1];
+                const double d1 = (A - B).norm(), d2 = (C - B).norm();
+                if (d1 < 1e-6 || d2 < 1e-6) { rounded.push_back(B); continue; }
+                const Eigen::Vector3d u = (A - B) / d1, w = (C - B) / d2;
+                const double cosphi = std::clamp(u.dot(w), -1.0, 1.0);
+                const double phi = std::acos(cosphi);   // interior angle at B
+                if (phi > M_PI - 0.05) { rounded.push_back(B); continue; }  // ~straight
+
+                bool placed = false;
+                for (double R = corner_fillet_radius_; R > 1.0; R *= 0.5) {
+                    double t = R / std::tan(0.5 * phi);
+                    const double t_cap = 0.45 * std::min(d1, d2);
+                    double R_eff = R;
+                    if (t > t_cap) { t = t_cap; R_eff = t * std::tan(0.5 * phi); }
+                    const Eigen::Vector3d P1 = B + u * t, P2 = B + w * t;
+                    // Quadratic Bezier P1->B->P2 approximates the arc and is
+                    // tangent to both segments; sample every ~3 units.
+                    const int N = std::max(3, (int)std::ceil((P1 - P2).norm() / 3.0));
+                    std::vector<Eigen::Vector3d> arc;
+                    bool ok = true;
+                    for (int k = 1; k < N; ++k) {
+                        const double a = (double)k / N, b = 1.0 - a;
+                        const Eigen::Vector3d p = b * b * P1 + 2 * a * b * B + a * a * P2;
+                        if (!sample_ok(p, B)) { ok = false; break; }
+                        arc.push_back(p);
+                    }
+                    if (!ok) continue;            // shrink R, retry
+                    rounded.push_back(P1);
+                    rounded.insert(rounded.end(), arc.begin(), arc.end());
+                    rounded.push_back(P2);
+                    placed = true;
+                    (void)R_eff;
+                    break;
+                }
+                if (!placed) rounded.push_back(B);  // keep the kink
+            }
+            rounded.push_back(full_route.back());
+            log_manager_->infof("corner fillet R=%.1f: %zu -> %zu pts",
+                                corner_fillet_radius_, full_route.size(),
+                                rounded.size());
+            full_route.swap(rounded);
+        }
+
         auto t_rrt_end = std::chrono::steady_clock::now();
         log_manager_->infof("A* route: %zu waypoints (%.1f ms)",
             full_route.size(),
@@ -636,10 +783,15 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
         // = 1 - prod_i (1 - m_i), in [0,1]. (Previously this logged a Gaussian *
         // risk_weight, which did NOT match the planner and made edge passes look
         // far riskier than they are.)
+        // Full per-waypoint dump only for small routes: at FM2 k=1 the raw
+        // route is 30k+ points and 30k formatted log lines cost ~10 s/plan.
+        const size_t kRiskDumpMax = 200;
+        double dbg_risk_max = 0.0, dbg_risk_sum = 0.0;
         for (size_t ri = 0; ri < full_route.size(); ++ri) {
             const auto &p = full_route[ri];
             double survival = 1.0;
             std::string per_zone;
+            const bool dump = full_route.size() <= kRiskDumpMax;
             for (size_t zi = 0; zi < risk_zones_.size(); ++zi) {
                 const auto &tz = risk_zones_[zi];
                 double dist = (p - tz.center).norm();
@@ -649,13 +801,26 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
                     moat = tz.peak * u * u;
                 }
                 survival *= (1.0 - std::min(moat, 1.0 - 1e-3));
-                char buf[64];
-                std::snprintf(buf, sizeof(buf), " tz%zu(d=%.2f,m=%.3f)",
-                              zi, dist, moat);
-                per_zone += buf;
+                if (dump) {
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), " tz%zu(d=%.2f,m=%.3f)",
+                                  zi, dist, moat);
+                    per_zone += buf;
+                }
             }
-            log_manager_->infof("  A*[%zu]: (%.2f, %.2f, %.2f) risk=%.3f%s",
-                ri, p.x(), p.y(), p.z(), 1.0 - survival, per_zone.c_str());
+            const double r = 1.0 - survival;
+            dbg_risk_max = std::max(dbg_risk_max, r);
+            dbg_risk_sum += r;
+            if (dump) {
+                log_manager_->infof("  A*[%zu]: (%.2f, %.2f, %.2f) risk=%.3f%s",
+                    ri, p.x(), p.y(), p.z(), r, per_zone.c_str());
+            }
+        }
+        if (full_route.size() > kRiskDumpMax) {
+            log_manager_->infof(
+                "  A* route risk: %zu wp, max=%.3f mean=%.4f (per-wp dump skipped)",
+                full_route.size(), dbg_risk_max,
+                dbg_risk_sum / std::max<size_t>(1, full_route.size()));
         }
 
         // Front-end route as nav_msgs/Path → mmp_visualization converts it to a
@@ -712,57 +877,30 @@ bool PathManager::planFrontEnd(const Eigen::Vector3d &start_pos,
             search_path_pub_->publish(dots);
         }
 
-        // === STEP 3: Corner-adaptive densification of the A* shortcut. ===
-        // Two spacing regimes: dense near sharp corners (small kinks absorb the
-        // turn so the 5th-order MINCO polynomial can't loop), coarse on long
-        // straights (big loosely-linked pieces L-BFGS can reshape freely).
-        const double dense_step  = std::max(0.5, length_per_piece_);
-        const double coarse_step = std::max(dense_step, length_per_piece_ * 4.0);
-        const double corner_band = 6.0 * dense_step;   // m around each corner
-        const double corner_angle_thresh_deg = 20.0;   // "sharp" if ≥ this
-
-        auto is_sharp_corner = [&](size_t i) -> bool {
-            if (i == 0 || i + 1 >= full_route.size()) return false;
-            Eigen::Vector3d v_in  = (full_route[i]     - full_route[i - 1]).normalized();
-            Eigen::Vector3d v_out = (full_route[i + 1] - full_route[i]    ).normalized();
-            double c = std::clamp(v_in.dot(v_out), -1.0, 1.0);
-            double ang_deg = std::acos(c) * 180.0 / M_PI;
-            return ang_deg >= corner_angle_thresh_deg;
-        };
-
+        // === STEP 3: Sparse piece boundaries (reference-style). ===
+        // The shortcut vertices ARE the geometry; we only subdivide long
+        // segments so the optimizer's per-piece obstacle sampling stays dense
+        // enough. NO corner densification: pinning extra points at corners is
+        // what kept the min-jerk pieces from rounding them — with long free
+        // pieces the quintic sweeps through a corner waypoint on a wide arc
+        // by itself (Swarm-Formation / GCOPTER structure).
+        const double max_seg = std::max(1.0, length_per_piece_ * 4.0);
         clean_path.clear();
-        clean_path.reserve(full_route.size() * 8);
+        clean_path.reserve(full_route.size() * 4);
         clean_path.push_back(full_route.front());
-
         for (size_t i = 0; i + 1 < full_route.size(); ++i) {
             const Eigen::Vector3d &a = full_route[i];
             const Eigen::Vector3d &b = full_route[i + 1];
             const double seg_len = (b - a).norm();
             if (seg_len < 1e-6) continue;
-
-            const bool corner_start = is_sharp_corner(i);
-            const bool corner_end   = is_sharp_corner(i + 1);
-
-            // Walk from a to b in variable-size steps.  We pick the step
-            // length at the current distance-along-segment so corner bands
-            // shrink it on both ends.
-            double t = 0.0;
-            while (t < seg_len - 1e-6) {
-                double d_to_start = t;
-                double d_to_end   = seg_len - t;
-                bool near_start = corner_start && d_to_start < corner_band;
-                bool near_end   = corner_end   && d_to_end   < corner_band;
-                double step = (near_start || near_end) ? dense_step : coarse_step;
-                double t_next = std::min(seg_len, t + step);
-                double alpha  = t_next / seg_len;
-                clean_path.push_back(a + alpha * (b - a));
-                t = t_next;
+            const int n_sub = std::max(1, (int)std::ceil(seg_len / max_seg));
+            for (int kk = 1; kk <= n_sub; ++kk) {
+                clean_path.push_back(a + (b - a) * ((double)kk / n_sub));
             }
         }
         log_manager_->infof(
-            "A* shortcut %zu pts → corner-adaptive %zu pts "
-            "(dense %.2f m @ corners, coarse %.2f m on straights)",
-            full_route.size(), clean_path.size(), dense_step, coarse_step);
+            "A* shortcut %zu pts → sparse pieces %zu pts (max_seg %.1f)",
+            full_route.size(), clean_path.size(), max_seg);
 
         // Publish initial path for RViz (orange).
         if (shorten_path_pub_) {
@@ -811,6 +949,13 @@ bool PathManager::optimizeStage(std::vector<Eigen::Vector3d> &clean_path,
 
         double global_time = rclcpp::Clock(RCL_ROS_TIME).now().seconds();
         poly_traj::Trajectory global_traj, local_traj;
+        // Mission altitude band for the optimizer's z-cap: one unit of
+        // allowance above the higher endpoint (ridge crossings exceed it and
+        // pay, which is exactly the "only climb when terrain demands" rule).
+        {
+            double z_hi = std::max(start_pos.z(), waypoints.back().z()) + 1.0;
+            poly_traj_opt_->setAltitudeBand(z_hi, weight_altitude_);
+        }
         bool opt_success = poly_traj_opt_->optimizeFromPath(
             clean_path, start_pos, start_vel, start_acc, waypoints, max_vel_,
             global_traj, local_traj);
@@ -1186,61 +1331,13 @@ bool PathManager::buildSDFForBounds(const Eigen::Vector3d &lo,
         log_manager_->infof("Terrain → SDF: terrain_data_ INVALID (not applied)");
     }
 
-    // Geometry obstacles.
-    auto compute_z_range = [&](const Obstacle &obs, int &zi_lo, int &zi_hi) {
-        // z_extent == 0 means "infinite column" for back-compat.
-        if (obs.z_extent <= 0.0) {
-            zi_lo = 0;
-            zi_hi = nz;
-        } else {
-            zi_lo = std::max(0,  (int)std::floor((obs.center.z() - lo.z()) / res));
-            zi_hi = std::min(nz, (int)std::ceil ((obs.center.z() + obs.z_extent - lo.z()) / res));
-        }
-    };
-
-    for (const auto &obs : obstacle_centers_) {
-        int zi_lo, zi_hi;
-        compute_z_range(obs, zi_lo, zi_hi);
-        if (zi_hi <= zi_lo) continue;
-
-        if (obs.shape == ObstacleShape::CIRCLE) {
-            // Cube (L∞) inflation matching main-branch behaviour: the "radius"
-            // is interpreted as a half-side. A perfect analytic cylinder
-            // (dx² + dy² ≤ r²) has full rotational symmetry and produces
-            // exactly-zero horizontal SDF gradients on its axis, which pins
-            // L-BFGS at a saddle point. The cube breaks that symmetry
-            // (corners are farther than face midpoints) and gives the
-            // optimiser a usable horizontal descent direction even when the
-            // trajectory lies on the obstacle's centre axis.
-            double r = (obs.param1 > 0) ? obs.param1 : 0.5;
-            int xi_lo = std::max(0,   (int)std::floor((obs.center.x() - r - lo.x()) / res));
-            int xi_hi = std::min(nx,  (int)std::ceil ((obs.center.x() + r - lo.x()) / res));
-            int yi_lo = std::max(0,   (int)std::floor((obs.center.y() - r - lo.y()) / res));
-            int yi_hi = std::min(ny,  (int)std::ceil ((obs.center.y() + r - lo.y()) / res));
-            for (int xi = xi_lo; xi < xi_hi; ++xi) {
-                double wx = lo.x() + (xi + 0.5) * res;
-                for (int yi = yi_lo; yi < yi_hi; ++yi) {
-                    double wy = lo.y() + (yi + 0.5) * res;
-                    double dx = wx - obs.center.x();
-                    double dy = wy - obs.center.y();
-                    if (std::max(std::abs(dx), std::abs(dy)) > r) continue;
-                    for (int zi = zi_lo; zi < zi_hi; ++zi) occ[idx(xi, yi, zi)] = 1;
-                }
-            }
-        } else if (obs.shape == ObstacleShape::RECTANGLE) {
-            double hw = obs.param1 * 0.5;
-            double hh = obs.param2 * 0.5;
-            int xi_lo = std::max(0,  (int)std::floor((obs.center.x() - hw - lo.x()) / res));
-            int xi_hi = std::min(nx, (int)std::ceil ((obs.center.x() + hw - lo.x()) / res));
-            int yi_lo = std::max(0,  (int)std::floor((obs.center.y() - hh - lo.y()) / res));
-            int yi_hi = std::min(ny, (int)std::ceil ((obs.center.y() + hh - lo.y()) / res));
-            for (int xi = xi_lo; xi < xi_hi; ++xi) {
-                for (int yi = yi_lo; yi < yi_hi; ++yi) {
-                    for (int zi = zi_lo; zi < zi_hi; ++zi) occ[idx(xi, yi, zi)] = 1;
-                }
-            }
-        }
-    }
+    // Geometry obstacles (obstacle_centers_) are NOT voxelised here any more.
+    // Baking them had two failure modes: with an ESDF cache in use they were
+    // silently absent (the build is skipped), and when the cache was first
+    // built they were permanently fused into the reusable "terrain" file.
+    // They are applied as dynamic patches after the SDF is ready instead
+    // (applyStaticObstaclePatches), which works identically for cache-loaded
+    // and freshly built SDFs and keeps the cache pure terrain.
 
     // NOTE: ground and virtual ceiling are NOT voxelised here. Folding them
     // into the SDF would drag the clearance band above/below the actual

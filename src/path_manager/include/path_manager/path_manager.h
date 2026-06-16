@@ -195,13 +195,25 @@ namespace path_manager
     std::shared_ptr<rclcpp::Node> node_;
     std::vector<Eigen::Vector3d> simple_path_;
     std::vector<Obstacle> obstacle_centers_;
+    // Yaml obstacles are applied once as SDF dynamic patches (not baked into
+    // the terrain ESDF / its cache file) — see planGlobalTraj.
+    bool static_obstacles_applied_{false};
     std::vector<RiskZone> risk_zones_;
     double risk_weight_;
     double risk_barrier_{100.0};   // front-end finite "hard wall" inside zones
     double risk_smha_w_{2.0};
     std::string front_end_str_{"fm2"};
     int fm2_coarse_k_{4};
+    int fm2_max_cells_{8000000};  // FMM grid cell-count cap (tunable)
     bool fm2_star_{true};
+    double fm2_alt_penalty_{2.0};  // wave slowdown above mission altitude
+    double fm2_alt_zscale_{10.0};  // up-side ramp (gentle: climbs allowed)
+    double fm2_alt_zscale_dn_{2.0};// down-side ramp (stiff: no diving)
+    double dyn_obstacle_margin_{3.0};  // berth around dynamic obstacles
+    double opt_obstacle_clearance_{0.7};  // optimizer penalty onset (< front-end margin)
+    double weight_altitude_{1000.0};      // optimizer z-cap weight above mission band
+    double corner_fillet_radius_{0.0};    // legacy geometric fallback; 0 = off
+    uint64_t esdf_viz_revision_{~0ull};   // last SDF revision published as cubes
     bool astar_bypass_shortcut_{false};
     Eigen::Vector3d map_lower_bound_;
     Eigen::Vector3d map_upper_bound_;

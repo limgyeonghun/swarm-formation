@@ -165,7 +165,7 @@ namespace ego_planner
         poly_traj::Trajectory final_traj = jerkOpt_.getTraj();
         double total_jerk = computeTotalJerk(final_traj);
         double max_jerk = computeMaxJerk(final_traj);
-        log_manager_->infof("[JERK METRICS] total_jerk=%.6f, max_jerk=%.6f m/s³, duration=%.3f s",
+        log_manager_->infof("[JERK METRICS] total_jerk=%.6f, max_jerk=%.6f units/s³ (x100 m/s³), duration=%.3f s",
                             total_jerk, max_jerk, final_traj.getTotalDuration());
 
         log_manager_->infof("[COST] formation_cost=%f (wei_formation=%f, similarity=%f)", dbg_cost_formation_, wei_formation_, debug_similarity_);
@@ -480,6 +480,25 @@ namespace ego_planner
             costs(3) += omg * step * costp;
         }
 
+        // Altitude-band cap (cubic above the mission band, like the obstacle
+        // violation shape). Booked into the risk slot (3): both are
+        // "exposure" costs. Down-side is covered by ground/obstacle terms.
+        if (wei_alt_ > 0.0 && alt_zhi_ >= 0.0 && pos.z() > alt_zhi_) {
+            // QUADRATIC, not cubic: ridge crossings sit several units above
+            // the band, and a cubic down-force there outgrows the obstacle
+            // penalty's cubic (which works on the SMALL violation depth) —
+            // the cap then presses the trajectory into terrain. Quadratic
+            // shapes the swell but can never win against the clearance wall.
+            const double ua = pos.z() - alt_zhi_;
+            const double costa_z = wei_alt_ * ua * ua;
+            Eigen::Vector3d grad_a(0.0, 0.0, wei_alt_ * 2.0 * ua);
+            gradViolaPc = beta0 * grad_a.transpose();
+            gradViolaPt = alpha * grad_a.transpose() * vel;
+            jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+            gdT(i) += omg * (costa_z / K + step * gradViolaPt);
+            costs(3) += omg * step * costa_z;
+        }
+
         // Feasibility cost calculation
         if (feasibilityGradCostV(vel, gradv, costv)) {
             gradViolaVc = beta1 * gradv.transpose();
@@ -787,14 +806,18 @@ namespace ego_planner
   double PolyTrajOptimizer::getRiskLevel(const Eigen::Vector3d &pos) const
   {
     double survival = 1.0;
+    // Vertical-cylinder moat, identical to the front-end's getRiskNorm:
+    // horizontal distance only, z-flat within |dz| < reach. (The old 3D-ball
+    // distance disagreed with the planner AND produced a vertical risk
+    // gradient that pushed the trajectory toward the ground.)
     for (const auto &tz : risk_zones_) {
+      const double dz = std::abs(pos.z() - tz.center.z());
+      if (dz >= tz.reach) continue;
       const double dx = std::abs(pos.x() - tz.center.x());
       if (dx >= tz.reach) continue;
       const double dy = std::abs(pos.y() - tz.center.y());
       if (dy >= tz.reach) continue;
-      const double dz = std::abs(pos.z() - tz.center.z());
-      if (dz >= tz.reach) continue;
-      const double d = std::sqrt(dx*dx + dy*dy + dz*dz);
+      const double d = std::sqrt(dx*dx + dy*dy);
       if (d >= tz.reach) continue;
       const double u = 1.0 - d / tz.reach;
       const double moat = std::min(tz.peak * u * u, 1.0 - 1e-3);
@@ -814,7 +837,14 @@ namespace ego_planner
     std::vector<ZoneData> zd;
     zd.reserve(risk_zones_.size());
     for (const auto &tz : risk_zones_) {
-      const Eigen::Vector3d diff = pos - tz.center;
+      // Cylinder model: horizontal gradient only (z-flat moat has no
+      // vertical gradient), consistent with getRiskLevel above.
+      Eigen::Vector3d diff = pos - tz.center;
+      if (std::abs(diff.z()) >= tz.reach) {
+        zd.push_back({0.0, Eigen::Vector3d::Zero()});
+        continue;
+      }
+      diff.z() = 0.0;
       const double d = diff.norm();
       if (d >= tz.reach || d < 1e-9) {
         zd.push_back({0.0, Eigen::Vector3d::Zero()});
@@ -844,24 +874,37 @@ namespace ego_planner
     return survival * sum;
   }
 
-  // V3 risk penalty: cost = wei_risk * risk^2, risk in [0, 1] (OR-moat).
-  // The squaring keeps the gradient smooth; quadratic moat itself is C^1.
+  // Risk penalty: cubic in PENETRATION DEPTH u = 1 - d/R per zone (vertical
+  // cylinder, matching the front-end). The old wei*risk^2 with risk ~ peak*u^2
+  // was ~u^4 near the boundary — so flat that the time cost always won and
+  // the optimizer shaved corners INTO zones. u^3 mirrors the obstacle
+  // penalty's cubic violation shape: zero-slope contact, growing fast inside.
   bool PolyTrajOptimizer::RiskGradCostP(const int i_dp,
                                            const Eigen::Vector3d &p,
                                            Eigen::Vector3d &gradp,
                                            double &costp)
   {
-    (void)i_dp;  // guard removed: consider all control points.
+    (void)i_dp;  // consider all control points
     gradp.setZero();
     costp = 0.0;
 
-    double risk = getRiskLevel(p);
-    if (risk <= 0.01) return false;
-
-    Eigen::Vector3d risk_grad = getRiskGradient(p);
-    costp = wei_risk_ * risk * risk;
-    gradp = wei_risk_ * 2.0 * risk * risk_grad;
-    return true;
+    bool any = false;
+    for (const auto &tz : risk_zones_) {
+      if (std::abs(p.z() - tz.center.z()) >= tz.reach) continue;
+      Eigen::Vector3d diff = p - tz.center;
+      diff.z() = 0.0;
+      const double d = diff.norm();
+      if (d >= tz.reach) continue;
+      const double u = 1.0 - d / tz.reach;       // penetration fraction (0..1)
+      costp += wei_risk_ * u * u * u;
+      if (d > 1e-9) {
+        // d(u^3)/dp = 3u^2 * (-1/R) * diff/d  -> points INTO the zone; the
+        // negative gradient pushes the trajectory back out horizontally.
+        gradp += wei_risk_ * 3.0 * u * u * (-1.0 / tz.reach) * (diff / d);
+      }
+      any = true;
+    }
+    return any;
   }
 
   void PolyTrajOptimizer::distanceSqrVarianceWithGradCost2p(const Eigen::MatrixXd &ps,

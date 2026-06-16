@@ -69,7 +69,11 @@ class SDFManager : public IDistanceField {
 
   // Returns signed distance in meters: min(static, dynamic patches).
   // +inf if outside map or unobserved by any layer.
+  uint64_t revision() const override { return revision_; }
+
   float getDistance(const Eigen::Vector3d& pos) const override;
+  // Distance to the dynamic patch layer only (+inf outside patch AABBs).
+  float getDynamicDistance(const Eigen::Vector3d& pos) const override;
 
   // Distance + gradient. Gradient is taken from whichever layer (static or
   // a dynamic patch) produces the minimum at pos; this is the sub-gradient
@@ -113,6 +117,7 @@ class SDFManager : public IDistanceField {
 
  private:
   std::unique_ptr<SDFManagerImpl> impl_;
+  uint64_t revision_ = 0;
 };
 
 }  // namespace sdf

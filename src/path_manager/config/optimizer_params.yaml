@@ -1,113 +1,62 @@
 /**:
   ros__parameters:
-    # ============================================================
-    # SDF-based Trajectory Optimization Parameters
-    # Pipeline: RRT* (risk-aware) -> SDF path shortening -> MINCO
-    #          -> L-BFGS with SDF gradient penalty
-    # ============================================================
+    # ================= Pipeline: FM2 -> shortcut -> MINCO -> L-BFGS =================
 
-    optimization/constrain_points_perPiece: 50
+    # ---- Front-end (FM2 / A*) ----
+    manager/front_end: fm2              # fm2 | astar(ablation baseline)
+    manager/fm2_coarse_k: 1             # eikonal grid downsample; lower = finer/slower
+    manager/fm2_max_cells: 1640000000   # OOM guard; over this -> straight-line fallback
+    manager/risk_weight: 30.0           # alpha: moat cost scale (tie-break when forced into a zone)
+    manager/risk_barrier: 100.0         # finite wall added inside non-exempt zones; 0 = off
+    manager/risk_smha_w: 2.0            # SMHA* suboptimality bound (astar front-end only)
 
+    # Altitude band: wave slowed outside [min,max](start_z,goal_z); 0 = off.
+    manager/fm2_alt_penalty: 2.0
+    manager/fm2_alt_zscale: 10.0        # up ramp; keep >=10 (5 deadlocks the extraction at walls)
+    manager/fm2_alt_zscale_down: 2.0    # down ramp (stiff: never dive below mission alt)
+
+    # ---- Clearances (frame units: 1 ~ 100 m horizontal / 44 m vertical) ----
+    manager/obstacle_clearance: 1.0     # front-end blocked threshold (route-to-terrain distance)
+    manager/dyn_obstacle_margin: 10.0   # wider berth around RUNTIME obstacles only; <= clearance disables
+    optimization/obstacle_clearance: 0.5  # optimizer penalty onset; MUST be < manager/obstacle_clearance
+                                          # (equal -> path sits on the penalty edge and can't be smoothed)
+
+    # ---- Shortcut / MINCO input ----
+    manager/astar_bypass_shortcut: false  # true = raw front-end path straight to MINCO (debug)
+    manager/length_per_piece: 50.0      # piece scale; segments subdivided to max 4x this
+    manager/astar_step_size: 1.0        # A* raw path spacing, frame units (astar front-end)
+
+    # ---- Optimizer weights ----
+    optimization/constrain_points_perPiece: 200
+    optimization/weight_obstacle: 10000.0
+    optimization/weight_swarm: 0.0
+    optimization/weight_feasibility: 10000.0
+    optimization/weight_sqrvariance: 10000.0
+    optimization/weight_time: 500.0     # too low -> duration blow-up (loops/loitering knots)
+    optimization/weight_formation: 0.0
+    optimization/weight_Risk: 10000.0  # cubic penetration penalty (zone = vertical cylinder)
+    optimization/weight_altitude: 200.0  # z-cap above mission band (quadratic); keep << weight_obstacle or it presses into terrain
+    optimization/swarm_clearance: 0.5
+    optimization/formation_type: 2
+
+    # ---- Dynamics (units/s, units/s^2; 1 unit = 100 m horizontal) ----
+    # Corner radius ~ v^2/a: with 2.0/5.0 turns are tight; lower max_acc for wider arcs.
+    optimization/max_vel: 2.0
+    optimization/max_acc: 5.0
+    manager/max_vel: 2.0
+    manager/max_acc: 5.0
+
+    # ---- Map / SDF ----
+    manager/sdf_voxel_size: 1.0
+    manager/ground_height: -0.01        # <= -0.5 disables
+    manager/virtual_ceil_height: -1.0   # <= -0.5 disables
+    manager/world: "dokdo"              # fallback; RViz MapSelector overrides
+    manager/esdf_dir: "src/mmp_terrain/data"
+    manager/save_terrain_esdf: ""       # override path; empty = <esdf_dir>/<world>.esdf
+    manager/load_terrain_esdf: ""
+    manager/dynamic_obstacle_radius: 50.0  # RViz "Publish Point" sphere radius, FRAME units (50 = 5 km; use 0.5 for 50 m)
+
+    # ---- Logging ----
     enable_obstacles: true
     enable_debug_logs: true
     enable_lbfgs_detail_logs: true
-
-    # Cost function weights (scale matched to proven main-branch values).
-    optimization/weight_obstacle: 10000.0     # SDF violation penalty
-    optimization/weight_swarm: 0.0            # Swarm collision avoidance
-    optimization/weight_feasibility: 10000.0   # Vel/acc feasibility
-    optimization/weight_sqrvariance: 10000.0  # Distance variance (smoothness)
-    optimization/weight_time: 0.0          # Time optimality (raise to prevent duration blow-up that produces loop-shaped trajectories)
-    optimization/weight_formation: 0.0        # Formation keeping
-    optimization/weight_Risk: 5000.0           # Risk zone avoidance
-
-    # V3 risk-aware A*:
-    #   Risk field is OR-composed quadratic moats, risk(x) in [0, 1].
-    #   A* edge cost = dist * (1 + risk_weight * risk(midpoint)).
-    #   Variable name in code: risk_alpha_. Sweep range: 0.1 .. 10.
-    #   Picked 30.0 (2026-05-15) from synthetic_flat + sdf2_unit sweep:
-    #   - S1/S2 detour with max_depth=0 (clean avoidance),
-    #   - S3 transit max_depth=1.6m (intentional, no detour available),
-    #   - S5 real-sdf2: α=3 left 14m penetration; α=30 brings it to ~2.6m.
-    #   α=100 makes max_depth=0 on sdf2 but pessimistic on S3 transit.
-    # Avoidance is handled by manager/risk_barrier (below); risk_weight now only
-    # breaks ties toward the least-moat crossing when forced to enter a zone.
-    manager/risk_weight: 30.0
-
-    # Front-end finite "hard wall": a large constant added to the edge cost for
-    # any cell inside a non-exempt zone. Unlike risk_weight*moat (~0 at the
-    # boundary) it is a step across the whole reach, so the search detours fully
-    # around a zone when a route exists, else crosses at the least-moat point.
-    # Finite => the graph never disconnects. 0 disables.
-    manager/risk_barrier: 100.0
-
-    # SMHA* (Aine et al., IJRR 2016) shared-g dual-queue A*, single
-    # unified algorithm — NO mode switch. The inadmissible queue uses a
-    # coarse risk-aware cost-to-go heuristic (Dijkstra from the goal on a
-    # K-downsampled grid with the same dist*(1+alpha*risk) cost). Per
-    # Wilt&Ruml SoCS2012, a heuristic correlated with true cost-to-go is
-    # the only thing that escapes risk depressions without bulldozing
-    # mid-path detours; a coarse value field encodes that structure
-    # exactly (Holte hierarchical A*). smha_w is the SMHA* suboptimality
-    # bound on the inadmissible dispatch; 1 = anchor-only. Sweep 1..5.
-    manager/risk_smha_w: 2.0
-
-    # Front-end search. FM2 (Fast Marching Square) is the default: a
-    # heuristic-free Eikonal planner that, by construction, has no local
-    # minima (Valero-Gomez et al.), so it detours avoidable zones,
-    # transits walled-off ones, and commits into a goal-in-zone all in a
-    # single query — none of the Wilt&Ruml depression explosion the A*
-    # family suffers. `astar` keeps the SMHA* path as the ablation
-    # baseline / fallback.
-    manager/front_end: fm2          # fm2 | astar
-    # Eikonal grid downsample factor. 4 -> ~ (map/4)^3 cells. Lower =
-    # finer geodesic but slower; the MINCO/L-BFGS back-end refines it.
-    manager/fm2_coarse_k: 4
-
-    # Debug: bypass shortcut/visibility-thinning so RViz shows the raw
-    # 1-voxel-step A* path. Use to verify front-end risk avoidance in
-    # isolation; turn back to false once A* is stabilized.
-    manager/astar_bypass_shortcut: true
-
-    optimization/swarm_clearance: 0.5
-
-    optimization/formation_type: 2
-
-    # Dynamic limits
-    optimization/max_vel: 5.0
-    optimization/max_acc: 15.0
-
-    manager/max_vel: 5.0
-    manager/max_acc: 15.0
-
-    # MINCO piece granularity (m per piece).
-    # Smaller -> more pieces -> more inner points -> higher optimization DoF.
-    manager/length_per_piece: 6.0
-
-    # A* search step size (meters). Controls the spacing of A* raw path
-    # points, which survive shortcut inside obstacles and become MINCO
-    # inner points there. Larger value -> sparser inner points in/near
-    # obstacles; should be a multiple of the SDF voxel size.
-    manager/astar_step_size: 1.0
-
-    manager/sdf_voxel_size: 1.0
-
-    manager/ground_height: -0.01
-    manager/virtual_ceil_height: -1.0
-
-    # Precomputed terrain ESDF (flat binary .esdf).
-    #
-    # Path is normally synthesized from <esdf_dir>/<world>.esdf, where
-    # `world` is set by the RViz MapSelector when you click Load Map.
-    # That means the typical user doesn't touch save/load below — leave
-    # them blank and the map you select in RViz drives the cache.
-    #
-    # Paths are resolved against the process CWD (= the workspace root;
-    # /ws under run_docker.sh).
-    manager/world: "dokdo"                          # fallback if RViz hasn't pushed one yet
-    manager/esdf_dir: "src/mmp_terrain/data"
-    manager/save_terrain_esdf: ""                   # override: non-empty wins
-    manager/load_terrain_esdf: ""                   # override: non-empty wins
-
-    # RViz "Publish Point" → spawn a sphere obstacle at the click. Radius in m.
-    manager/dynamic_obstacle_radius: 50.0
