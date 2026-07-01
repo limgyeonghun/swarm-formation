@@ -45,6 +45,11 @@ namespace path_manager
         node_->declare_parameter("optimization/obstacle_clearance", 0.7);
         node_->declare_parameter("optimization/weight_altitude", 1000.0);
         node_->declare_parameter("manager/corner_fillet_radius", 0.0);
+        // ESDF occupancy overlay (RViz debug aid). step=1.0m re-queries the SDF
+        // hundreds of millions of times per (re)load — tens of seconds on the
+        // critical path. Default 4m: 64x cheaper, still fine for a 3 km map.
+        node_->declare_parameter("manager/esdf_viz_step", 4.0);
+        node_->declare_parameter("manager/esdf_viz_enable", true);
         node_->get_parameter("manager/max_vel", max_vel_);
         node_->get_parameter("manager/max_acc", max_acc_);
         node_->get_parameter("manager/length_per_piece", length_per_piece_);
@@ -68,6 +73,8 @@ namespace path_manager
         node_->get_parameter("optimization/obstacle_clearance", opt_obstacle_clearance_);
         node_->get_parameter("optimization/weight_altitude", weight_altitude_);
         node_->get_parameter("manager/corner_fillet_radius", corner_fillet_radius_);
+        node_->get_parameter("manager/esdf_viz_step", esdf_viz_step_);
+        node_->get_parameter("manager/esdf_viz_enable", esdf_viz_enable_);
         // Patches must extend at least as far as the dynamic berth, or the
         // distance query reads +inf before the margin is reached.
         if (dyn_obstacle_margin_ > sdf_manager_.influenceRadius())
@@ -531,13 +538,14 @@ namespace path_manager
         // Sample the ESDF on a coarse grid and publish occupied voxels as a
         // CUBE_LIST so the user can overlay them on the terrain mesh in RViz
         // to confirm terrain → SDF mapping.
-        if (esdf_occ_pub_ && sdf_manager_.revision() != esdf_viz_revision_) {
+        if (esdf_viz_enable_ && esdf_occ_pub_ &&
+            sdf_manager_.revision() != esdf_viz_revision_) {
             esdf_viz_revision_ = sdf_manager_.revision();
             // Re-sampling the whole mission volume (hundreds of millions of
             // SDF queries -> tens of seconds) every plan is pointless while
             // the SDF is unchanged; the revision gate republishes only after
             // a rebuild/load or dynamic-obstacle change.
-            const double step = 1.0;
+            const double step = std::max(1.0, esdf_viz_step_);
             Eigen::Vector3d lo = map_lower_bound_;
             Eigen::Vector3d hi = map_upper_bound_;
             visualization_msgs::msg::Marker cubes;

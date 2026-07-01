@@ -214,6 +214,8 @@ namespace path_manager
     double weight_altitude_{1000.0};      // optimizer z-cap weight above mission band
     double corner_fillet_radius_{0.0};    // legacy geometric fallback; 0 = off
     uint64_t esdf_viz_revision_{~0ull};   // last SDF revision published as cubes
+    double esdf_viz_step_{4.0};           // ESDF occupancy-viz sample step [m]; coarse = cheap
+    bool   esdf_viz_enable_{true};        // publish the ESDF occupancy overlay at all
     bool astar_bypass_shortcut_{false};
     Eigen::Vector3d map_lower_bound_;
     Eigen::Vector3d map_upper_bound_;
