@@ -248,9 +248,6 @@ namespace ego_planner
                          Eigen::Vector3d &gradp,
                          double &costp);
 
-    double getRiskLevel(const Eigen::Vector3d &pos) const;
-    Eigen::Vector3d getRiskGradient(const Eigen::Vector3d &pos) const;
-
     bool feasibilityGradCostV(const Eigen::Vector3d &v,
                               Eigen::Vector3d &gradv,
                               double &costv);
