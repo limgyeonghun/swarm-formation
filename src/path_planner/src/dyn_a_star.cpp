@@ -1335,31 +1335,73 @@ std::vector<Eigen::Vector3d> PathSearcher::fm2ExtractGeodesic(
 
     Eigen::Vector3d p = start_world;
     path.push_back(p);
+
+    // Discrete steepest-descent: step toward the lowest-T neighbour cell. The
+    // eikonal field has no local minima (Valero-Gomez et al.), so a strictly
+    // lower neighbour exists until the goal — this ALWAYS lowers T (monotone)
+    // and follows the field AROUND a zone, never across it. Used to recover
+    // whenever the smooth interp-gradient step stalls or overshoots.
+    auto discreteStep = [&](const Eigen::Vector3d &pp, bool &ok) -> Eigen::Vector3d {
+        static const int OFF[6][3] =
+            {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+        double bestT = fm2SampleT(pp);
+        Eigen::Vector3d bdir(0, 0, 0);
+        ok = false;
+        for (auto &o : OFF) {
+            const Eigen::Vector3d q =
+                pp + Eigen::Vector3d(o[0]*cres, o[1]*cres, o[2]*cres);
+            const double tq = fm2SampleT(q);
+            if (std::isfinite(tq) && tq < bestT) {
+                bestT = tq; bdir = Eigen::Vector3d(o[0], o[1], o[2]); ok = true;
+            }
+        }
+        return ok ? Eigen::Vector3d(pp + step * bdir.normalized()) : pp;
+    };
+    // Keep z inside the grid (outside, the trilinear sample clamps and the
+    // z-gradient degenerates to 0, so the path could drift below the floor).
+    auto clampZ = [&](Eigen::Vector3d q) {
+        q.z() = std::clamp(q.z(), map_origin_.z() + 0.5 * cres,
+                           map_origin_.z() + map_size_.z() - 0.5 * cres);
+        return q;
+    };
+
+    int n_recover = 0;   // steps that fell back to monotone discrete descent
     for (int it = 0; it < max_iter; ++it) {
         if ((p - goal_world).norm() < goal_tol) break;
-        Eigen::Vector3d g1;
-        if (!gradT(p, g1)) {
-            // Stalled (flat / NaN). Jump straight toward goal; the
-            // back-end optimizer cleans residual.
-            Eigen::Vector3d d = (goal_world - p);
-            if (d.norm() < 1e-6) break;
-            p += step * d.normalized();
-            path.push_back(p);
-            continue;
+        const double tp = fm2SampleT(p);
+        Eigen::Vector3d p_next, g1;
+        bool ok = false;
+        if (gradT(p, g1)) {
+            // RK2 (midpoint) smooth descent on the trilinear field.
+            Eigen::Vector3d g2;
+            const Eigen::Vector3d pmid = p - 0.5 * step * g1.normalized();
+            const Eigen::Vector3d g = gradT(pmid, g2) ? g2 : g1;
+            p_next = clampZ(p - step * g.normalized());
+            // Monotonicity guard: T strictly decreases along a geodesic. A step
+            // that does NOT lower T overshot a narrow valley — the interp-gradient
+            // zigzag that otherwise burns the whole iteration budget and then
+            // forces a straight line-to-goal THROUGH zones at the end. Reject it.
+            const double tn = fm2SampleT(p_next);
+            ok = std::isfinite(tn) && tn < tp - 1e-9;
         }
-        // RK2 (midpoint): re-evaluate -∇T half a step downhill and step with
-        // that, following the curved geodesic on the trilinear field.
-        Eigen::Vector3d g2;
-        const Eigen::Vector3d pmid = p - 0.5 * step * g1.normalized();
-        const Eigen::Vector3d g = gradT(pmid, g2) ? g2 : g1;
-        p -= step * g.normalized();        // descend -∇T
-        // Keep the descent inside the grid: outside it the trilinear sample
-        // clamps and the z-gradient degenerates to 0, so the path can drift
-        // below the map floor (z<0) with nothing to push it back.
-        p.z() = std::clamp(p.z(), map_origin_.z() + 0.5 * cres,
-                           map_origin_.z() + map_size_.z() - 0.5 * cres);
+        if (!ok) {
+            bool dok;
+            p_next = clampZ(discreteStep(p, dok));
+            if (!dok) {
+                // No lower neighbour anywhere (numerical corner): last-resort
+                // nudge toward the goal.
+                const Eigen::Vector3d d = goal_world - p;
+                if (d.norm() < 1e-6) break;
+                p_next = clampZ(p + step * d.normalized());
+            }
+            ++n_recover;
+        }
+        p = p_next;
         path.push_back(p);
     }
+    fprintf(stderr, "[GEODESIC] points=%zu recover_steps=%d reached_goal=%s\n",
+            path.size(), n_recover,
+            ((p - goal_world).norm() < goal_tol ? "yes" : "NO(timeout!)"));
     path.push_back(goal_world);
 
     // Moving-average smoothing of z ONLY (endpoints pinned). The descent
